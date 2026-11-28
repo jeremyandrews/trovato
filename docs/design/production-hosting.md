@@ -121,7 +121,7 @@ import into another (later work). Nothing in Trovato or the modules names
 | **EKS Auto Mode** | AWS runs the control plane, picks and replaces nodes (Karpenter under the hood, https://aws.amazon.com/blogs/containers/announcing-karpenter-1-0), patches node OS images, replaces every node within 21 days, and manages VPC CNI, CoreDNS, kube-proxy, the EBS CSI driver and the load balancer controller. A failed node is replaced with no one awake. The human task left is the Kubernetes minor upgrade, about three a year, in daytime, with 14 months of standard support per version (https://aws.amazon.com/eks/pricing/). | $0.10/h control plane ($73/month) plus a fee of about 12% of each node's EC2 price ($0.00461/h on a `t4g.medium`) |
 | EKS managed node groups | As above, but node OS updates, add-on upgrades and node group rolls are ours; Karpenter or the Cluster Autoscaler is ours to run | $73/month, no node fee |
 | k3s on EC2 | Ours: control plane availability, etcd backups, certificates, node replacement, OS patching. Every one of those is a night page waiting to happen. | Cheapest: no control plane fee |
-| ECS on Fargate | Least: no nodes, no cluster upgrades | About 25% more per vCPU than EC2 (Fargate ARM $0.03886 per vCPU-hour in Milan); and it discards BG10's Kubernetes manifests, and a deploy or rollback is an AWS API call, which fails the "laptop with cluster credentials alone" requirement (decision 8) |
+| ECS on Fargate | Least: no nodes, no cluster upgrades | About 2.5 times a `t4g.medium` for the same vCPU and memory (Fargate ARM $0.03886 per vCPU-hour and $0.00427 per GB-hour in Milan: 2 vCPU and 4 GB is $0.095 an hour against $0.038); and it discards BG10's Kubernetes manifests, and a deploy or rollback is an AWS API call, which fails the "laptop with cluster credentials alone" requirement (decision 8) |
 
 **EKS Auto Mode.** It is the only option where both night-time failure kinds,
 a node dying and a node needing a patch, are handled with no human; its cost
@@ -133,11 +133,13 @@ the same instance types instead (README, step 4); nothing else changes.
 
 - **Node pools.** Auto Mode's `general-purpose` pool, on-demand, `t4g`/`m8g`
   (Graviton: the image is built for `linux/arm64` as well, part 2), spread
-  across three availability zones. **Spot only where an interruption costs
-  nothing**: the monthly restore drill and the migrate Job's dry runs, in a
-  second pool with `karpenter.sh/capacity-type: spot` and a taint only those
-  jobs tolerate. The web pods stay on-demand: a write in flight on a reclaimed
-  node is a writer's lost post.
+  across three availability zones. **No spot at launch.** The web pods stay
+  on-demand (a write in flight on a reclaimed node is a writer's lost post),
+  and the only other workloads, the migrate Job and the monthly restore drill,
+  run minutes a month: a spot pool would save cents and make the drill fail on
+  a reclaim, which is a false alarm. Spot is safe, and worth a second pool,
+  only for batch work that retries on its own (none yet; a future export or
+  reindex job).
 - **Autoscaling.** A HorizontalPodAutoscaler on CPU, 2 to 6 replicas at launch,
   a PodDisruptionBudget of `minAvailable: 1`, topology spread across zones;
   Auto Mode adds and removes nodes for the pods. `DATABASE_MAX_CONNECTIONS=10`
@@ -168,10 +170,11 @@ it does now.
   (decision 10).
 - **Connection pooling: none at launch, PgBouncer when needed, never RDS Proxy.**
   Six pods at most times ten connections is 60, plus the migrate Job's few;
-  `db.t4g.medium`'s `max_connections` default is about 400. A pooler adds a
-  moving part for no gain until pods times pool size passes about 60% of
-  `max_connections`. When it does (the growth size, about 20 pods), the answer
-  is PgBouncer 1.21 or later in transaction mode with
+  `db.t4g.medium`'s `max_connections` default is about 400 (RDS derives it
+  from memory), and `db.m8g.xlarge`'s about 1,700. A pooler adds a moving part
+  for no gain until pods times pool size passes about 60% of
+  `max_connections`: about 25 pods at launch size, about 100 at growth size,
+  more than either needs. If that is ever reached, the answer is PgBouncer 1.21 or later in transaction mode with
   `max_prepared_statements` set, as a two-replica Deployment: sqlx prepares
   statements, which pins every RDS Proxy connection to one client and removes
   the multiplexing it is paid for. `trovato migrate` connects to RDS directly
@@ -225,8 +228,14 @@ directory, so single server and self hosted installs work exactly as before.
   served only after the access check, `private, no-store`. No signed URLs: a
   signed URL is a bearer token a reader can forward, valid until it expires, and
   would move the access check from Trovato to whoever holds the link. The
-  bucket is **never public**: Block Public Access on, a bucket policy that
-  denies everything but the pod role and the replication role, TLS only.
+  bucket is **never public**: Block Public Access on, ACLs disabled (bucket
+  owner enforced), and a bucket policy that denies any request without TLS
+  (`aws:SecureTransport = false`) and denies every principal whose
+  `aws:PrincipalArn` is not on a named list: the web role, the replication
+  role, the drill role and the break-glass admin role. The bucket (or prefix)
+  holds only Trovato's files: an object with no `file_managed` row is served as
+  an unmanaged file to anyone the route allows, so nothing else may be put
+  there.
 - **Image styles in S3 too.** Derivatives are read and written through the trait
   at `local://styles/<style>/<path>` (`services::image_style::derivative_uri`),
   so one server makes a derivative and every server serves it. With a directory
@@ -259,9 +268,21 @@ directory, so single server and self hosted installs work exactly as before.
   a self hosted store. On trovato.blog there is no static key: the pod's role
   is short lived and rotated by AWS. The client's `Debug` prints only the bucket
   and prefix, and errors name the bucket, never a credential.
-- **Retries are short:** three, within ten seconds, a 30 second request
-  timeout and a 5 second connect timeout. A request is waiting; a store down
-  for longer is better reported than hidden.
+- **Failures are reported quickly:** 5 seconds to connect, 30 to finish, and a
+  failed request retried at most three times while less than ten seconds have
+  passed (so a hung request is one 30 second attempt). A request is waiting; a
+  store down for longer is better reported than hidden. A server that cannot
+  reach the store at startup exits and Kubernetes restarts it with backoff, so
+  it heals by itself when the store returns: a morning item, and a page only
+  through the writes-failing rule if every pod is down.
+- **Style names are machine names.** The image style route accepts only
+  `[A-Za-z0-9_-]` for the style and holds the original's path to the `/files/`
+  route's own rules. A style of `w400%2F2026%2F11` (axum decodes `%2F`) or an
+  original of `styles/w400/...` would otherwise reach a private image's real
+  derivative while the access check ran on a path naming no file. This was
+  already reachable on `main` through the disk cache; part 1 closes it.
+- **Trovato's working names are never served:** `/files/` refuses
+  `.trovato-write-check-*` and a local write's `.<name>.trovato-tmp-*`.
 
 **The crate: `object_store` 0.14** (Apache Arrow project; used by Arrow, Delta
 Lake and InfluxDB). Nothing in the workspace speaks S3, and the standard set has
@@ -301,9 +322,16 @@ store.
   refreshes it hourly. Chosen over the Secrets Store CSI driver because a
   rotated value reaches pods as an ordinary Secret change, which a rollout
   restart picks up, with no volume mounts to reason about.
-- **Least privilege per service (EKS Pod Identity).** `trovato-web`: get and put
-  objects in the files bucket only, read its own secrets. `trovato-migrate`:
-  read `db-owner` only. `external-secrets`: read `trovato/*` only. The drill
+- **Least privilege per service (EKS Pod Identity).** `trovato-web`:
+  `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on
+  `arn:aws:s3:::<files-bucket>/<S3_PREFIX>/*`, `s3:ListBucket` on the bucket
+  with the condition `s3:prefix` like `<S3_PREFIX>/*` (without it S3 answers a
+  missing key with 403 rather than 404, which Trovato would report as a store
+  failure), `kms:GenerateDataKey` and `kms:Decrypt` on the bucket's key only,
+  and `secretsmanager:GetSecretValue` on its own secrets; no `s3:*`, no bucket
+  policy or ACL action. `trovato files migrate-to-s3` runs as a one-off Job
+  under the same role. Two sites sharing a bucket get one role each, scoped to
+  their own prefix. `trovato-migrate`: read `db-owner` only. `external-secrets`: read `trovato/*` only. The drill
   role: restore into and delete `drill-*` instances only. No pod has any
   permission over IAM, KMS key policy, backups or logs.
 - **The provider can be breached.** No long lived key anywhere: pods use Pod
@@ -416,11 +444,11 @@ store.
   each row's literal commands.
 - **The restore drill** (`deploy/aws/scripts/restore-drill.sh`, part 3)
   restores the latest recovery point into a scratch environment (a `drill-*`
-  RDS instance and a `drill-*` bucket prefix on the spot pool), runs
+  RDS instance and a `drill-*` bucket prefix, on the on-demand pool), runs
   `trovato migrate --status` and smoke tests (`/health/ready`, a known item
   page, a known private file refused anonymously and served to an admin),
   prints the measured restore time, and deletes the scratch environment. It is
-  scheduled monthly (a Kubernetes CronJob on the spot pool), and the same
+  scheduled monthly (a Kubernetes CronJob), and the same
   script runs end to end against a local Postgres and MinIO in CI.
 
 ### 11. Alerting: SLOs, and who gets woken
@@ -441,12 +469,11 @@ store.
    "all writes failing for more than N minutes" rule, with N = 10.
 2. Data loss risk: RDS instance not available for 10 minutes (a failover that
    did not heal), database free storage under 5% with autoscaling at its
-   maximum, S3 replication failures for an hour, the file store failing the
-   status report's write check.
-3. Backups failing: no new AWS Backup recovery point in 26 hours, a failed
-   copy job to Frankfurt, a failed monthly restore drill.
-4. Certificate or DNS: TLS certificate expiring within 7 days, or trovato.blog
-   not resolving from the external checker for 10 minutes.
+   maximum. (Uploads failing count toward rule 1: they are writes.)
+3. Backups failing: no new AWS Backup recovery point in 48 hours (two missed
+   days, not one late job), or point in time recovery disabled.
+4. Certificate or DNS: trovato.blog not resolving, or its TLS handshake
+   failing, from the external checker for 10 minutes.
 5. Security: root sign-in, a new IAM user or access key, a policy change, a
    change to CloudTrail, the log bucket or a backup vault, a high severity
    GuardDuty finding.
@@ -455,8 +482,11 @@ store.
 restarted or evicted, a node replaced, an RDS or Valkey failover that
 completed, Redis restarted empty, the autoscaler at its maximum, the latency
 SLO or a slow availability burn (6 times over 6 hours), Cloudflare hit rate
-under target, storage over 80%, a certificate expiring within 21 days, a
-medium GuardDuty finding, an image or dependency advisory. Everything here
+under target, storage over 80%, a certificate expiring within 21 days (and
+again at 7), a failed backup copy job to Frankfurt (the next day's retries
+it; point in time recovery covers the gap), S3 replication failures, a failed
+monthly restore drill, a medium GuardDuty finding, an image or dependency
+advisory. Everything here
 heals itself or can wait.
 
 **Where.** Grafana Cloud's free tier (10,000 metric series, alerting, 3 IRM
@@ -521,7 +551,7 @@ in the price list (doubled from the next size down) or a usage guess.
 | EKS control plane | 73 | 73 | 73 |
 | Nodes (Auto Mode fee included) | 3 × `t4g.medium`: 94 | 4 × `m8g.large`: 343 | 94 |
 | RDS PostgreSQL Multi-AZ | `db.t4g.medium` 106, 50 GB gp3 13: 119 | `db.m8g.xlarge` 575 (est.), 500 GB 133: 708 | 119 |
-| PgBouncer | none | 2 small pods: 0 (on existing nodes) | none |
+| Connection pooler | none | none (about 100 pods before one is needed) | none |
 | Valkey primary + replica | 2 × `cache.t4g.small`: 42 | 2 × `cache.t4g.medium`: 84 (est.) | 42 |
 | NAT gateway (one) and data | 39 | 62 | 39 |
 | Application load balancer | 28 | 80 | 28 |
@@ -599,6 +629,19 @@ argument is worth rechecking then.
   bucket for a public file's object is refused; a derivative is stored in the
   bucket, served from it, and a restricted image's derivative is still 404 to
   anonymous.
+- The conformance file also proves the migration refuses a copy whose read-back
+  differs (a store that keeps other bytes than it was given), and that a
+  symbolic link to a directory outside is not walked into.
+- `crates/kernel/tests/file_storage_s3_serving_test.rs` also proves a private
+  derivative is not reached through a `%2F` style name or an original under
+  `styles/`, and that Trovato's working objects are never served.
+- `crates/kernel/tests/zz_file_store_cli_test.rs`: the real binary. `serve`
+  with an unusable bucket exits nonzero naming it, before any database (none
+  listens at the address it is given); `files migrate-to-s3` refuses without an
+  S3 destination, prints its one line, and exits nonzero naming a file it
+  could not copy.
+- Unit tests: style names are machine names (`routes/image_style.rs`); the
+  `/files/` path rule refuses Trovato's working names (`routes/file.rs`).
 - `config.rs` unit tests: `FILE_STORAGE` defaults to local, reads the `S3_*`
   settings, and refuses `s3` without a bucket, an unknown store and a bad
   `S3_ALLOW_HTTP`.

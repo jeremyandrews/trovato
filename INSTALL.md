@@ -118,7 +118,8 @@ IRSA role, the instance role, or `AWS_ACCESS_KEY_ID` and
 `AWS_SECRET_ACCESS_KEY` for a self hosted store such as MinIO). To move an
 existing site's files into a bucket, run `trovato files migrate-to-s3` (see
 [docs/cli-reference.md](docs/cli-reference.md#trovato-files-migrate-to-s3)),
-then switch `FILE_STORAGE` and restart.
+then switch `FILE_STORAGE`, restart, and run it once more to catch uploads
+made in between.
 
 The kernel answers `/files/` with the type stored when the upload was validated
 and `X-Content-Type-Options: nosniff`; a proxy must pass `Content-Type` through

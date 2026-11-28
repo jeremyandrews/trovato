@@ -320,6 +320,10 @@ fn the_bucket_does_not_answer_an_unsigned_request() {
         let endpoint = f.s3.endpoint.as_deref().unwrap().trim_end_matches('/');
         let prefix = f.s3.prefix.as_deref().unwrap();
         let url = format!("{endpoint}/{}/{prefix}/{path}", f.s3.bucket);
+        assert!(
+            other_server(f).exists(&uri).await.unwrap(),
+            "the URL is built from the stored key"
+        );
         let resp = reqwest::get(&url).await.expect("reach the store");
         assert_eq!(
             resp.status().as_u16(),
@@ -388,5 +392,72 @@ fn image_derivatives_are_stored_in_the_bucket_and_still_access_checked() {
             get(&f.app, &url, None).await.status(),
             StatusCode::NOT_FOUND
         );
+    });
+}
+
+/// A style name is never a path: `%2F` in it, which axum decodes, must not
+/// reach a private original's real derivative while the access check runs on
+/// a path that names no file. And the original named after the style can
+/// never be another derivative, whose bytes would be resized and served.
+#[test]
+fn a_private_derivative_is_not_reached_by_spelling_tricks() {
+    run_test(async {
+        let Some(f) = fixture() else { return };
+        f.app.ensure_conference_type().await;
+        let owner = create_user(&f.app).await;
+        let name = format!("hidden-{}.png", Uuid::now_v7().simple());
+        let (uri, path) = upload(&f.app, owner, &name, "image/png", &png_bytes()).await;
+        item_referencing(&f.app, "S3 Hidden Picture", 0, &uri).await;
+
+        // An administrator makes the real derivative, so it is stored.
+        let cookies = admin_cookies(&f.app).await;
+        let real = format!("/files/styles/w8/{path}");
+        assert_eq!(
+            get(&f.app, &real, Some(&cookies)).await.status(),
+            StatusCode::OK
+        );
+        assert!(
+            other_server(f)
+                .exists(&format!("local://styles/w8/{path}"))
+                .await
+                .unwrap()
+        );
+
+        let (dir, file) = path.rsplit_once('/').unwrap();
+        let encoded_dir = dir.replace('/', "%2F");
+        for url in [
+            format!("/files/styles/w8%2F{encoded_dir}/{file}"),
+            format!("/files/styles/w8/styles/w8/{path}"),
+            format!("/files/styles/w16/styles/w8/{path}"),
+        ] {
+            let resp = get(&f.app, &url, None).await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{url} must be 404");
+        }
+    });
+}
+
+/// Trovato's own working objects (the startup check's sentinel, a local
+/// write's temporary file) have no `file_managed` row; they are never served
+/// as unmanaged files.
+#[test]
+fn trovato_working_objects_are_never_served() {
+    run_test(async {
+        let Some(f) = fixture() else { return };
+        let id = Uuid::now_v7().simple();
+        for key in [
+            format!(".trovato-write-check-{id}"),
+            format!("2026/11/.x_{id}.jpg.trovato-tmp-{id}"),
+        ] {
+            other_server(f)
+                .write(&format!("local://{key}"), b"working")
+                .await
+                .unwrap();
+            let resp = get(&f.app, &format!("/files/{key}"), None).await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{key} must be 404");
+            other_server(f)
+                .delete(&format!("local://{key}"))
+                .await
+                .unwrap();
+        }
     });
 }

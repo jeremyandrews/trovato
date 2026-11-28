@@ -652,6 +652,9 @@ jobs:
       - name: Build WASM plugins
         run: ./scripts/ci-build-plugins.sh
 
+      - name: Start MinIO for the S3 storage tests
+        run: ./scripts/ci-start-minio.sh
+
       # The same split as the Test job, in one database: the unit tests under
       # nextest, one process each and in parallel; the integration targets
       # under libtest, one target at a time with its tests in parallel (why not
@@ -661,9 +664,6 @@ jobs:
       # tests. `--test-threads=1` is gone with the reason it was there for: the
       # targets' own locks make their tests safe to run together, which a local
       # `cargo test` has always relied on.
-      - name: Start MinIO for the S3 storage tests
-        run: ./scripts/ci-start-minio.sh
-
       - name: Generate coverage report
         run: |
           cargo llvm-cov clean --workspace

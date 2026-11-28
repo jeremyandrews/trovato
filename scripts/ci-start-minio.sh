@@ -28,7 +28,9 @@ PASSWORD="$(openssl rand -hex 24)"
 
 mkdir -p "$DATA/$BUCKET"
 docker rm -f "$NAME" >/dev/null 2>&1 || true
-docker run -d --name "$NAME" -p "127.0.0.1:$PORT:9000" -v "$DATA:/data" \
+# Run as the runner user: the image's own user (65532) cannot write a directory
+# the runner created, which Linux enforces and a Mac bind mount hides.
+docker run -d --name "$NAME" --user "$(id -u):$(id -g)" -p "127.0.0.1:$PORT:9000" -v "$DATA:/data" \
   -e MINIO_ROOT_USER="$USER_NAME" -e MINIO_ROOT_PASSWORD="$PASSWORD" \
   "$IMAGE" server /data >/dev/null
 

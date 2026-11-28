@@ -86,7 +86,16 @@ enum Copied {
 }
 
 async fn copy_one(root: &Path, key: &str, dest: &dyn FileStorage) -> Result<Copied> {
-    let data = tokio::fs::read(root.join(key))
+    // Checked again just before reading, not only when listed: a file swapped
+    // for a symbolic link in between is refused, not followed.
+    let path = root.join(key);
+    let meta = tokio::fs::symlink_metadata(&path)
+        .await
+        .context("failed to read the local file")?;
+    if !meta.file_type().is_file() {
+        anyhow::bail!("no longer a regular file");
+    }
+    let data = tokio::fs::read(&path)
         .await
         .context("failed to read the local file")?;
     let want = Sha256::digest(&data);
@@ -120,6 +129,7 @@ pub async fn copy_dir_to_storage(
     parallel: usize,
 ) -> Result<MigrationReport> {
     let keys = list_files(root).await?;
+    tracing::info!(files = keys.len(), dir = %root.display(), "listed files to copy");
     let mut report = MigrationReport {
         total: keys.len() as u64,
         ..MigrationReport::default()

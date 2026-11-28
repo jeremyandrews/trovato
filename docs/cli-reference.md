@@ -269,12 +269,15 @@ trovato files migrate-to-s3 [--from <dir>] [--parallel <n>]
 Copies every file under the uploads directory (`UPLOADS_DIR`, or `--from`) into
 the S3 bucket the settings name (`FILE_STORAGE=s3`, `S3_BUCKET`, and `S3_REGION`
 or `S3_ENDPOINT`), under the same key, `--parallel` at a time (default 16). It
-needs no database. The design is in
+never connects to the database, though `DATABASE_URL` must be set, as for
+every command. The design is in
 [`docs/design/production-hosting.md`](design/production-hosting.md), decision 5.
 
 - **Same URIs.** A file's URI is `local://<key>` with either store, so nothing
   in the database changes: once the copy is done, set `FILE_STORAGE=s3` on
-  every server and restart them.
+  every server and restart them, then run the command once more (with the
+  directory still mounted, or `--from` pointing at it) to copy anything
+  uploaded between the first copy and the restart.
 - **Checked.** Each copy is read back from the bucket and compared with the
   local file by SHA-256; a mismatch is a failure.
 - **Resumable.** A file the bucket already holds with the same SHA-256 is

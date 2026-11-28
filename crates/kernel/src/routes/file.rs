@@ -186,8 +186,21 @@ pub(crate) async fn served_file_cache_control(
 /// holds image derivatives, which are only served through the image style route
 /// (it checks access against the original). Callers still apply their own
 /// traversal guard.
-fn is_original_upload_path(path: &str) -> bool {
-    path.split('/').next() != Some("styles") && path.split('/').all(|c| !c.is_empty() && c != ".")
+///
+/// Trovato's own working names are refused too: the startup write check's
+/// `.trovato-write-check-*` and a local write's `.<name>.trovato-tmp-*`, which
+/// a crash can leave behind and which have no `file_managed` row, so the
+/// access check would otherwise treat them as unmanaged files anyone may fetch.
+pub(crate) fn is_original_upload_path(path: &str) -> bool {
+    path.split('/').next() != Some("styles")
+        && path
+            .split('/')
+            .all(|c| !c.is_empty() && c != "." && !is_working_name(c))
+}
+
+/// One of Trovato's own working file names (see [`is_original_upload_path`]).
+fn is_working_name(c: &str) -> bool {
+    c.starts_with(".trovato-write-check-") || (c.starts_with('.') && c.contains(".trovato-tmp-"))
 }
 
 /// Get file info.
@@ -489,6 +502,16 @@ mod tests {
         assert!(is_original_upload_path("photo.jpg"));
         assert!(is_original_upload_path("file..name.txt"));
         assert!(is_original_upload_path("stylesheet/notes.txt"));
+    }
+
+    #[test]
+    fn original_upload_path_rejects_trovato_working_names() {
+        assert!(!is_original_upload_path(".trovato-write-check-0197"));
+        assert!(!is_original_upload_path(
+            "2026/11/.a_b.jpg.trovato-tmp-0197"
+        ));
+        assert!(is_original_upload_path("2026/11/a_trovato-tmp.jpg"));
+        assert!(is_original_upload_path(".well-known/x.txt"));
     }
 
     #[test]

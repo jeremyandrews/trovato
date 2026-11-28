@@ -201,8 +201,10 @@ pub struct S3FileStorage {
 impl S3FileStorage {
     /// Build a client for `config`, serving under `base_url` (`FILES_URL`).
     ///
-    /// Retries are short (three, within ten seconds): a request is waiting,
-    /// and a store that is down for longer is better reported than hidden.
+    /// Failures are reported quickly: a request gets 5 seconds to connect and
+    /// 30 to finish, and a failed request is retried at most three times while
+    /// less than ten seconds have passed. A request is waiting, and a store that
+    /// is down for longer is better reported than hidden.
     pub fn new(config: &S3Config, base_url: impl Into<String>) -> Result<Self> {
         use object_store::aws::AmazonS3Builder;
         use object_store::{BackoffConfig, ClientOptions, RetryConfig};

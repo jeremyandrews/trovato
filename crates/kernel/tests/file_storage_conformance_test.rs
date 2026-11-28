@@ -80,7 +80,7 @@ fn s3_storage(config: &S3Config) -> Arc<dyn FileStorage> {
 
 /// Bytes with every byte value, NUL included, longer than one read buffer.
 fn awkward_bytes() -> Vec<u8> {
-    (0..300_000u32).map(|i| (i % 251) as u8).collect()
+    (0..300_000u32).map(|i| (i % 256) as u8).collect()
 }
 
 /// The contract every backend keeps.
@@ -226,9 +226,61 @@ async fn s3_check_refuses_a_missing_bucket_by_name() {
             !err.contains(&secret),
             "the error must not carry the secret"
         );
+        let debug = format!("{:?}", S3FileStorage::new(&config, "/files").unwrap());
+        assert!(!debug.contains(&secret), "{debug}");
     }
     let debug = format!("{:?}", S3FileStorage::new(&config, "/files").unwrap());
     assert!(!debug.contains("secret"), "{debug}");
+}
+
+/// A store that keeps other bytes than it was given: every copy must fail its
+/// read-back checksum and none be counted copied.
+struct Corrupting(LocalFileStorage);
+
+#[async_trait::async_trait]
+impl FileStorage for Corrupting {
+    async fn write(&self, uri: &str, data: &[u8]) -> anyhow::Result<()> {
+        let mut bad = data.to_vec();
+        bad.push(0);
+        self.0.write(uri, &bad).await
+    }
+    async fn read(&self, uri: &str) -> anyhow::Result<Vec<u8>> {
+        self.0.read(uri).await
+    }
+    async fn delete(&self, uri: &str) -> anyhow::Result<()> {
+        self.0.delete(uri).await
+    }
+    async fn exists(&self, uri: &str) -> anyhow::Result<bool> {
+        self.0.exists(uri).await
+    }
+    fn public_url(&self, uri: &str) -> String {
+        self.0.public_url(uri)
+    }
+    fn scheme(&self) -> &'static str {
+        "local"
+    }
+    async fn check_usable(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn describe(&self) -> String {
+        "corrupting".into()
+    }
+}
+
+#[tokio::test]
+async fn migration_reports_a_copy_whose_read_back_differs() {
+    let src = TempDir::new("migrate-corrupt");
+    let outside = TempDir::new("migrate-outside");
+    let dest = TempDir::new("migrate-dest");
+    let files = uploads_tree(&src.0, &outside.0.join("secret.txt"));
+    let store = Arc::new(Corrupting(LocalFileStorage::new(&dest.0, "/files")));
+    let report = copy_dir_to_storage(&src.0, store, 2).await.unwrap();
+    assert_eq!(report.copied, 0, "{report:?}");
+    assert_eq!(report.failed.len(), files.len(), "{report:?}");
+    assert!(
+        report.failed.iter().all(|(_, why)| why.contains("SHA-256")),
+        "{report:?}"
+    );
 }
 
 /// A tree of files to migrate: nested directories, an image derivative, a
@@ -266,6 +318,9 @@ fn uploads_tree(root: &Path, outside: &Path) -> Vec<(String, Vec<u8>)> {
     std::fs::write(outside, b"must never be copied").unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(outside, root.join("2026/link.txt")).unwrap();
+    // A link to a directory outside: its files must not be walked into.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.parent().unwrap(), root.join("2026/linkdir")).unwrap();
     files
 }
 
@@ -291,6 +346,7 @@ async fn migration_copies_everything_once(dest: Arc<dyn FileStorage>) {
         "local://.trovato-write-check-0197",
         "local://2026/11/.b_photo.jpg.trovato-tmp-0197",
         "local://2026/link.txt",
+        "local://2026/linkdir/secret.txt",
     ] {
         assert!(
             !dest.exists(skipped).await.unwrap(),

@@ -51,6 +51,16 @@ fn validate_image_path(path: &str) -> bool {
     true
 }
 
+/// Whether `name` can be an image style's machine name: ASCII letters, digits,
+/// `_` and `-`, nothing else (no `/`, `\`, `.` or `%`).
+fn is_style_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 /// GET /files/styles/{style_name}/{path} — serve or generate image derivative.
 ///
 /// `path` names the original upload (its storage URI after `local://`). Access
@@ -63,7 +73,15 @@ async fn serve_derivative(
 ) -> impl IntoResponse {
     // Invalid paths are 404 like a denied file, so a malformed spelling reveals
     // nothing the plain file route would not.
-    if !validate_image_path(&file_path) || !validate_image_path(&style_name) {
+    // The style is one machine name, never a path: axum decodes `%2F` in the
+    // segment, and a style of `w400/2026/11` would read a private original's
+    // real derivative while the access check ran on a path with no file. The
+    // original is held to the `/files/` route's own rules, so it can never be
+    // another derivative (`styles/...`) or one of Trovato's working files.
+    if !validate_image_path(&file_path)
+        || !crate::routes::file::is_original_upload_path(&file_path)
+        || !is_style_name(&style_name)
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
 
@@ -249,6 +267,24 @@ fn guess_content_type(path: &str) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn style_names_are_machine_names_never_paths() {
+        for ok in ["w400", "thumbnail", "large_2x", "hero-wide"] {
+            assert!(is_style_name(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "w400/2026/11",
+            "w400\\x",
+            "..",
+            "w400.jpg",
+            "w%2F",
+            &"a".repeat(65),
+        ] {
+            assert!(!is_style_name(bad), "{bad:?}");
+        }
+    }
 
     #[test]
     fn content_type_guessing() {
