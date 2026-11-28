@@ -179,6 +179,9 @@ it does now.
   statements, which pins every RDS Proxy connection to one client and removes
   the multiplexing it is paid for. `trovato migrate` connects to RDS directly
   either way, because its lock is a session-level `pg_advisory_lock`.
+- **Maintenance windows in Italian daytime** (RDS and ElastiCache, Tuesday
+  10:00 to 11:00 Europe/Rome), so a patch failover that runs long pages during
+  the day.
 - **Parameters.** A parameter group with `rds.force_ssl = 1`,
   `log_min_duration_statement = 1000`, `idle_in_transaction_session_timeout =
   60000`, `statement_timeout = 0` (Trovato sets its own per statement) and
@@ -260,7 +263,9 @@ directory, so single server and self hosted installs work exactly as before.
   `UPLOADS_DIR` (or `--from`) into the configured bucket under the same key,
   `--parallel` at a time. Each copy is read back and compared by SHA-256; a file
   the bucket already holds with the same SHA-256 is skipped, so an interrupted
-  or partly failed run is finished by running it again. Symbolic links are not
+  or partly failed run is finished by running it again (with writes stopped:
+  a rerun after the switch would bring back files deleted since, with no
+  row, and so public). Symbolic links are not
   followed (one could name a file outside the directory), and Trovato's own
   sentinel and temporary files are skipped. Nothing is deleted on either side:
   the directory stays as the way back. Exits nonzero, listing each file, if
@@ -467,7 +472,9 @@ store.
 **Page now** (Pushover emergency priority: repeats until acknowledged):
 
 1. Writes failing: the availability SLO burning at 14.4 times over an hour and
-   five minutes (2% of the month's budget in an hour), or the external check
+   five minutes (2% of the month's budget in an hour) and at least 20 failed
+   requests in that hour (so a handful of failures among the few writes of a
+   night is a morning item), or the external check
    of `/health/ready` failing from two locations for 10 minutes, checked both
    through Cloudflare and at the origin directly: a failure through Cloudflare
    alone is Cloudflare's outage, which no one here can fix, and is a morning
@@ -478,8 +485,12 @@ store.
    maximum. (Uploads failing count toward rule 1: they are writes.)
 3. Backups failing: no new AWS Backup recovery point in 48 hours (two missed
    days, not one late job), or point in time recovery disabled.
-4. Certificate or DNS: trovato.blog not resolving, or its TLS handshake
-   failing, from the external checker for 10 minutes.
+4. Certificate or DNS: trovato.blog not resolving, or the origin's TLS
+   handshake failing, from the external checker for 10 minutes. A failure
+   seen through Cloudflare only (its DNS or edge certificate) is a morning
+   item with a status page note, as in rule 1. The origin check needs the
+   checker's probe addresses allowed through the load balancer's
+   Cloudflare-only rule, or a header the rule accepts (part 2).
 5. Security: root sign-in, a new IAM user or access key, a policy change by
    any principal other than the CI apply role and Identity Center's own
    provisioning (their changes are expected, and are morning items), a

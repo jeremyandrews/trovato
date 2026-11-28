@@ -306,7 +306,9 @@ fn a_public_file_is_served_with_cdn_friendly_headers() {
 }
 
 /// The object itself cannot be fetched from the store without credentials:
-/// the only way to a file is Trovato's route and its access check.
+/// the only way to a file is Trovato's route and its access check. This checks
+/// the deployment (the store's policy), not Trovato's code: on AWS the same
+/// holds by Block Public Access and the bucket policy (part 2).
 #[test]
 fn the_bucket_does_not_answer_an_unsigned_request() {
     run_test(async {
@@ -425,6 +427,12 @@ fn a_private_derivative_is_not_reached_by_spelling_tricks() {
 
         let (dir, file) = path.rsplit_once('/').unwrap();
         let encoded_dir = dir.replace('/', "%2F");
+        // An unmanaged object at the root named like the file: with the style
+        // decoded to `w8/<dir>`, the access check would run on this (no row,
+        // stored, so allowed) while the read reached the private original's real
+        // derivative.
+        let decoy = format!("local://{file}");
+        other_server(f).write(&decoy, &png_bytes()).await.unwrap();
         for url in [
             format!("/files/styles/w8%2F{encoded_dir}/{file}"),
             format!("/files/styles/w8/styles/w8/{path}"),
@@ -433,6 +441,7 @@ fn a_private_derivative_is_not_reached_by_spelling_tricks() {
             let resp = get(&f.app, &url, None).await;
             assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{url} must be 404");
         }
+        other_server(f).delete(&decoy).await.unwrap();
     });
 }
 
@@ -506,5 +515,95 @@ fn a_deleted_images_derivative_is_not_served() {
             "anonymous must get 404"
         );
         other_server(f).delete(&derivative).await.unwrap();
+    });
+}
+
+/// A key the bucket does not hold is 404, not a store failure: not found is
+/// recognised from the S3 client's answer.
+#[test]
+fn a_missing_object_is_404_not_500() {
+    run_test(async {
+        let Some(f) = fixture() else { return };
+        let path = format!("2026/11/{}_missing.txt", Uuid::now_v7().simple());
+        let resp = get(&f.app, &format!("/files/{path}"), None).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    });
+}
+
+/// A store that holds files but refuses to delete them, as S3 does on a
+/// timeout or a missing permission.
+struct NoDelete(trovato_kernel::file::LocalFileStorage);
+
+#[async_trait::async_trait]
+impl FileStorage for NoDelete {
+    async fn write(&self, uri: &str, data: &[u8]) -> anyhow::Result<()> {
+        self.0.write(uri, data).await
+    }
+    async fn read(&self, uri: &str) -> anyhow::Result<Vec<u8>> {
+        self.0.read(uri).await
+    }
+    async fn delete(&self, _uri: &str) -> anyhow::Result<()> {
+        anyhow::bail!("access denied")
+    }
+    async fn exists(&self, uri: &str) -> anyhow::Result<bool> {
+        self.0.exists(uri).await
+    }
+    fn public_url(&self, uri: &str) -> String {
+        self.0.public_url(uri)
+    }
+    fn scheme(&self) -> &'static str {
+        "local"
+    }
+    async fn check_usable(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn describe(&self) -> String {
+        "no-delete".into()
+    }
+}
+
+/// When the bytes cannot be deleted, the row stays: an object left with no row
+/// would be served to anyone as an unmanaged file. Needs only Postgres.
+#[test]
+fn a_file_whose_bytes_cannot_be_deleted_keeps_its_row() {
+    run_test(async {
+        let app = common::shared_app().await;
+        let dir =
+            std::env::temp_dir().join(format!("trovato-nodelete-{}", Uuid::now_v7().simple()));
+        let files = trovato_kernel::file::FileService::new(
+            app.db.clone(),
+            std::sync::Arc::new(NoDelete(trovato_kernel::file::LocalFileStorage::new(
+                &dir, "/files",
+            ))),
+        );
+        let owner = create_user(app).await;
+        let name = format!("kept-{}.txt", Uuid::now_v7().simple());
+        let up = files
+            .upload(owner, &name, "text/plain", BODY)
+            .await
+            .unwrap();
+
+        assert!(
+            files.delete(up.id).await.is_err(),
+            "the failure is reported"
+        );
+        assert!(files.get(up.id).await.unwrap().is_some(), "the row is kept");
+
+        sqlx::query("UPDATE file_managed SET created = 0 WHERE id = $1")
+            .bind(up.id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        files.cleanup_temp_files(1).await.unwrap();
+        assert!(
+            files.get(up.id).await.unwrap().is_some(),
+            "temp file cleanup keeps the row too"
+        );
+        sqlx::query("DELETE FROM file_managed WHERE id = $1")
+            .bind(up.id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     });
 }

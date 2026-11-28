@@ -835,11 +835,14 @@ impl FileService {
             return Ok(false);
         };
 
-        // Delete from storage
-        if let Err(e) = self.storage.delete(&file.uri).await {
-            warn!(error = %e, uri = %file.uri, "failed to delete file from storage");
-            // Continue to delete database record anyway
-        }
+        // Storage first, and the row only once the bytes are gone: a row kept
+        // keeps the access check, where an object left with no row would be
+        // served to anyone as an unmanaged file. A file already missing from
+        // the store deletes cleanly (both backends treat that as success).
+        self.storage
+            .delete(&file.uri)
+            .await
+            .with_context(|| format!("failed to delete {} from storage", file.uri))?;
 
         // Delete database record
         let result = sqlx::query("DELETE FROM file_managed WHERE id = $1")
@@ -875,9 +878,11 @@ impl FileService {
         let count = files.len() as u64;
 
         for file in files {
-            // Delete from storage
+            // Keep the row (and the access check) when the bytes could not be
+            // deleted; the next run tries again.
             if let Err(e) = self.storage.delete(&file.uri).await {
-                warn!(error = %e, uri = %file.uri, "failed to delete temp file from storage");
+                warn!(error = %format!("{e:#}"), uri = %file.uri, "failed to delete temp file from storage");
+                continue;
             }
 
             // Delete database record

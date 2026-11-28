@@ -274,18 +274,22 @@ every command. The design is in
 [`docs/design/production-hosting.md`](design/production-hosting.md), decision 5.
 
 - **Same URIs.** A file's URI is `local://<key>` with either store, so nothing
-  in the database changes: once the copy is done, set `FILE_STORAGE=s3` on
-  every server and restart them, then run the command once more (with the
-  directory still mounted, or `--from` pointing at it) to copy anything
-  uploaded between the first copy and the restart. Run it promptly: it
-  replaces a bucket object whose bytes differ from the local file, so a file
-  changed through the servers after the switch would be put back.
+  in the database changes.
+- **Procedure.** Stop writes first (scale the servers to zero, or put the site
+  in maintenance; readers behind a CDN keep being served from its cache), run
+  the command into an empty bucket or prefix, then set `FILE_STORAGE=s3` on
+  every server and start them. A warm-up run while the site is live is safe
+  only if no file is deleted before the final run: a file deleted after a run
+  stays in the bucket with no record, and is then served to anyone as an
+  unmanaged file. Never run it after the switch.
 - **Checked.** Each copy is read back from the bucket and compared with the
   local file by SHA-256; a mismatch is a failure.
 - **Resumable.** A file the bucket already holds with the same SHA-256 is
   skipped and counted as already there, so an interrupted run, or one that
-  failed on some files, is finished by running it again. A file the bucket
-  holds with other bytes is copied again.
+  failed on some files, is finished by running it again (while writes are
+  still stopped). A file the bucket holds with other bytes is copied again.
+  Every check downloads the object to compare, so a rerun over a large bucket
+  takes as long as reading it back.
 - **Nothing deleted.** Neither side loses a file. Keep the directory until the
   servers have run on the bucket for a while: it is the way back
   (`FILE_STORAGE=local`).

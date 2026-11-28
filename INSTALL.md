@@ -72,8 +72,8 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `FILES_URL` | `/files` | Base URL that uploaded files are served under |
 | `FILE_STORAGE` | `local` | Where uploads are kept: `local` (the `UPLOADS_DIR` directory) or `s3` (an S3 compatible bucket, below). Any other value refuses to start. |
 | `S3_BUCKET` | none | The bucket, required with `FILE_STORAGE=s3`. The server checks at startup that it can write, read and delete an object there. |
-| `S3_REGION` | `AWS_REGION`, else `us-east-1` | The bucket's region. |
-| `S3_ENDPOINT` | AWS | A non-AWS S3 compatible store, for example `http://127.0.0.1:9000` for MinIO. When unset, the standard `AWS_ENDPOINT_URL_S3` or `AWS_ENDPOINT`, if set, is used. |
+| `S3_REGION` | `AWS_REGION` or `AWS_DEFAULT_REGION`, else `us-east-1` | The bucket's region. |
+| `S3_ENDPOINT` | AWS | A non-AWS S3 compatible store, for example `http://127.0.0.1:9000` for MinIO. The standard `AWS_ENDPOINT_URL_S3`, if set, overrides it; `AWS_ENDPOINT` is used when neither is set. |
 | `S3_PREFIX` | none | A key prefix, for a bucket shared with other data or other sites. |
 | `S3_ALLOW_HTTP` | `false` | Allow a plain `http://` endpoint (a local MinIO only). |
 | `TEMPLATES_DIR` | `./templates` | Tera template search path. Several directories may be given, separated by `:`; later ones override templates of the same name. |
@@ -118,8 +118,10 @@ IRSA role, the instance role, or `AWS_ACCESS_KEY_ID` and
 `AWS_SECRET_ACCESS_KEY` for a self hosted store such as MinIO). To move an
 existing site's files into a bucket, run `trovato files migrate-to-s3` (see
 [docs/cli-reference.md](docs/cli-reference.md#trovato-files-migrate-to-s3)),
-then switch `FILE_STORAGE`, restart, and run it once more, promptly, to catch uploads
-made in between.
+with writes stopped (servers scaled to zero, or the site in maintenance) and into an
+empty bucket or prefix, then switch `FILE_STORAGE` and start the servers. Never
+run it again after the switch: a file deleted since would be copied back with no
+record, and be served to anyone as an unmanaged file.
 
 The kernel answers `/files/` with the type stored when the upload was validated
 and `X-Content-Type-Options: nosniff`; a proxy must pass `Content-Type` through
