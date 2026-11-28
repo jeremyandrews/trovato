@@ -156,7 +156,12 @@ impl RegistrationMode {
 ///
 /// Every other key renders on every page (the front page path, a feature
 /// flag read while building chrome, and so on), so it purges `site`.
-fn purge_for_key(key: &str) {
+///
+/// `pub(crate)` so a caller that writes through [`SiteConfig::set_in`] on its
+/// own transaction (one that must purge only after its own commit, as
+/// [`crate::timer::save_settings_recorded`] does) can call this directly
+/// rather than duplicate the same exclusion rule.
+pub(crate) fn purge_for_key(key: &str) {
     if key.starts_with("plugin.") || crate::config_storage::RUNTIME_STATE_KEYS.contains(&key) {
         return;
     }
@@ -211,6 +216,22 @@ impl SiteConfig {
 
     /// Set a configuration value (default tenant).
     pub async fn set(pool: &PgPool, key: &str, value: serde_json::Value) -> Result<()> {
+        Self::set_in(pool, key, value).await?;
+        // Every server drops its in-memory site config (the front page path).
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
+        purge_for_key(key);
+
+        Ok(())
+    }
+
+    /// [`Self::set`] on `executor` (a transaction the caller commits),
+    /// without telling the other servers: the caller bumps
+    /// `CacheKind::SiteConfig` once the write has committed.
+    pub(crate) async fn set_in<'e, E: sqlx::PgExecutor<'e>>(
+        executor: E,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<()> {
         sqlx::query(
             r#"
             INSERT INTO site_config (key, value, updated)
@@ -220,12 +241,9 @@ impl SiteConfig {
         )
         .bind(key)
         .bind(value)
-        .execute(pool)
+        .execute(executor)
         .await
         .context("failed to set site config")?;
-        // Every server drops its in-memory site config (the front page path).
-        crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
-        purge_for_key(key);
 
         Ok(())
     }

@@ -495,6 +495,10 @@ pub struct Config {
     /// Base URL for serving uploaded files (default: /files).
     pub files_url: String,
 
+    /// Where uploaded files are stored: `FILE_STORAGE=local` (the default,
+    /// `UPLOADS_DIR`) or `FILE_STORAGE=s3` with the `S3_*` settings.
+    pub file_storage: crate::file::StorageConfig,
+
     /// CORS allowed origins (comma-separated, default: "*").
     pub cors_allowed_origins: Vec<String>,
 
@@ -827,6 +831,8 @@ impl Config {
 
         let files_url = get("FILES_URL").unwrap_or_else(|| "/files".to_string());
 
+        let file_storage = file_storage_from(get)?;
+
         // Note the empty default: no configured origins means no cross-origin
         // allowance, which `build_cors_layer` turns into a same-origin policy.
         let cors_allowed_origins = settings.csv("CORS_ALLOWED_ORIGINS", &[]);
@@ -987,6 +993,7 @@ impl Config {
             plugins_dirs,
             uploads_dir,
             files_url,
+            file_storage,
             cors_allowed_origins,
             cookie_same_site,
             disabled_plugins,
@@ -1024,6 +1031,43 @@ impl Config {
             username_set: self.smtp_username.as_deref().is_some_and(|u| !u.is_empty()),
             password_set: self.smtp_password.as_deref().is_some_and(|p| !p.is_empty()),
         }
+    }
+}
+
+/// `FILE_STORAGE` and, for `s3`, the `S3_*` settings.
+///
+/// Unset or `local` keeps files in `UPLOADS_DIR`. `s3` requires `S3_BUCKET`;
+/// any other value is refused, because a typo silently falling back to a
+/// local directory would store uploads on one server's disk.
+fn file_storage_from(get: Lookup<'_>) -> Result<crate::file::StorageConfig> {
+    use crate::file::{S3Config, StorageConfig};
+    let set = |name: &str| {
+        get(name)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    match set("FILE_STORAGE")
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        None | Some("local") => Ok(StorageConfig::Local),
+        Some("s3") => {
+            let bucket = set("S3_BUCKET").context("FILE_STORAGE=s3 requires S3_BUCKET")?;
+            let allow_http = match set("S3_ALLOW_HTTP").as_deref() {
+                None | Some("false" | "0") => false,
+                Some("true" | "1") => true,
+                Some(other) => anyhow::bail!("S3_ALLOW_HTTP must be true or false, not {other:?}"),
+            };
+            Ok(StorageConfig::S3(S3Config {
+                bucket,
+                region: set("S3_REGION"),
+                endpoint: set("S3_ENDPOINT"),
+                prefix: set("S3_PREFIX"),
+                allow_http,
+            }))
+        }
+        Some(other) => anyhow::bail!("FILE_STORAGE must be local or s3, not {other:?}"),
     }
 }
 
@@ -1246,6 +1290,67 @@ mod config_tests {
             PathBuf::from("/shared/pagefind")
         );
         assert_eq!(config.runtime.static_dirs, vec![PathBuf::from("./static")]);
+    }
+
+    /// BG16: files stay in `UPLOADS_DIR` unless `FILE_STORAGE=s3` says
+    /// otherwise, and a store that cannot be what was meant refuses to start.
+    #[test]
+    fn file_storage_defaults_to_local_and_reads_the_s3_settings() {
+        use crate::file::{S3Config, StorageConfig};
+        assert_eq!(with_db(&[]).file_storage, StorageConfig::Local);
+        assert_eq!(
+            with_db(&[("FILE_STORAGE", "local")]).file_storage,
+            StorageConfig::Local
+        );
+        let config = with_db(&[
+            ("FILE_STORAGE", "S3"),
+            ("S3_BUCKET", "trovato-files"),
+            ("S3_REGION", "eu-central-1"),
+            ("S3_ENDPOINT", "http://127.0.0.1:9000"),
+            ("S3_PREFIX", "site-a"),
+            ("S3_ALLOW_HTTP", "true"),
+        ]);
+        assert_eq!(
+            config.file_storage,
+            StorageConfig::S3(S3Config {
+                bucket: "trovato-files".into(),
+                region: Some("eu-central-1".into()),
+                endpoint: Some("http://127.0.0.1:9000".into()),
+                prefix: Some("site-a".into()),
+                allow_http: true,
+            })
+        );
+        let bare = with_db(&[("FILE_STORAGE", "s3"), ("S3_BUCKET", "b")]);
+        assert_eq!(
+            bare.file_storage,
+            StorageConfig::S3(S3Config {
+                bucket: "b".into(),
+                region: None,
+                endpoint: None,
+                prefix: None,
+                allow_http: false,
+            })
+        );
+    }
+
+    #[test]
+    fn file_storage_refuses_what_it_cannot_honour() {
+        let db = ("DATABASE_URL", "postgres://localhost/x");
+        let err = |pairs: &[(&str, &str)]| {
+            let mut all = vec![db];
+            all.extend_from_slice(pairs);
+            format!("{:#}", config_from(&all).expect_err("must refuse"))
+        };
+        assert!(err(&[("FILE_STORAGE", "s3")]).contains("S3_BUCKET"));
+        assert!(err(&[("FILE_STORAGE", "s33")]).contains("FILE_STORAGE"));
+        assert!(
+            err(&[
+                ("FILE_STORAGE", "s3"),
+                ("S3_BUCKET", "b"),
+                ("S3_ALLOW_HTTP", "yes")
+            ])
+            .contains("S3_ALLOW_HTTP")
+        );
     }
 
     #[test]

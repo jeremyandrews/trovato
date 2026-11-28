@@ -20,7 +20,7 @@ use crate::config_storage::{ConfigStorage, DirectConfigStorage};
 use crate::content::{ContentTypeRegistry, ItemService, RecordTypeRegistry};
 use crate::cron::CronService;
 use crate::db;
-use crate::file::{FileService, LocalFileStorage};
+use crate::file::FileService;
 use crate::form::FormService;
 use crate::gather::{
     CategoryService, GatherExtensionDeclaration, GatherExtensionRegistry, GatherService,
@@ -408,10 +408,11 @@ impl AppState {
         // Create config storage
         // File service with local storage. Created here because config storage
         // stores the bytes of `file` config entities through it.
-        let file_storage = Arc::new(LocalFileStorage::new(
+        let file_storage = crate::file::build_storage(
+            &config.file_storage,
             &config.uploads_dir,
             &config.files_url,
-        ));
+        )?;
         let files = Arc::new(FileService::new(db.clone(), file_storage));
 
         let config_storage: Arc<dyn ConfigStorage> =

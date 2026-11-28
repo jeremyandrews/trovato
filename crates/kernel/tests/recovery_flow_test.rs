@@ -869,3 +869,95 @@ fn a_recovery_step_without_the_pages_token_is_refused() {
         );
     });
 }
+
+/// A recovery whose `recovery.completed` cannot be written does not complete:
+/// its stored change is the new password, which commits with the event or not
+/// at all, and the answer is not a success.
+///
+/// The event used to be written after the password had committed, the
+/// sessions ended and the new session made, and a failed write was only
+/// logged: the account was recovered with nothing in the log saying so.
+#[test]
+fn a_recovery_whose_completed_event_fails_keeps_the_old_password() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.read().await);
+        let username = common::username("rec_refused");
+        let ip = ip_for(&username);
+        let (user_id, codes) = user_with_recovery_codes(app, &username).await;
+        reset_recovery_limits(app, &ip, user_id).await;
+
+        let (mut flow, start) = start_recovery(app, &username, &ip).await;
+        assert_eq!(start.status(), StatusCode::OK);
+        let choose = flow
+            .post(
+                app,
+                "/user/recover/choose",
+                serde_json::json!({ "method_id": "trovato_recovery_codes:code" }).to_string(),
+            )
+            .await;
+        assert_eq!(choose.status(), StatusCode::OK);
+        let verify = flow
+            .post(
+                app,
+                "/user/recover/verify",
+                serde_json::json!({ "response": codes[0] }).to_string(),
+            )
+            .await;
+        assert_eq!(verify.status(), StatusCode::OK);
+
+        // Only this account's `recovery.completed` is refused.
+        let name = format!("rec_refuse_{}", uuid::Uuid::now_v7().simple());
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN RAISE EXCEPTION 'security event refused by the test'; END $$"
+        )))
+        .execute(&app.db)
+        .await
+        .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE TRIGGER {name} BEFORE INSERT ON security_audit_log FOR EACH ROW \
+             WHEN (NEW.kind = 'recovery.completed' AND NEW.user_id = '{user_id}') \
+             EXECUTE FUNCTION {name}()"
+        )))
+        .execute(&app.db)
+        .await
+        .unwrap();
+        let db = app.db.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP TRIGGER IF EXISTS {name} ON security_audit_log"
+            )))
+            .execute(&db)
+            .await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP FUNCTION IF EXISTS {name}()"
+            )))
+            .execute(&db)
+            .await;
+        });
+
+        let reset = flow
+            .post(
+                app,
+                "/user/recover/reset",
+                serde_json::json!({ "new_password": "brand-new-password-1" }).to_string(),
+            )
+            .await;
+
+        assert!(
+            !reset.status().is_success(),
+            "a recovery whose event failed answered {}",
+            reset.status()
+        );
+        let user = trovato_kernel::models::User::find_by_id(&app.db, user_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            user.verify_password("test-password-123"),
+            "the password changed with no recovery.completed event"
+        );
+        assert!(!user.verify_password("brand-new-password-1"));
+    });
+}

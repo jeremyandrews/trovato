@@ -202,6 +202,11 @@ image = "0.25"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 jsonwebtoken = "9"
 reqwest = { version = "0.12", features = ["json", "stream"] }
+# S3 compatible object storage for uploads (BG16, docs/design/production-hosting.md).
+# `ring` rather than the default aws-lc-rs: ring is already in the tree, aws-lc
+# would add a C build. TLS comes from reqwest 0.13 with native-tls, which the
+# kernel already enables for OTLP export.
+object_store = { version = "0.14", default-features = false, features = ["aws-base", "reqwest", "ring"] }
 hmac = "0.12"
 aes-gcm = "0.10"
 hkdf = "0.12"

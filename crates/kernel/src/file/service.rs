@@ -262,6 +262,25 @@ impl FileService {
         self.storage.local_dir()
     }
 
+    /// Whether `uri`, which has no `file_managed` row of its own, may still
+    /// name a managed file in this store: on a directory, when a row's URI
+    /// differs from it only in letter case. A case-insensitive file system
+    /// (macOS, Windows) reads both spellings as the same file, so the other
+    /// spelling must get that file's access check, never be served as an
+    /// unmanaged file. An object store's keys are exact, so there it never does.
+    pub async fn is_other_spelling_of_managed(&self, uri: &str) -> Result<bool> {
+        if self.storage.local_dir().is_none() {
+            return Ok(false);
+        }
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM file_managed WHERE lower(uri) = lower($1) AND uri <> $1)",
+        )
+        .bind(uri)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to look up other spellings of a file")
+    }
+
     /// Upload a file (default tenant — no tenant prefix in URI).
     ///
     /// Validates size and MIME type, stores the file, and creates a database record.
@@ -361,6 +380,7 @@ impl FileService {
                 .await
                 .context("failed to look up file")?;
 
+        let is_new = existing.is_none();
         let (uri, bytes_changed) = match existing {
             Some(uri) => {
                 let changed = match self.storage.read(&uri).await {
@@ -384,7 +404,7 @@ impl FileService {
 
         let now = chrono::Utc::now().timestamp();
         let alt_text = file.alt_text.map(|t| t.trim().to_string());
-        sqlx::query(
+        let written = sqlx::query(
             r#"
             INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)
@@ -413,8 +433,16 @@ impl FileService {
         .bind(alt_text)
         .bind(bytes_changed)
         .execute(&self.pool)
-        .await
-        .context("failed to write file record")?;
+        .await;
+        if let Err(e) = written {
+            // New bytes with no row would be served to anyone as an unmanaged
+            // file: take them back out. (A failure here leaves an object under
+            // an unguessable new name, and is logged.)
+            if is_new && let Err(cleanup) = self.storage.delete(&uri).await {
+                warn!(error = %format!("{cleanup:#}"), uri = %uri, "failed to remove the bytes of an upload whose record was not written");
+            }
+            return Err(anyhow::Error::new(e).context("failed to write file record"));
+        }
 
         let url = self.storage.public_url(&uri);
 
@@ -463,9 +491,12 @@ impl FileService {
         let unique_id = Uuid::now_v7().simple().to_string();
         let safe_name = sanitize_filename(filename);
 
+        // Every backend keys files as `local://<key>` (`file/storage.rs`): the
+        // scheme names the site's file store, not the medium, so a site that
+        // moves from a directory to a bucket keeps every URI.
         match self.storage.scheme() {
-            scheme @ "local" => Ok(build_storage_uri(
-                scheme,
+            "local" | "s3" => Ok(build_storage_uri(
+                "local",
                 &tenant_prefix,
                 now,
                 &unique_id,
@@ -832,11 +863,14 @@ impl FileService {
             return Ok(false);
         };
 
-        // Delete from storage
-        if let Err(e) = self.storage.delete(&file.uri).await {
-            warn!(error = %e, uri = %file.uri, "failed to delete file from storage");
-            // Continue to delete database record anyway
-        }
+        // Storage first, and the row only once the bytes are gone: a row kept
+        // keeps the access check, where an object left with no row would be
+        // served to anyone as an unmanaged file. A file already missing from
+        // the store deletes cleanly (both backends treat that as success).
+        self.storage
+            .delete(&file.uri)
+            .await
+            .with_context(|| format!("failed to delete {} from storage", file.uri))?;
 
         // Delete database record
         let result = sqlx::query("DELETE FROM file_managed WHERE id = $1")
@@ -869,12 +903,14 @@ impl FileService {
         .await
         .context("failed to fetch temp files")?;
 
-        let count = files.len() as u64;
+        let mut count = 0u64;
 
         for file in files {
-            // Delete from storage
+            // Keep the row (and the access check) when the bytes could not be
+            // deleted; the next run tries again.
             if let Err(e) = self.storage.delete(&file.uri).await {
-                warn!(error = %e, uri = %file.uri, "failed to delete temp file from storage");
+                warn!(error = %format!("{e:#}"), uri = %file.uri, "failed to delete temp file from storage");
+                continue;
             }
 
             // Delete database record
@@ -884,6 +920,8 @@ impl FileService {
                 .await
             {
                 warn!(error = %e, id = %file.id, "failed to delete temp file record");
+            } else {
+                count += 1;
             }
         }
 
@@ -903,14 +941,8 @@ impl FileService {
     pub async fn load_file_data(&self, path: &str) -> Result<Option<Vec<u8>>> {
         match self.storage.read(path).await {
             Ok(data) => Ok(Some(data)),
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("not found") || msg.contains("No such file") {
-                    Ok(None)
-                } else {
-                    Err(e)
-                }
-            }
+            Err(e) if super::storage::is_not_found(&e) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 }

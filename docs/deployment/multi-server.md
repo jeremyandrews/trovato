@@ -11,12 +11,13 @@ sticky sessions. A single server needs none of this and none of its settings.
 |---|---|---|
 | One Postgres | All content, configuration, users, plugin status and the cron lock | `DATABASE_URL`, the same on every server |
 | One Redis | Sessions, rate limit counters, the shared cache, queues, cron locks and the cache generations | `REDIS_URL`, the same on every server |
-| One shared directory | Uploads and their image derivatives, and the Pagefind index | `UPLOADS_DIR` and `PAGEFIND_OUTPUT_DIR` pointing into it |
+| One file store | Uploads and their image derivatives | `UPLOADS_DIR` on the shared directory, or an S3 bucket: `FILE_STORAGE=s3` and the `S3_*` settings, the same on every server |
+| One shared directory | The Pagefind index, and uploads when they are not in a bucket | `PAGEFIND_OUTPUT_DIR` (and `UPLOADS_DIR`) pointing into it |
 
 The shared directory is a filesystem every server mounts read-write: a
 Kubernetes `PersistentVolumeClaim` with access mode `ReadWriteMany`, an NFS
-export, or Amazon EFS. Object storage is not supported. Mount the volume one
-level above the directories Trovato writes, for example at `/shared`, and set:
+export, or Amazon EFS. Mount the volume one level above the directories
+Trovato writes, for example at `/shared`, and set:
 
 ```sh
 UPLOADS_DIR=/shared/uploads
@@ -27,6 +28,30 @@ Each server checks the uploads directory when it starts: it writes, reads back
 and deletes a uniquely named file there, and refuses to start, naming the
 directory, if it cannot. A broken mount fails the deploy, not the first
 upload.
+
+### Uploads in an S3 bucket
+
+Instead of the shared directory, uploads and their image derivatives can live
+in any S3 compatible bucket (AWS S3, MinIO, or another provider's S3 API):
+
+```sh
+FILE_STORAGE=s3
+S3_BUCKET=example-files
+S3_REGION=eu-south-1
+# S3_ENDPOINT=http://minio:9000 and S3_ALLOW_HTTP=true for a local MinIO
+```
+
+Every server reads and writes the same objects, so a derivative one server
+made is served by all of them, and only the Pagefind index still needs the
+shared directory. Files are still served only through the kernel's `/files/`
+routes, which check access first: keep the bucket private. Each server checks
+the bucket when it starts (writes, reads back and deletes a uniquely named
+object). It refuses to start, naming the bucket, on a definite answer (no
+such bucket, access denied, wrong region); a store that does not answer is
+logged and the server starts, so check the status report after a rollout. An existing
+directory is copied in with `trovato files migrate-to-s3`
+([command line reference](../cli-reference.md#trovato-files-migrate-to-s3)).
+The design is [docs/design/production-hosting.md](../design/production-hosting.md).
 
 Each server's built-in cron scheduler (`cron_interval_secs` in site settings,
 default 300 seconds) calls cron on its own cadence, and an external caller to
