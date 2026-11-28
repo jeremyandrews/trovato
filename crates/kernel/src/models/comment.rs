@@ -183,6 +183,25 @@ impl CommentStatus {
 /// Site setting naming the status new comments are created with.
 pub const DEFAULT_STATUS_KEY: &str = "comment_default_status";
 
+/// Site setting saying whether a content author is e-mailed when a comment on
+/// their content becomes visible. Unset means on, which is what every site did
+/// before the setting existed; `false` turns the notice off (a site imported
+/// from one that never mailed its authors).
+pub const NOTIFY_AUTHORS_KEY: &str = "comment_notify_authors";
+
+/// Whether content authors are e-mailed about new comments
+/// ([`NOTIFY_AUTHORS_KEY`]). Read by both notice paths, posting and approval,
+/// through `routes::comment::comment_mail_context`.
+///
+/// Only an explicit `false` turns it off: unset, unreadable or anything else
+/// keeps the behaviour sites had before the setting existed.
+pub async fn notify_authors(pool: &PgPool) -> bool {
+    !matches!(
+        crate::models::SiteConfig::get(pool, NOTIFY_AUTHORS_KEY).await,
+        Ok(Some(serde_json::Value::Bool(false)))
+    )
+}
+
 /// Site setting naming how many approved comments earn an author the queue
 /// bypass. `0` disables the ladder.
 pub const TRUST_THRESHOLD_KEY: &str = "comment_trust_threshold";

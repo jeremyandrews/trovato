@@ -94,6 +94,11 @@ async fn create_item(app: &TestApp) -> Uuid {
 /// bypass makes the outcome this file's own business. The queue behaviour itself
 /// is covered in `comment_moderation_test`, which owns that setting.
 async fn commenter(app: &TestApp) -> String {
+    commenter_with_id(app).await.0
+}
+
+/// [`commenter`], with the account's id.
+async fn commenter_with_id(app: &TestApp) -> (String, Uuid) {
     let name = format!("frontend_{}", Uuid::now_v7().simple());
     let cookies = app
         .create_and_login_user(&name, "test-password-123", &format!("{name}@example.com"))
@@ -127,7 +132,7 @@ async fn commenter(app: &TestApp) -> String {
         .expect("assign role");
     app.state.permissions().invalidate_all();
 
-    cookies
+    (cookies, user_id)
 }
 
 async fn text_of(response: axum::response::Response) -> String {
@@ -451,5 +456,162 @@ fn the_rendered_thread_shows_only_published_comments() {
             !page.contains("Hidden by moderation"),
             "an unpublished comment must not be rendered, page was:\n{page}"
         );
+    });
+}
+
+/// Remove, when the test ends, the commenter `user_id`, their role, and
+/// `item` with any comment on it.
+fn clean_up_on_exit(app: &TestApp, user_id: Uuid, item: Uuid) {
+    let db = app.db.clone();
+    common::defer_cleanup(move || async move {
+        let roles: Vec<Uuid> =
+            sqlx::query_scalar("SELECT role_id FROM user_roles WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_all(&db)
+                .await
+                .unwrap_or_default();
+        sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(item)
+            .execute(&db)
+            .await
+            .expect("delete the item and its comments");
+        for statement in [
+            "DELETE FROM user_roles WHERE user_id = $1",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(user_id)
+                .execute(&db)
+                .await
+                .expect(statement);
+        }
+        for role in roles {
+            for statement in [
+                "DELETE FROM role_permissions WHERE role_id = $1",
+                "DELETE FROM roles WHERE id = $1",
+            ] {
+                sqlx::query(statement)
+                    .bind(role)
+                    .execute(&db)
+                    .await
+                    .expect(statement);
+            }
+        }
+    });
+}
+
+async fn comments_on(app: &TestApp, item: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM comment WHERE item_id = $1")
+        .bind(item)
+        .fetch_one(&app.db)
+        .await
+        .unwrap()
+}
+
+/// B183: Preview shows the comment as it will be posted, through the same
+/// text format and comment markup, above the form still holding the input,
+/// and saves nothing. From the form under the item and from the reply page.
+#[test]
+fn preview_renders_the_comment_above_the_form_and_saves_nothing() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+        let item_id = create_item(app).await;
+        let (cookies, user_id) = commenter_with_id(app).await;
+        clean_up_on_exit(app, user_id, item_id);
+
+        let item_form = item_page(app, &cookies, item_id).await;
+        assert!(
+            item_form.contains(r#"name="preview""#),
+            "the form under the item offers Preview"
+        );
+        let reply_page = {
+            let response = app
+                .request_with_cookies(
+                    Request::get(format!("/comment/reply/{item_id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                    &cookies,
+                )
+                .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            text_of(response).await
+        };
+
+        for (from, page) in [("item page", item_form), ("reply page", reply_page)] {
+            let body = format!(
+                "subject={}&body={}&parent_id=&preview=&{}",
+                urlencode("B183 preview subject"),
+                urlencode("A <em>previewed</em> comment <script>alert(1)</script>"),
+                common::form_fields(&page, "comment_form")
+            );
+            let response = app
+                .request_with_cookies(
+                    Request::post(format!("/api/item/{item_id}/comments"))
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .body(Body::from(body))
+                        .unwrap(),
+                    &cookies,
+                )
+                .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{from}: a preview is a page"
+            );
+            let html = text_of(response).await;
+
+            let preview_at = html
+                .find(r#"class="comment comment--preview""#)
+                .unwrap_or_else(|| panic!("{from}: no preview:\n{html}"));
+            // The form follows the preview: no comment form before it.
+            let form_at = preview_at
+                + html[preview_at..]
+                    .find("<form")
+                    .unwrap_or_else(|| panic!("{from}: no form below the preview"));
+            assert!(
+                !html[..preview_at].contains(r#"name="body""#),
+                "{from}: the preview is above the form"
+            );
+            let preview = &html[preview_at..form_at];
+            assert!(
+                preview.contains("A <em>previewed</em> comment"),
+                "{from}: the body goes through the comment's text format:\n{preview}"
+            );
+            assert!(
+                !preview.contains("<script>"),
+                "{from}: filtered as a posted comment is:\n{preview}"
+            );
+            assert!(
+                preview.contains("B183 preview subject"),
+                "{from}: the subject is shown"
+            );
+            let form = &html[form_at..];
+            assert!(
+                form.contains(r#"value="B183 preview subject""#)
+                    && form.contains("A &lt;em&gt;previewed"),
+                "{from}: the form keeps what was typed, escaped:\n{form}"
+            );
+            assert_eq!(comments_on(app, item_id).await, 0, "{from}: nothing saved");
+        }
+
+        // The same form's own button still posts.
+        let page = item_page(app, &cookies, item_id).await;
+        let body = format!(
+            "body={}&parent_id=&{}",
+            urlencode("Posted after a preview"),
+            common::form_fields(&page, "comment_form")
+        );
+        let response = app
+            .request_with_cookies(
+                Request::post(format!("/api/item/{item_id}/comments"))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(body))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(comments_on(app, item_id).await, 1);
     });
 }
