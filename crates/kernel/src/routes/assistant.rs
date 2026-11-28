@@ -482,7 +482,10 @@ fn proposal_form(conversation: &Conversation) -> crate::form::Form {
 fn reset_form(conversation: &Conversation) -> crate::form::Form {
     crate::form::Form::new(RESET_FORM_ID)
         .action(format!("/api/v1/assistant/{}/reset", conversation.id))
-        .element("start_over", crate::form::FormElement::submit("Start over"))
+        .element(
+            "start_over",
+            crate::form::FormElement::submit("Start over").attribute("class", "assistant__reset"),
+        )
 }
 
 /// The message box. Sending needs the page's script, which posts the message
