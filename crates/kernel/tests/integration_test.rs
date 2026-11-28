@@ -2644,14 +2644,23 @@ fn e2e_admin_delete_file() {
             .create_and_login_admin("admin_files_3", "password123", "files3@test.com")
             .await;
 
-        // Fetch CSRF token from files list page
-        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/content/files").await;
+        // The list links each file to its delete confirmation page, whose
+        // form does the deleting.
+        let (cookies, list) = fetch_page(app, &cookies, "/admin/content/files").await;
+        assert!(list.contains(&format!(r#"href="/admin/content/files/{file_id}/delete""#)));
+        let (cookies, page) = fetch_page(
+            app,
+            &cookies,
+            &format!("/admin/content/files/{file_id}/delete"),
+        )
+        .await;
+        assert!(page.contains("Delete the file delete_me.txt? This cannot be undone."));
 
         let response = app
             .request_with_cookies(
                 Request::post(format!("/admin/content/files/{file_id}/delete"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(common::form_fields(&page, "file_delete_form")))
                     .unwrap(),
                 &cookies,
             )
@@ -3685,6 +3694,21 @@ async fn fetch_csrf_token(app: &TestApp, cookies: &str, page: &str) -> (String, 
     (cookies, csrf_token)
 }
 
+/// GET an admin page: the session cookies to go on with and its HTML.
+async fn fetch_page(app: &TestApp, cookies: &str, page: &str) -> (String, String) {
+    let response = app
+        .request_with_cookies(Request::get(page).body(Body::empty()).unwrap(), cookies)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK, "GET {page}");
+    let new_cookies = extract_cookies(&response);
+    let cookies = if new_cookies.is_empty() {
+        cookies.to_string()
+    } else {
+        new_cookies
+    };
+    (cookies, response_text(response).await)
+}
+
 /// Percent-encode a value for use in form-urlencoded bodies.
 fn url_encode(value: &str) -> String {
     let mut result = String::with_capacity(value.len());
@@ -3704,15 +3728,6 @@ fn url_encode(value: &str) -> String {
 /// Build a form-urlencoded POST body with the given CSRF token.
 fn csrf_form_body(csrf_token: &str) -> Body {
     Body::from(format!("_token={}", url_encode(csrf_token)))
-}
-
-/// Build a form-urlencoded POST body with CSRF token and extra fields.
-fn csrf_form_body_with(csrf_token: &str, extra_fields: &str) -> Body {
-    Body::from(format!(
-        "_token={}&{}",
-        url_encode(csrf_token),
-        extra_fields
-    ))
 }
 
 // =============================================================================
@@ -4344,33 +4359,32 @@ fn e2e_admin_comment_moderation() {
         };
         let body = response_text(edit_form_response).await;
         assert!(body.contains("Edit Comment"));
-        let csrf_token = extract_csrf_token(&body).expect("CSRF token");
+        let fields = common::form_fields(&body, "comment_edit_form");
 
-        // Test: Edit comment submit (includes CSRF token)
+        // Test: Edit comment submit (the pipeline form's token and build id)
         let edit_response = app
             .request_with_cookies(
                 Request::post(format!("/admin/content/comments/{comment_id}/edit"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body_with(
-                        &csrf_token,
-                        "body=Updated+comment+body&status=1",
-                    ))
+                    .body(Body::from(format!(
+                        "{fields}&body=Updated+comment+body&status=1"
+                    )))
                     .unwrap(),
                 &cookies,
             )
             .await;
         assert!(edit_response.status().is_redirection());
 
-        // Fetch fresh CSRF token for action buttons
-        let (cookies, csrf_token) =
-            fetch_csrf_token(app, &cookies, "/admin/content/comments").await;
+        // The row buttons belong to the list's one action form.
+        let (cookies, list) = fetch_page(app, &cookies, "/admin/content/comments").await;
+        let fields = common::form_fields(&list, "comment_actions_form");
 
         // Test: Unpublish comment
         let unpublish_response = app
             .request_with_cookies(
                 Request::post(format!("/admin/content/comments/{comment_id}/unpublish"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &cookies,
             )
@@ -4385,16 +4399,16 @@ fn e2e_admin_comment_moderation() {
             .expect("Comment should exist");
         assert_eq!(comment_status, 0);
 
-        // Fetch fresh CSRF token for approve
-        let (cookies, csrf_token) =
-            fetch_csrf_token(app, &cookies, "/admin/content/comments").await;
+        // A fresh action form for approve
+        let (cookies, list) = fetch_page(app, &cookies, "/admin/content/comments").await;
+        let fields = common::form_fields(&list, "comment_actions_form");
 
         // Test: Approve comment
         let approve_response = app
             .request_with_cookies(
                 Request::post(format!("/admin/content/comments/{comment_id}/approve"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &cookies,
             )
@@ -4409,16 +4423,21 @@ fn e2e_admin_comment_moderation() {
             .expect("Comment should exist");
         assert_eq!(comment_status, 1);
 
-        // Fetch fresh CSRF token for delete
-        let (cookies, csrf_token) =
-            fetch_csrf_token(app, &cookies, "/admin/content/comments").await;
+        // Delete goes through its confirmation page's form.
+        let (cookies, page) = fetch_page(
+            app,
+            &cookies,
+            &format!("/admin/content/comments/{comment_id}/delete"),
+        )
+        .await;
+        let fields = common::form_fields(&page, "comment_delete_form");
 
         // Test: Delete comment
         let delete_response = app
             .request_with_cookies(
                 Request::post(format!("/admin/content/comments/{comment_id}/delete"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &cookies,
             )
