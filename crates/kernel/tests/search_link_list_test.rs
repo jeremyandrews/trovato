@@ -21,7 +21,7 @@ fn admin() -> UserContext {
     UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
 
-/// A fresh type with a Link and a List field.
+/// A fresh type with a Link, a List and a Telephone field.
 async fn fresh_type(app: &TestApp) -> String {
     let name = format!("b302s_{}", &Uuid::now_v7().simple().to_string()[20..]);
     let fields = vec![
@@ -29,6 +29,7 @@ async fn fresh_type(app: &TestApp) -> String {
         FieldDefinition::new("field_choice", FieldType::List)
             .label("Choice")
             .allowed_values(&[("xk1", "Golden Ticket"), ("xk2", "Silver Medal")]),
+        FieldDefinition::new("field_tel", FieldType::Telephone).label("Telephone"),
     ];
     app.state
         .content_types()
@@ -155,6 +156,82 @@ fn a_link_title_and_a_list_label_are_found_by_both_backends() {
                 .await;
             let _ = sqlx::query("DELETE FROM item WHERE id = $1")
                 .bind(id)
+                .execute(&pool)
+                .await;
+        });
+    });
+}
+
+/// A Telephone field is never indexed, even when an admin gives it a search
+/// weight through the field-type-agnostic search field configuration page:
+/// that admin page does not restrict `field_name` to a text field, so both
+/// backends must refuse to index a telephone number on their own, not rely
+/// on the admin UI to keep one from being configured.
+#[test]
+fn a_telephone_manually_configured_for_search_is_never_indexed() {
+    run_test(async {
+        let app = shared_app().await;
+        let item_type = fresh_type(app).await;
+        let tag: String = Uuid::now_v7()
+            .simple()
+            .to_string()
+            .chars()
+            .filter(char::is_ascii_digit)
+            .take(6)
+            .collect();
+        let phone_word = format!("5550100{tag}");
+
+        app.state
+            .search()
+            .configure_field(&item_type, "field_tel", 'A')
+            .await
+            .expect("configure a search weight on the telephone field");
+
+        let item = app
+            .state
+            .items()
+            .create(
+                CreateItem {
+                    item_type: item_type.clone(),
+                    title: "B302 telephone search probe".to_string(),
+                    author_id: Uuid::nil(),
+                    status: Some(1),
+                    promote: None,
+                    sticky: None,
+                    fields: Some(serde_json::json!({ "field_tel": phone_word })),
+                    stage_id: None,
+                    language: None,
+                    log: None,
+                },
+                &admin(),
+            )
+            .await
+            .expect("create item");
+
+        assert_eq!(
+            found(app, &phone_word).await,
+            (vec![], vec![]),
+            "a telephone number is never indexed, even manually configured for search"
+        );
+
+        let pool = app.db.clone();
+        let id = item.id;
+        let field_type = item_type.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("UPDATE item SET current_revision_id = NULL WHERE id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await;
+            let _ = sqlx::query("DELETE FROM item_revision WHERE item_id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await;
+            let _ = sqlx::query("DELETE FROM item WHERE id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await;
+            let _ = sqlx::query("DELETE FROM search_field_config WHERE bundle = $1")
+                .bind(&field_type)
                 .execute(&pool)
                 .await;
         });

@@ -406,21 +406,36 @@ pub async fn indexable_documents_for(
             .push((row.field_name, pagefind_weight(letter)));
     }
 
+    // A Telephone field's name, by type, so a config-only entry below (an
+    // admin can give any field name a search weight, not only a text one,
+    // same gap `item_search_vector`'s own `field_kinds` CTE closes) never
+    // indexes a phone number either: a field this type-agnostic and this
+    // other backend never agree is no better than one backend keeping the
+    // guarantee and the other leaking it.
+    let mut telephone_fields: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
     let mut text_fields: HashMap<String, Vec<SearchableField>> = HashMap::new();
     for row in type_rows {
-        let names = text_fields.entry(row.item_type).or_default();
+        let names = text_fields.entry(row.item_type.clone()).or_default();
+        let telephones = telephone_fields.entry(row.item_type).or_default();
         if let Some(serde_json::Value::Array(defs)) = row.fields {
             for def in defs {
                 if let Ok(def) = serde_json::from_value::<trovato_sdk::types::FieldDefinition>(def)
-                    && crate::search::is_text_field(&def.field_type)
                 {
-                    names.push(SearchableField {
-                        name: def.field_name,
-                        kind: SearchFieldKind::of(&def.field_type, &def.settings),
-                    });
+                    if crate::search::is_text_field(&def.field_type) {
+                        names.push(SearchableField {
+                            name: def.field_name,
+                            kind: SearchFieldKind::of(&def.field_type, &def.settings),
+                        });
+                    } else if matches!(def.field_type, trovato_sdk::types::FieldType::Telephone) {
+                        telephones.insert(def.field_name);
+                    }
                 }
             }
         }
+    }
+    for (bundle, names) in &mut config_map {
+        let telephones = telephone_fields.get(bundle);
+        names.retain(|(name, _)| !telephones.is_some_and(|t| t.contains(name)));
     }
 
     // Every visible comment on every visible item whose type has comments in

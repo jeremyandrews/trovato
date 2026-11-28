@@ -274,13 +274,17 @@ pub fn list_label_for(field: &FieldDefinition, key: &str) -> Option<String> {
 }
 
 /// Whether `text` holds only the characters a telephone number may be entered
-/// with: digits, spaces, and `+ ( ) - . /`.
+/// with (digits, spaces, and `+ ( ) - . /`) and at least one digit: the
+/// punctuation describes how a number may be written, not a substitute for
+/// one, so `"()"` or `"--"` is refused rather than stored as if it were a
+/// number.
 pub fn is_valid_telephone_text(text: &str) -> bool {
     !text.is_empty()
         && text.chars().count() <= MAX_TELEPHONE_LENGTH
         && text
             .chars()
             .all(|c| c.is_ascii_digit() || matches!(c, ' ' | '+' | '(' | ')' | '-' | '.' | '/'))
+        && text.chars().any(|c| c.is_ascii_digit())
 }
 
 /// The E.164 form of an entered telephone number, when it has an explicit
@@ -347,7 +351,7 @@ pub fn check_new_kind(field: &FieldDefinition, value: &Value) -> Option<String> 
             if !uri.is_some_and(is_valid_link_uri) {
                 return Some("is not a valid link.".to_string());
             }
-            if let Some(title) = title
+            if let Some(title) = title.filter(|t| !t.is_null())
                 && title
                     .as_str()
                     .is_none_or(|s| s.chars().count() > MAX_LINK_TITLE_LENGTH)
@@ -992,6 +996,18 @@ mod tests {
         assert!(
             check_new_kind(&field, &json!({"uri": "/item/x", "new_tab": "yes"})).is_some(),
             "new_tab must be a bool"
+        );
+        assert!(
+            check_new_kind(&field, &json!("https://example.org/")).is_some(),
+            "a bare string is refused: every reader expects the {{\"uri\": ...}} object shape"
+        );
+        assert!(
+            check_new_kind(
+                &field,
+                &json!({"uri": "https://example.org/", "title": null})
+            )
+            .is_none(),
+            "an explicit null title is the same as no title"
         );
     }
 
