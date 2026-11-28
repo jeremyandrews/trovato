@@ -253,11 +253,23 @@ fn assert_never_public(response: &Response, context: &str) {
     );
 }
 
+/// `crate::edge_cache`'s pending-purge set is one process-wide static, shared
+/// by every test in this binary (this file's tests run as one process, many
+/// threads). Any test that writes to it (every call to `create_published_item`,
+/// a tile create/update, a purge form submission, ...) or drains and inspects
+/// it (the plugin-delivery and admin-purge tests) needs every other such test
+/// serialized against it, or one test's ambient tags make another's "this is
+/// what was pending" assertion meaningless. `crate::edge_cache::mod`'s own
+/// unit tests guard the same static with an equivalent, private mutex; this
+/// is its visible-from-outside-the-crate counterpart.
+static TEST_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 // --- (a) An anonymous item page is public, with its tags, no Set-Cookie ---
 
 #[test]
 fn an_anonymous_item_page_is_public_with_site_and_item_tags() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let app = app_with_edge_cache_on().await;
         let id = create_published_item(&app, "B303 public item", 0).await;
 
@@ -281,6 +293,7 @@ fn an_anonymous_item_page_is_public_with_site_and_item_tags() {
 #[test]
 fn a_gather_listing_carries_the_items_tag() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         // `it`/`he` (non-default languages) apply a translation overlay this
         // fixture has no `item_translation` table for (that table is owned by
         // the `trovato_content_translation` plugin, not installed here), so
@@ -372,6 +385,7 @@ fn a_gather_listing_carries_the_items_tag() {
 #[test]
 fn the_stock_front_page_carries_the_items_tag() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let app = app_with_edge_cache_on().await;
         let id = create_published_item(&app, "B303 promoted front page item", 1).await;
 
@@ -393,6 +407,7 @@ fn the_stock_front_page_carries_the_items_tag() {
 #[test]
 fn a_signed_in_session_cookie_is_always_private_no_store() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let app = app_with_edge_cache_on().await;
         let id = create_published_item(&app, "B303 signed in item", 0).await;
         let name = username("b303signedin");
@@ -413,6 +428,7 @@ fn a_signed_in_session_cookie_is_always_private_no_store() {
 #[test]
 fn an_authorization_header_is_always_private_no_store() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let app = app_with_edge_cache_on().await;
         let id = create_published_item(&app, "B303 bearer item", 0).await;
 
@@ -431,6 +447,7 @@ fn an_authorization_header_is_always_private_no_store() {
 #[test]
 fn an_anonymous_login_page_sets_a_cookie_and_is_private_no_store() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let app = app_with_edge_cache_on().await;
 
         let response = get(&app, "/user/login").await;
@@ -446,6 +463,7 @@ fn an_anonymous_login_page_sets_a_cookie_and_is_private_no_store() {
 #[test]
 fn a_post_is_always_private_no_store() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let app = app_with_edge_cache_on().await;
         let id = create_published_item(&app, "B303 post item", 0).await;
 
@@ -463,6 +481,7 @@ fn a_post_is_always_private_no_store() {
 #[test]
 fn a_404_is_never_public() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let app = app_with_edge_cache_on().await;
         let missing = Uuid::now_v7();
 
@@ -477,6 +496,7 @@ fn a_404_is_never_public() {
 #[test]
 fn with_settings_unset_the_anonymous_page_carries_no_public_and_the_signed_in_one_is_private() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let app = TestApp::with_config(small_pool).await;
         let id = create_published_item(&app, "B303 unset settings item", 0).await;
 
@@ -502,6 +522,7 @@ fn with_settings_unset_the_anonymous_page_carries_no_public_and_the_signed_in_on
 #[test]
 fn a_configured_tag_header_name_is_comma_separated() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let app = TestApp::with_config(|c| {
             small_pool(c);
             c.runtime.edge_cache.max_age = 60;
@@ -527,6 +548,7 @@ fn a_configured_tag_header_name_is_comma_separated() {
 #[test]
 fn an_unprefixed_page_on_a_multi_language_site_is_never_public_but_its_prefixed_address_is() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let app = app_with_edge_cache_on().await;
         let id = create_published_item(&app, "B303 language item", 0).await;
 
@@ -548,6 +570,7 @@ fn an_unprefixed_page_on_a_multi_language_site_is_never_public_but_its_prefixed_
 #[test]
 fn a_route_that_sets_its_own_cache_control_is_left_alone() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let app = app_with_edge_cache_on().await;
 
         // /health sets its own Cache-Control: no-store (routes/health.rs).
@@ -624,6 +647,7 @@ fn load_purge_http_dispatcher() -> std::sync::Arc<trovato_kernel::tap::TapDispat
 #[test]
 fn trovato_cdn_purge_http_delivers_item_tile_and_everything_purges() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let (mock_url, bodies) = recording_server().await;
         trovato_kernel::host::allow_loopback_http_for_tests(&mock_url);
         let dispatcher = load_purge_http_dispatcher();
@@ -807,6 +831,7 @@ fn form_pairs_by_form_id(html: &str, form_id: &str) -> (String, String) {
 #[test]
 fn the_admin_purge_form_validates_and_takes_both_scopes() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let app = TestApp::with_config(small_pool).await;
 
         let name = username("b303purgeform");
@@ -872,6 +897,20 @@ fn the_admin_purge_form_validates_and_takes_both_scopes() {
             "the field's own error: {html_after_error}"
         );
 
+        // An empty "These tags" submission is refused too: `validate_purge_request`
+        // needs at least one tag when "Everything" is not chosen.
+        let (status, body) = post(&app, &cookies, "scope=tags&tags=").await;
+        assert!(
+            status.is_redirection(),
+            "an empty submission still redirects back, got {status}: {body}"
+        );
+        let response = get_with_cookies(&app, "/admin/config/performance", &cookies).await;
+        let html_after_empty = body_string(response).await;
+        assert!(
+            html_after_empty.contains("Enter at least one tag"),
+            "the field's own error: {html_after_empty}"
+        );
+
         // "These tags": at least one of each kind, through the real
         // `is_valid_purge_tag` check, posted the way a browser's
         // `<textarea>` would, one per line.
@@ -913,6 +952,7 @@ fn the_admin_purge_form_validates_and_takes_both_scopes() {
 #[test]
 fn the_admin_purge_form_refuses_anyone_without_permission() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let app = TestApp::with_config(small_pool).await;
         let name = username("b303purgedenied");
         app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
@@ -925,6 +965,26 @@ fn the_admin_purge_form_refuses_anyone_without_permission() {
             "a plain user must not see the page, got {}",
             response.status()
         );
+
+        // `handle_post` checks the same permission itself (it is reached by a
+        // direct POST, with no page visited first to get a token from), not
+        // only the `GET` that renders the page.
+        let response = app
+            .request_with_cookies(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/config/performance")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from("scope=everything&tags="))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert!(
+            response.status() == StatusCode::FORBIDDEN || response.status().is_redirection(),
+            "a plain user's POST must be refused too, got {}",
+            response.status()
+        );
     });
 }
 
@@ -933,6 +993,7 @@ fn the_admin_purge_form_refuses_anyone_without_permission() {
 #[test]
 fn plugin_http_to_an_unallowed_loopback_address_is_still_refused() {
     run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
         let (mock_url, bodies) = recording_server().await;
         // Deliberately not calling `allow_loopback_http_for_tests`.
 
