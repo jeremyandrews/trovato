@@ -681,6 +681,19 @@ enum Which {
 /// nothing unchecked). The JSON item API's status travels outside `fields`
 /// entirely (top level, alongside `fields`, not in it), so this plugin
 /// cannot see it there and falls back to the stored status.
+///
+/// On a moderated content type the "Published" checkbox does not render at
+/// all; a `moderation_state` select does, and the status a chosen state
+/// implies is a kernel decision (`content::moderation::status_of`) this
+/// plugin cannot see from `values` alone. Falling back to the stored status
+/// there is a known gap, not a fix: combining a moderation transition and a
+/// schedule date in the same save can wrongly refuse (the item reads as
+/// still published a moment before a transition that is about to take it
+/// down) or wrongly allow (the reverse) the "already published"/"already
+/// unpublished" checks below. Narrow (needs `schedule publishing` on a
+/// moderated type) and left open rather than guessed at with hardcoded
+/// state names, which B301 (configurable workflow states, landing
+/// separately) would make unreliable regardless.
 fn status_after_this_save(is_json: bool, values: &serde_json::Value, stored_status: i64) -> i64 {
     if !is_json && values.get("_status_rendered").is_some() {
         i64::from(values.get("status").is_some())
@@ -1034,6 +1047,19 @@ fn apply_resolved(
 /// refresh it. `save_item` is a real `ItemService` write: it invalidates that
 /// cache and fires `tap_item_update` itself, which is what actually sets or
 /// cancels the timer, so no second call to `sync_timers` needed here.
+///
+/// Reading the item again here, after the main save already read and wrote
+/// it, leaves a narrow window for a second editor's own save of the same
+/// item, touching some other field, to land in between: this call would
+/// then write that field back to the value it had when this read happened,
+/// quietly losing the other editor's change. The edit lock
+/// (`trovato_content_locking`) is released before this tap runs, so it does
+/// not close that window; neither does anything else in this codebase's
+/// item write path, which has no optimistic concurrency check of its own
+/// (a plain `fields` merge, not a compare and swap). This is therefore the
+/// same risk every other field already carries on a concurrent edit, not a
+/// new one, and the window here is only as wide as this one extra host
+/// round trip.
 #[plugin_tap]
 pub fn tap_form_submit(input: serde_json::Value) -> serde_json::Value {
     let form_id = input
@@ -1448,6 +1474,20 @@ mod tests {
         let json_with_a_status_like_key = serde_json::json!({"status": "1"});
         assert_eq!(
             status_after_this_save(true, &json_with_a_status_like_key, 0),
+            0
+        );
+
+        // The same `values`, that on the form path would mean "published"
+        // (both `status` and its rendered marker are present), must still
+        // fall back to the stored status on the JSON item API: its status
+        // travels outside `fields` entirely, so this is not a key the JSON
+        // path could ever legitimately see, only a coincidence of shape.
+        let would_mean_published_on_the_form = serde_json::json!({
+            "status": "1",
+            "_status_rendered": "1",
+        });
+        assert_eq!(
+            status_after_this_save(true, &would_mean_published_on_the_form, 0),
             0
         );
     }

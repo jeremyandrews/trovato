@@ -229,6 +229,22 @@ async fn editor(app: &TestApp, prefix: &str, zone: &str) -> (Uuid, String) {
     (uid, cookies)
 }
 
+/// A full site administrator, for the admin content form variant: every
+/// permission including `schedule publishing` by the administrator bypass.
+async fn admin(app: &TestApp, prefix: &str, zone: &str) -> (Uuid, String) {
+    let name = common::username(prefix);
+    let cookies = app
+        .create_and_login_admin(
+            &name,
+            "correct-horse-battery-staple",
+            &format!("{name}@test.local"),
+        )
+        .await;
+    let uid = common::user_id_of(app, &name).await;
+    set_timezone(app, uid, zone).await;
+    (uid, cookies)
+}
+
 async fn timer_run_at(app: &TestApp, item_id: Uuid, prefix: &str) -> Option<i64> {
     trovato_kernel::timer::get(&app.db, PLUGIN, &format!("{prefix}:{item_id}"))
         .await
@@ -297,6 +313,48 @@ fn the_edit_form_shows_the_stored_schedule_in_the_viewers_zone() {
             html.contains("Scheduled to publish on"),
             "a status line must say what is scheduled: {html}"
         );
+    });
+}
+
+/// The admin content form (`/admin/content/{id}/edit`) is a different
+/// action url shape than `/item/{id}/edit`: `item_id_from_action` has to
+/// recognize both, or the group would prefill on one path and come back
+/// empty on the other. Also exercises a save through that path, which
+/// answers with a redirect rather than the JSON `/item/...` returns.
+#[test]
+fn the_admin_content_form_prefills_and_saves_the_schedule_too() {
+    run(|app| async move {
+        let (uid, cookies) = admin(app, "b326admin", "Europe/Rome").await;
+        let id = seed_page(
+            app,
+            uid,
+            0,
+            json!({"body": "x", "field_publish_on": 1_813_053_600_i64}),
+        )
+        .await;
+
+        let edit_path = format!("/admin/content/{id}/edit");
+        let html = get_page(app, &cookies, &edit_path).await;
+        assert_eq!(
+            input_value(&html, "schedule_publish_on").as_deref(),
+            Some("2027-06-15T12:00"),
+            "the admin content form must prefill the stored schedule too: {html}"
+        );
+
+        // 2027-12-15 12:00 CET (UTC+1) == 2027-12-15 11:00 UTC.
+        let body = format!(
+            "{}&title=Schedule+probe&body=x&schedule_publish_on=2027-12-15T12%3A00",
+            form_tokens(&html)
+        );
+        let (status, text) = post_form(app, &cookies, &edit_path, body).await;
+        assert!(!status.is_server_error(), "{status}: {text}");
+
+        let expected: i64 = 1_828_868_400;
+        assert_eq!(
+            stored_fields(app, id).await["field_publish_on"],
+            json!(expected)
+        );
+        assert_eq!(timer_run_at(app, id, "publish").await, Some(expected));
     });
 }
 
@@ -578,6 +636,39 @@ fn a_dst_gap_time_is_refused() {
                 .get("field_publish_on")
                 .is_none()
         );
+    });
+}
+
+/// A DST overlap time (one that occurs twice, clocks falling back) is
+/// accepted and stored as the earlier of the two real instants, not
+/// refused and not the later one Postgres's own `AT TIME ZONE` would give
+/// unasked (confirmed separately, by hand, against this pod's Postgres).
+#[test]
+fn a_dst_overlap_time_takes_the_earlier_instant() {
+    run(|app| async move {
+        let (uid, cookies) = editor(app, "b326overlap", "America/New_York").await;
+        let id = seed_page(app, uid, 0, json!({"body": "x"})).await;
+
+        // 2030-11-03 is the first Sunday of November 2030: clocks in
+        // America/New_York fall back at 02:00 to 01:00, so 01:30 occurs
+        // twice, once as EDT (UTC-4) and once as EST (UTC-5).
+        let edit_path = format!("/item/{id}/edit");
+        let html = get_page(app, &cookies, &edit_path).await;
+        let body = format!(
+            "{}&title=Schedule+probe&body=x&schedule_publish_on=2030-11-03T01%3A30",
+            form_tokens(&html)
+        );
+        let (status, text) = post_form(app, &cookies, &edit_path, body).await;
+        assert!(status.is_success(), "{status}: {text}");
+
+        // The earlier instant: 2030-11-03 01:30 EDT (UTC-4) == 05:30 UTC.
+        // The later, EST (UTC-5) reading, 06:30 UTC, would be 1_919_917_800.
+        let expected: i64 = 1_919_914_200;
+        assert_eq!(
+            stored_fields(app, id).await["field_publish_on"],
+            json!(expected)
+        );
+        assert_eq!(timer_run_at(app, id, "publish").await, Some(expected));
     });
 }
 
