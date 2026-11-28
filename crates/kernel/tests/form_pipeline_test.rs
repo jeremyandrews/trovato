@@ -1732,3 +1732,245 @@ fn b83b_a_plugin_route_refuses_a_kernel_forms_build_id() {
         assert!(!text.contains("tpa-pipeline-values"));
     });
 }
+
+// =============================================================================
+// B83c: the URL alias patterns screen (/admin/config/pathauto) goes through
+// the same pipeline: the patterns form, and the one regenerate form every
+// type's button submits
+// =============================================================================
+
+/// The patterns form.
+const PATHAUTO_FORM: &str = "pathauto_form";
+
+/// The regenerate form.
+const REGENERATE_FORM: &str = "pathauto_regenerate_form";
+
+/// The patterns form is a pipeline form, a reserved prefix is shown on the
+/// field it was typed in with nothing saved, and a submission without the
+/// form's build id is refused as expired.
+#[test]
+fn b83c_the_pathauto_patterns_form_is_a_pipeline_form() {
+    run(|app| async move {
+        ensure_types(app).await;
+        let (_, cookies, _) = b83b_user(app, "b83c_pathauto", &["administer site"]).await;
+        let ip = common::test_ip_for("b83c_pathauto");
+        let field = format!("pattern.{PROBE}");
+        let saved = || async {
+            trovato_kernel::models::SiteConfig::get(&app.db, "pathauto_patterns")
+                .await
+                .unwrap()
+        };
+        let before = saved().await;
+
+        let (cookies, html) = visit(app, &cookies, "/admin/config/pathauto", &ip).await;
+        let form = common::form_in(&html, PATHAUTO_FORM).expect("the patterns form is built");
+        assert!(form.contains(&format!(r#"name="{field}""#)), "{form}");
+        assert!(
+            form.contains(&format!(
+                r#"form="{REGENERATE_FORM}" name="item_type" value="{PROBE}""#
+            )),
+            "each type's button submits the regenerate form with its type: {form}"
+        );
+        assert!(common::form_in(&html, REGENERATE_FORM).is_some());
+
+        // A reserved prefix is shown on its field.
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/admin/config/pathauto",
+            &ip,
+            &html,
+            PATHAUTO_FORM,
+            &[(&field, "admin/[title]")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let form = form_of(&text, PATHAUTO_FORM);
+        assert!(
+            form.contains(&format!(r#"id="{field}-error""#))
+                && form.contains(r#"aria-invalid="true""#)
+                && form.contains("begins with a reserved path prefix"),
+            "the refusal is shown on the field: {form}"
+        );
+        assert_eq!(saved().await, before, "a refused submission saves nothing");
+
+        // Without its build id the submission is refused as expired. The
+        // token is the one the form was shown again with: each is used once.
+        let token = common::input_value_in(form, "_token").unwrap();
+        let response = app
+            .request_with_cookies(
+                Request::post("/admin/config/pathauto")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header("x-forwarded-for", &ip)
+                    .body(Body::from(format!(
+                        "_token={}&{field}=b83c%2F%5Btitle%5D",
+                        urlencoding::encode(&token)
+                    )))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(body_string(response).await.contains("expired"));
+        assert_eq!(saved().await, before, "an expired submission saves nothing");
+    });
+}
+
+/// A type's regenerate button asks first, and the confirmation, built under
+/// the regenerate form's id, regenerates and says how many aliases changed.
+#[test]
+fn b83c_a_pathauto_regenerate_button_asks_first_and_then_regenerates() {
+    run(|app| async move {
+        ensure_types(app).await;
+        let (_, cookies, _) = b83b_user(app, "b83c_regenerate", &["administer site"]).await;
+        let ip = common::test_ip_for("b83c_regenerate");
+
+        let (cookies, html) = visit(app, &cookies, "/admin/config/pathauto", &ip).await;
+        let form = form_of(&html, REGENERATE_FORM);
+        assert!(form.contains("?confirm"), "it asks first: {form}");
+        let question = common::input_value_in(form, "_confirm").expect("the question");
+        let label = common::input_value_in(form, "_confirm_label").expect("the label");
+
+        // What a browser posts when the type's button is pressed.
+        let (status, _) = submit(
+            app,
+            &cookies,
+            "/admin/config/pathauto/regenerate?confirm",
+            &ip,
+            &html,
+            REGENERATE_FORM,
+            &[
+                ("_confirm", &question),
+                ("_confirm_label", &label),
+                ("item_type", PROBE),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "it asks before acting");
+
+        let (cookies, confirm) = visit(app, &cookies, "/admin/confirm", &ip).await;
+        assert!(confirm.contains("Save pattern changes first"), "{confirm}");
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/admin/config/pathauto/regenerate",
+            &ip,
+            &confirm,
+            REGENERATE_FORM,
+            &[("item_type", PROBE)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{text}");
+        let (_, after) = visit(app, &cookies, "/admin/config/pathauto", &ip).await;
+        assert!(
+            after.contains("created or updated for"),
+            "the result is flashed: {after}"
+        );
+    });
+}
+
+// -----------------------------------------------------------------------------
+// B83c: admin forms built and checked through `routes::admin_form` reach all
+// three form taps, `tap_form_submit` included, which they never did before.
+// -----------------------------------------------------------------------------
+
+/// An admin form is altered by `tap_form_alter`, refused on the form by
+/// `tap_form_validate` with nothing saved, and once saved is heard of by
+/// `tap_form_submit` exactly once.
+#[test]
+fn b83c_admin_forms_are_altered_refused_and_submitted() {
+    run(|app| async move {
+        common::hold_until_cleanup(B83B.lock().await);
+        let (_, cookies) = admin(app, "b83cadmintaps").await;
+        let ip = common::test_ip_for("b83cadmintaps");
+        let mark = Uuid::new_v4().simple().to_string();
+        let pattern = format!("b83c{mark}%");
+        let alias = format!("/b83c-{mark}");
+        let db = app.db.clone();
+        let (p, a) = (pattern.clone(), alias.clone());
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM access_rule WHERE pattern = $1")
+                .bind(p)
+                .execute(&db)
+                .await;
+            let _ = sqlx::query("DELETE FROM url_alias WHERE alias = $1")
+                .bind(a)
+                .execute(&db)
+                .await;
+        });
+        let cases: [(&'static str, &str, Vec<(&str, &str)>, &str); 2] = [
+            (
+                "access_rule_form",
+                "/admin/people/rules/add",
+                vec![
+                    ("status", "deny"),
+                    ("rule_type", "username"),
+                    ("pattern", &pattern),
+                ],
+                "SELECT count(*) FROM access_rule WHERE pattern = $1",
+            ),
+            (
+                "url_alias_form",
+                "/admin/structure/aliases/add",
+                vec![
+                    ("source", "/b83c-source"),
+                    ("alias", &alias),
+                    ("language", "en"),
+                ],
+                "SELECT count(*) FROM url_alias WHERE alias = $1",
+            ),
+        ];
+        for (form_id, uri, fields, saved_sql) in cases {
+            let key = if form_id == "access_rule_form" {
+                pattern.as_str()
+            } else {
+                alias.as_str()
+            };
+            let saved = || async {
+                sqlx::query_scalar::<_, i64>(saved_sql)
+                    .bind(key)
+                    .fetch_one(&app.db)
+                    .await
+                    .unwrap()
+            };
+            let submits = || async {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT count(*) FROM b83b_form_submits WHERE form_id = $1",
+                )
+                .bind(form_id)
+                .fetch_one(&app.db)
+                .await
+                .unwrap()
+            };
+            let before = submits().await;
+
+            let (cookies, html) = visit(app, &cookies, uri, &ip).await;
+            assert_altered(&html, form_id);
+
+            refuse(app, form_id).await;
+            let (status, text) = submit(app, &cookies, uri, &ip, &html, form_id, &fields).await;
+            assert_refused(status, &text, form_id);
+            assert_eq!(
+                saved().await,
+                0,
+                "{form_id}: a refused submission was saved"
+            );
+            assert_eq!(
+                submits().await,
+                before,
+                "{form_id}: tap_form_submit heard a refusal"
+            );
+
+            accept(app, form_id).await;
+            let (cookies, html) = visit(app, &cookies, uri, &ip).await;
+            let (status, text) = submit(app, &cookies, uri, &ip, &html, form_id, &fields).await;
+            assert!(status.is_redirection(), "{form_id}: {status}: {text}");
+            assert_eq!(saved().await, 1, "{form_id}: the submission was not saved");
+            assert_eq!(
+                submits().await,
+                before + 1,
+                "{form_id}: tap_form_submit ran once"
+            );
+        }
+    });
+}

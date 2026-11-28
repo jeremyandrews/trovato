@@ -29,7 +29,7 @@
                 <td>{{ redirect.created_display }}</td>
                 <td class="operations">
                     <a href="/admin/config/redirects/{{ redirect.id }}/edit">{{ t(s="Edit the redirect from {source}", source=redirect.source) }}</a>
-                    {{ list::delete_button(action="/admin/config/redirects/" ~ redirect.id ~ "/delete", label=t(s="Delete the redirect from {source}", source=redirect.source), confirm_text=t(s="Delete the redirect from {source}?", source=redirect.source), csrf_token=csrf_token) }}
+                    <a class="link-button link-button--danger" href="/admin/config/redirects/{{ redirect.id }}/delete">{{ t(s="Delete the redirect from {source}", source=redirect.source) }}</a>
                 </td>
             </tr>
             {% endfor %}

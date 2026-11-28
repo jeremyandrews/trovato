@@ -1,53 +1,11 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
 {% block page_title %}{% if editing %}{{ t(s="Edit content type {name}", name=values.label | default(value="")) }}{% else %}{{ t(s="Add content type") }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="A content type is a kind of content the site holds, such as a blog post or a page. Its fields are managed separately, once it is saved.") }}</p>{% endblock page_intro %}
 
 {% block content %}
-{% set errs = errors | default(value=[]) %}
 <div class="admin-card">
-    <form id="content-type-form" method="post" action="{{ action }}" novalidate>
-        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
-
-        {{ form::error_summary(errors=errs) }}
-
-        {{ form::field(name="label", label=t(s="Name"), value=values.label | default(value=""), hint=t(s="The human-readable name of this content type."), required=true, errors=errs, width="30", attrs='data-machine-name-source="machine_name"') }}
-
-        {{ form::field(name="machine_name", label=t(s="Machine name"), value=values.machine_name | default(value=""), hint=t(s="A unique machine-readable name. Can only contain lowercase letters, numbers, and underscores."), required=true, errors=errs, width="30", readonly=editing, attrs='pattern="[a-z][a-z0-9_]*" spellcheck="false" autocapitalize="none"') }}
-
-        {{ form::textarea(name="description", label=t(s="Description"), value=values.description | default(value=""), rows=3, hint=t(s="Describe this content type. The text will be displayed on the content type administration page."), errors=errs) }}
-
-        {{ form::fieldset_start(legend=t(s="Submission form settings")) }}
-            {% if values.title_label is defined and values.title_label %}{% set title_label = values.title_label %}{% else %}{% set title_label = "Title" %}{% endif %}
-            {{ form::field(name="title_label", label=t(s="Title field label"), value=title_label, errors=errs, width="30") }}
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="Preview before submitting")) }}
-            {% if values.preview_mode is defined and values.preview_mode %}{% set preview_mode = values.preview_mode %}{% else %}{% set preview_mode = "optional" %}{% endif %}
-            {{ form::select(name="preview_mode", label=t(s="Preview"), options=preview_options, value=preview_mode, translate_options=true, hint=t(s="Whether the item form offers a Preview button, and whether an item must be previewed before it can be saved."), errors=errs) }}
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="Comment settings")) }}
-            {% if values.comment_mode is defined and values.comment_mode %}{% set comment_mode = values.comment_mode %}{% else %}{% set comment_mode = "open" %}{% endif %}
-            {{ form::select(name="comment_mode", label=t(s="Comments"), options=comment_mode_options, value=comment_mode, translate_options=true, hint=t(s="Open: readers with permission may comment. Closed: existing comments are shown and no new ones are taken. Hidden: no comments are shown and none are taken."), errors=errs) }}
-            {% if values.comment_threading is defined and values.comment_threading %}{% set comment_threading = values.comment_threading %}{% else %}{% set comment_threading = "threaded" %}{% endif %}
-            {{ form::select(name="comment_threading", label=t(s="Display mode"), options=comment_threading_options, value=comment_threading, translate_options=true, errors=errs) }}
-            {% if values.comment_order is defined and values.comment_order %}{% set comment_order = values.comment_order %}{% else %}{% set comment_order = "oldest" %}{% endif %}
-            {{ form::select(name="comment_order", label=t(s="Display order"), options=comment_order_options, value=comment_order, translate_options=true, hint=t(s="In threaded mode this orders the threads; replies stay under the comment they answer, in the order they were written."), errors=errs) }}
-            {{ form::field(name="comment_per_page", label=t(s="Comments per page"), type="number", value=values.comment_per_page | default(value=50), width="4", attrs='min="1" max="300"', errors=errs) }}
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="Publishing options")) }}
-            {{ form::checkbox(name="published_default", label=t(s="Published by default"), checked=values.published_default | default(value=false), errors=errs) }}
-            {{ form::checkbox(name="revision_default", label=t(s="Create new revision by default"), checked=values.revision_default | default(value=false), errors=errs) }}
-            {{ form::checkbox(name="promote_default", label=t(s="Promoted to front page by default"), checked=values.promote_default | default(value=false), errors=errs) }}
-            {{ form::checkbox(name="sticky_default", label=t(s="Sticky at top of lists by default"), checked=values.sticky_default | default(value=false), errors=errs) }}
-            {{ form::checkbox(name="moderation", label=t(s="Moderate content of this type"), checked=values.moderation | default(value=false), hint=t(s="Items move between Draft, Published and Archived by transitions each role is granted ({permission}). A draft saved over a published item waits beside it: visitors keep seeing the published version until the draft is published.", permission="use editorial transition …"), errors=errs) }}
-        {{ form::fieldset_end() }}
-
-        {{ form::actions(submit_label=t(s="Save content type"), cancel_url="/admin/structure/types") }}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 
 {# Machine name auto-generation handled by admin-helpers.js via data attributes on the label input #}

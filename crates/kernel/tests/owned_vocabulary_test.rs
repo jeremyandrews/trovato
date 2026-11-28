@@ -590,14 +590,35 @@ fn the_owner_route_admits_managers_and_refuses_everyone_else() {
         let (status, _) = get(app, &holder, &list).await;
         assert_eq!(status, StatusCode::OK);
 
-        // The manager deletes the term.
+        // The list's Delete opens a confirmation page; a post without its
+        // form deletes nothing.
+        let delete = format!("{list}/terms/{}/delete", tag.id);
         let (_, html) = get(app, &manager, &list).await;
-        let token = hidden(&html, "_token");
+        assert!(
+            html.replace("&#x2F;", "/")
+                .contains(&format!(r#"href="{delete}""#)),
+            "the row's Delete links to its confirmation page"
+        );
+        let token = csrf(app, &manager).await;
+        let status = post_form(app, &manager, &delete, format!("_token={token}")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "a token alone is refused");
+        assert!(
+            app.state
+                .categories()
+                .get_tag(tag.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // The manager deletes the term through the confirmation form.
+        let (status, html) = get(app, &manager, &delete).await;
+        assert_eq!(status, StatusCode::OK);
         let status = post_form(
             app,
             &manager,
-            &format!("{list}/terms/{}/delete", tag.id),
-            format!("_token={token}"),
+            &delete,
+            common::form_fields(&html, "category_tag_delete_form"),
         )
         .await;
         assert!(status.is_redirection(), "deleted: {status}");

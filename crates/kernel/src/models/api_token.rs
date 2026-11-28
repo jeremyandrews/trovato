@@ -33,8 +33,8 @@ impl ApiToken {
     /// Create a new API token for a user.
     ///
     /// Returns `(ApiToken, raw_token)`. The raw token is shown once and never stored.
-    pub async fn create(
-        pool: &PgPool,
+    pub async fn create<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
         user_id: Uuid,
         name: &str,
         expires_at: Option<DateTime<Utc>>,
@@ -58,6 +58,41 @@ impl ApiToken {
         .fetch_one(pool)
         .await
         .context("failed to create API token")?;
+
+        Ok((record, raw_token))
+    }
+
+    /// [`Self::create`], with the token's id `id` chosen by the caller, and
+    /// `event` (the `api_token.created` recording it) appended by the same
+    /// statement: one write, atomic on its own, so the token exists exactly
+    /// when its event does, with no transaction around the two.
+    pub(crate) async fn create_recording<'e, E: sqlx::PgExecutor<'e>>(
+        executor: E,
+        id: Uuid,
+        user_id: Uuid,
+        name: &str,
+        expires_at: Option<DateTime<Utc>>,
+        event: &crate::audit::EventRow,
+    ) -> Result<(Self, String)> {
+        let raw_token = generate_token();
+        let token_hash = hash_token(&raw_token);
+        let columns = crate::audit::EVENT_COLUMNS;
+        let query = sqlx::query_as::<_, ApiToken>(sqlx::AssertSqlSafe(format!(
+            "WITH event AS (INSERT INTO security_audit_log ({columns}) \
+                 VALUES ($6, $7, $8, $9, $10, $11, $12, $13, $14)) \
+             INSERT INTO api_tokens (id, user_id, name, token_hash, expires_at) \
+             VALUES ($1, $2, $3, $4, $5) RETURNING *"
+        )))
+        .bind(id)
+        .bind(user_id)
+        .bind(name)
+        .bind(&token_hash)
+        .bind(expires_at);
+        let record = event
+            .bind_to(query)
+            .fetch_one(executor)
+            .await
+            .context("failed to create API token")?;
 
         Ok((record, raw_token))
     }
@@ -127,7 +162,11 @@ impl ApiToken {
     ///
     /// Returns whether a token was deleted. The next lookup of that token, in
     /// any process, finds nothing.
-    pub async fn delete(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<bool> {
+    pub async fn delete<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        id: Uuid,
+        user_id: Uuid,
+    ) -> Result<bool> {
         let result = sqlx::query("DELETE FROM api_tokens WHERE id = $1 AND user_id = $2")
             .bind(id)
             .bind(user_id)
@@ -143,7 +182,10 @@ impl ApiToken {
     ///
     /// For when the account itself changes in a way that should end all of its
     /// credentials, such as being blocked.
-    pub async fn delete_all_for_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>> {
+    pub async fn delete_all_for_user<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        user_id: Uuid,
+    ) -> Result<Vec<Uuid>> {
         sqlx::query_scalar("DELETE FROM api_tokens WHERE user_id = $1 RETURNING id")
             .bind(user_id)
             .fetch_all(pool)

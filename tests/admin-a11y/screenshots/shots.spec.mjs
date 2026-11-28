@@ -44,7 +44,9 @@ const SETS = {
     'lists-log': '/admin/reports/log',
     'lists-confirm': async (page) => {
       await page.goto('/admin/content');
-      await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('tbody tr').first().locator('button.link-button--danger').click()]);
+      await page.locator('[data-select-row]').first().check();
+      await page.selectOption('#content_bulk_form #action', 'delete');
+      await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('#content_bulk_form [type=submit]').click()]);
     },
   } },
   dashboard: { out: B199, shots: {

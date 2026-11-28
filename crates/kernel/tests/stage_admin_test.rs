@@ -39,14 +39,19 @@ async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-fn csrf_from(html: &str) -> String {
-    let needle = r#"name="_token" value=""#;
-    let start = html
-        .find(needle)
-        .map(|i| i + needle.len())
-        .expect("a form on this page must carry a CSRF token");
-    let end = html[start..].find('"').expect("token must be terminated");
-    html[start..start + end].to_string()
+/// The id of the add and edit form.
+const STAGE_FORM: &str = "stage_form";
+
+/// The id of the form that confirms a stage's deletion.
+const DELETE_FORM: &str = "stage_delete_form";
+
+/// The CSRF token and the build id of the pipeline form `form_id` on a
+/// rendered page: what a browser posts back with the form's fields.
+fn pipeline_fields(html: &str, form_id: &str) -> (String, String) {
+    let form = common::form_in(html, form_id)
+        .unwrap_or_else(|| panic!("the page must carry the form {form_id}"));
+    let token = common::input_value_in(form, "_token").expect("the form carries a CSRF token");
+    (token, common::form_build_id(html, form_id))
 }
 
 async fn get_page(app: &TestApp, cookies: &str, path: &str) -> (String, String) {
@@ -99,15 +104,17 @@ async fn post_form(
     .await
 }
 
-/// A CSRF token for this session, from a page that always has a form.
-///
-/// The listing only carries one when it renders at least one delete button, and on
-/// a database whose only stage is Live it renders none — so reading the token from
-/// the listing made a test depend on what other tests had created.
-async fn session_token(app: &TestApp, cookies: &str) -> (String, String) {
-    let (cookies, form) = get_page(app, cookies, "/admin/structure/stages/add").await;
-    let token = csrf_from(&form);
-    (cookies, token)
+/// The cookies, CSRF token and build id of the delete confirmation for the
+/// stage `id`, from the page the row's Delete link opens.
+async fn delete_fields(app: &TestApp, cookies: &str, id: Uuid) -> (String, String, String) {
+    let (cookies, html) = get_page(
+        app,
+        cookies,
+        &format!("/admin/structure/stages/{id}/delete"),
+    )
+    .await;
+    let (token, build) = pipeline_fields(&html, DELETE_FORM);
+    (cookies, token, build)
 }
 
 /// A machine name unique to one test.
@@ -118,13 +125,14 @@ fn fresh_name() -> String {
 /// Create a stage through the form and return its id.
 async fn create_stage(app: &TestApp, cookies: &str, machine_name: &str, label: &str) -> Uuid {
     let (cookies, form) = get_page(app, cookies, "/admin/structure/stages/add").await;
-    let token = csrf_from(&form);
+    let (token, build) = pipeline_fields(&form, STAGE_FORM);
     let response = post_form(
         app,
         &cookies,
         "/admin/structure/stages/add",
         &[
             ("_token", &token),
+            ("_form_build_id", &build),
             ("machine_name", machine_name),
             ("label", label),
             ("description", ""),
@@ -266,13 +274,14 @@ fn editing_a_stage_changes_its_label_visibility_and_weight() {
 
         let edit = format!("/admin/structure/stages/{id}/edit");
         let (cookies, form) = get_page(app, &cookies, &edit).await;
-        let token = csrf_from(&form);
+        let (token, build) = pipeline_fields(&form, STAGE_FORM);
         let response = post_form(
             app,
             &cookies,
             &edit,
             &[
                 ("_token", &token),
+                ("_form_build_id", &build),
                 ("machine_name", &name),
                 ("label", "After"),
                 ("description", "A described stage"),
@@ -305,6 +314,75 @@ fn editing_a_stage_changes_its_label_visibility_and_weight() {
     });
 }
 
+/// The add form is a pipeline form: a submission without its build id is
+/// refused as expired, and a refused field is marked and explained beside it.
+#[test]
+fn the_stage_form_is_a_pipeline_form_and_marks_the_field_it_refuses() {
+    run_test(async {
+        let app = shared_app().await;
+        let cookies = admin_session(app).await;
+        let name = fresh_name();
+        let add = "/admin/structure/stages/add";
+
+        let (cookies, form) = get_page(app, &cookies, add).await;
+        assert!(
+            common::form_in(&form, STAGE_FORM).is_some(),
+            "the add form must be built by the pipeline"
+        );
+        let (token, build) = pipeline_fields(&form, STAGE_FORM);
+
+        let response = post_form(
+            app,
+            &cookies,
+            add,
+            &[
+                ("_token", &token),
+                ("_form_build_id", &build),
+                ("machine_name", &name),
+                ("label", ""),
+                ("visibility", "internal"),
+                ("weight", "0"),
+            ],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        let form = common::form_in(&html, STAGE_FORM).expect("the form is shown again");
+        assert!(
+            form.contains(r#"id="label-error""#)
+                && form.contains(r#"aria-invalid="true""#)
+                && form.contains("Label is required."),
+            "the refusal must be on the label field, got: {form}"
+        );
+
+        // Without its build id a submission is refused as expired. The token
+        // is the one the form was shown again with: each is used once.
+        let (token, _) = pipeline_fields(&html, STAGE_FORM);
+        let response = post_form(
+            app,
+            &cookies,
+            add,
+            &[
+                ("_token", &token),
+                ("machine_name", &name),
+                ("label", "No build id"),
+                ("visibility", "internal"),
+            ],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(body_text(response).await.contains("expired"));
+
+        let landed: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM stage_config WHERE machine_name = $1")
+                .bind(&name)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert_eq!(landed, 0, "no refused stage may have been written");
+    });
+}
+
 /// A machine name is a machine name, and a duplicate is refused by name.
 #[test]
 fn an_invalid_or_duplicate_machine_name_is_refused() {
@@ -322,13 +400,14 @@ fn an_invalid_or_duplicate_machine_name_is_refused() {
         ] {
             let (fresh_cookies, form) =
                 get_page(app, &cookies, "/admin/structure/stages/add").await;
-            let token = csrf_from(&form);
+            let (token, build) = pipeline_fields(&form, STAGE_FORM);
             let response = post_form(
                 app,
                 &fresh_cookies,
                 "/admin/structure/stages/add",
                 &[
                     ("_token", &token),
+                    ("_form_build_id", &build),
                     ("machine_name", machine_name),
                     ("label", "Rejected"),
                     ("description", ""),
@@ -375,13 +454,14 @@ fn making_a_stage_default_clears_the_previous_default() {
 
         let edit = format!("/admin/structure/stages/{id}/edit");
         let (cookies, form) = get_page(app, &cookies, &edit).await;
-        let token = csrf_from(&form);
+        let (token, build) = pipeline_fields(&form, STAGE_FORM);
         let response = post_form(
             app,
             &cookies,
             &edit,
             &[
                 ("_token", &token),
+                ("_form_build_id", &build),
                 ("machine_name", &name),
                 ("label", "New Default"),
                 ("description", ""),
@@ -445,7 +525,7 @@ fn clearing_the_only_default_is_refused() {
 
         let edit = format!("/admin/structure/stages/{default_id}/edit");
         let (cookies, form) = get_page(app, &cookies, &edit).await;
-        let token = csrf_from(&form);
+        let (token, build) = pipeline_fields(&form, STAGE_FORM);
         // Submitting without the is_default checkbox is how a browser clears it.
         let response = post_form(
             app,
@@ -453,6 +533,7 @@ fn clearing_the_only_default_is_refused() {
             &edit,
             &[
                 ("_token", &token),
+                ("_form_build_id", &build),
                 ("machine_name", &machine_name),
                 ("label", &label),
                 ("description", ""),
@@ -497,7 +578,7 @@ fn the_live_stage_cannot_be_made_internal() {
             form.contains("This is the Live stage"),
             "the form must say what it is editing"
         );
-        let token = csrf_from(&form);
+        let (token, build) = pipeline_fields(&form, STAGE_FORM);
 
         let response = post_form(
             app,
@@ -505,6 +586,7 @@ fn the_live_stage_cannot_be_made_internal() {
             &edit,
             &[
                 ("_token", &token),
+                ("_form_build_id", &build),
                 ("machine_name", "live"),
                 ("label", "Live"),
                 ("description", ""),
@@ -541,13 +623,14 @@ fn a_second_public_stage_is_refused() {
         let name = fresh_name();
 
         let (cookies, form) = get_page(app, &cookies, "/admin/structure/stages/add").await;
-        let token = csrf_from(&form);
+        let (token, build) = pipeline_fields(&form, STAGE_FORM);
         let response = post_form(
             app,
             &cookies,
             "/admin/structure/stages/add",
             &[
                 ("_token", &token),
+                ("_form_build_id", &build),
                 ("machine_name", &name),
                 ("label", "Second Public"),
                 ("description", ""),
@@ -587,13 +670,28 @@ fn an_unused_stage_is_deleted() {
         let name = fresh_name();
         let id = create_stage(app, &cookies, &name, "Disposable").await;
 
-        let (cookies, token) = session_token(app, &cookies).await;
+        let (cookies, html) = get_page(app, &cookies, "/admin/structure/stages").await;
+        assert!(
+            html.contains(&format!(r#"href="/admin/structure/stages/{id}/delete""#)),
+            "the row must link to its delete confirmation"
+        );
+        let (cookies, confirm) = get_page(
+            app,
+            &cookies,
+            &format!("/admin/structure/stages/{id}/delete"),
+        )
+        .await;
+        assert!(
+            confirm.contains("Delete the Disposable stage?"),
+            "the confirmation must ask the question, got: {confirm}"
+        );
+        let (cookies, token, build) = delete_fields(app, &cookies, id).await;
 
         let response = post_form(
             app,
             &cookies,
             &format!("/admin/structure/stages/{id}/delete"),
-            &[("_token", &token)],
+            &[("_token", &token), ("_form_build_id", &build)],
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -620,15 +718,30 @@ fn the_live_stage_cannot_be_deleted() {
             !html.contains(&format!("/admin/structure/stages/{live}/delete")),
             "the listing must not offer to delete the Live stage"
         );
-        let (cookies, token) = session_token(app, &cookies).await;
+        // Its confirmation page says why and offers no button.
+        let (cookies, confirm) = get_page(
+            app,
+            &cookies,
+            &format!("/admin/structure/stages/{live}/delete"),
+        )
+        .await;
+        assert!(
+            confirm.contains("Not deletable") && common::form_in(&confirm, DELETE_FORM).is_none(),
+            "the Live stage's confirmation must refuse, not ask, got: {confirm}"
+        );
 
+        // The model refuses it even to a valid delete form, built for another
+        // stage and posted at Live's address.
+        let other = create_stage(app, &cookies, &fresh_name(), "Bystander").await;
+        let (cookies, token, build) = delete_fields(app, &cookies, other).await;
         let response = post_form(
             app,
             &cookies,
             &format!("/admin/structure/stages/{live}/delete"),
-            &[("_token", &token)],
+            &[("_token", &token), ("_form_build_id", &build)],
         )
         .await;
+        drop_stage(app, other).await;
 
         assert_eq!(
             response.status(),
@@ -683,13 +796,23 @@ fn a_stage_holding_content_is_refused_with_a_count() {
             html.contains("1 menu link"),
             "the listing must say what is in the way, got: {html}"
         );
-        let token = csrf_from(&html);
+        let (cookies, confirm) = get_page(
+            app,
+            &cookies,
+            &format!("/admin/structure/stages/{id}/delete"),
+        )
+        .await;
+        assert!(
+            confirm.contains("This stage is still used by 1 menu link"),
+            "the confirmation must say what is in the way, got: {confirm}"
+        );
+        let (token, build) = pipeline_fields(&confirm, DELETE_FORM);
 
         let response = post_form(
             app,
             &cookies,
             &format!("/admin/structure/stages/{id}/delete"),
-            &[("_token", &token)],
+            &[("_token", &token), ("_form_build_id", &build)],
         )
         .await;
 

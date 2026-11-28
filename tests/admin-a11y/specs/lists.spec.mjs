@@ -64,10 +64,11 @@ test.describe('with JavaScript off', () => {
     await page.goto('/admin/content');
     const row = page.locator('tbody tr').first();
     const title = (await row.locator('th[scope=row]').textContent()).trim();
-    await Promise.all([page.waitForURL('**/admin/confirm'), row.locator('button.link-button--danger').click()]);
+    await Promise.all([page.waitForURL('**/admin/content/*/delete'), row.locator('a.link-button--danger').click()]);
     await expect(page.locator('h1')).toContainText(title);
-    await expect(page.locator('.confirm__question')).toContainText(title);
-    await Promise.all([page.waitForURL('**/admin/content**'), page.locator('main form .button--secondary').click()]);
+    await expect(page.locator('main .admin-card > p').first()).toContainText(title);
+    await expect(page.locator('#content_delete_form .button--danger')).toBeVisible();
+    await Promise.all([page.waitForURL('**/admin/content'), page.locator('main form .button--secondary').click()]);
     await expect(page.locator('tbody th[scope=row]', { hasText: title }).first()).toBeVisible();
   });
 
@@ -77,8 +78,8 @@ test.describe('with JavaScript off', () => {
     test.skip((await rows.count()) < 2, 'the seeded site lists fewer than two items');
     await rows.nth(0).check();
     await rows.nth(1).check();
-    await page.selectOption('#bulk-action', 'delete');
-    await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('#bulk-form .bulk-actions [type=submit]').click()]);
+    await page.selectOption('#content_bulk_form #action', 'delete');
+    await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('#content_bulk_form [type=submit]').click()]);
     await expect(page.locator('.confirm__question')).toContainText('2');
     await expect(page.locator('main form .button--danger')).toContainText('2');
     await Promise.all([page.waitForURL('**/admin/**'), page.locator('main form .button--secondary').click()]);
@@ -98,9 +99,12 @@ test('on a narrow screen a listing lays rows out as blocks, with no sideways scr
 });
 
 test('the confirmation page has no WCAG 2.2 A or AA violations', async ({ page }) => {
-  // With scripts on, Delete leads to the same page: nothing asks in a script.
+  // With scripts on, a bulk delete leads to the same page: nothing asks in a
+  // script.
   await page.goto('/admin/content');
-  await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('tbody tr').first().locator('button.link-button--danger').click()]);
+  await page.locator('[data-select-row]').first().check();
+  await page.selectOption('#content_bulk_form #action', 'delete');
+  await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('#content_bulk_form [type=submit]').click()]);
   const axe = await new AxeBuilder({ page }).withTags(TAGS).analyze();
   expect(axe.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`)).toEqual([]);
   await Promise.all([page.waitForURL('**/admin/content**'), page.locator('main form .button--secondary').click()]);

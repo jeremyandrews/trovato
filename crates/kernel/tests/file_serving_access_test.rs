@@ -844,3 +844,85 @@ fn media_browse_is_scoped_to_the_viewer() {
         assert_eq!(total, names.len() as i64, "total matches the listing");
     });
 }
+
+/// The path with its file name in upper case: on a case-insensitive directory
+/// (macOS, Windows) the same file, with no row of its own.
+fn other_spelling(path: &str) -> String {
+    let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let upper = name.to_ascii_uppercase();
+    assert_ne!(upper, name, "the name has letters to change");
+    if dir.is_empty() {
+        upper
+    } else {
+        format!("{dir}/{upper}")
+    }
+}
+
+/// A restricted file asked for in other letter case is refused like the file
+/// itself, not served as an unmanaged file: a case-insensitive directory reads
+/// that spelling as the restricted file.
+#[test]
+fn restricted_file_in_other_letter_case_is_refused() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+
+        let owner = create_user(app).await;
+        let (uri, path) = upload(app, owner).await;
+        item_referencing(app, "Restricted Attachment Case", 0, &uri).await;
+
+        let files = app.state.files();
+        let variant = other_spelling(&path);
+        assert!(
+            files
+                .is_other_spelling_of_managed(&format!("local://{variant}"))
+                .await
+                .unwrap(),
+            "the other spelling is recognised as the managed file"
+        );
+        assert!(!files.is_other_spelling_of_managed(&uri).await.unwrap());
+        assert!(
+            !files
+                .is_other_spelling_of_managed("local://2026/11/nothing-like-it.txt")
+                .await
+                .unwrap()
+        );
+
+        let resp = app
+            .request(
+                Request::get(format!("/files/{variant}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    });
+}
+
+/// The same for a derivative: a restricted image's derivative asked for in
+/// other letter case is refused, even once the real derivative is made.
+#[test]
+fn derivative_of_restricted_image_in_other_letter_case_is_refused() {
+    run_test(async {
+        let app = styles_app();
+        app.ensure_conference_type().await;
+
+        let owner = create_user(app).await;
+        let (uri, path) = upload_png(app, owner).await;
+        item_referencing(app, "Restricted Picture Case", 0, &uri).await;
+        let cookies = admin_cookies(app).await;
+        let made = get_as(app, &format!("/files/styles/w400/{path}"), &cookies).await;
+        assert_eq!(
+            made.status(),
+            StatusCode::OK,
+            "the admin makes the derivative"
+        );
+
+        let resp = get(
+            app,
+            &format!("/files/styles/w400/{}", other_spelling(&path)),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    });
+}

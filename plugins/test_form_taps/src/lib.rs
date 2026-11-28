@@ -7,8 +7,8 @@
 //! form of a user holding its permission, so the rest of the suite never sees
 //! it.
 //!
-//! B83b adds the kernel's account and comment forms and one plugin form
-//! ([`B83B_FORMS`]): each is altered with a probe line, refused with a form
+//! B83b adds the kernel's account and comment forms and one plugin form, and
+//! B83c two admin forms ([`B83B_FORMS`]): each is altered with a probe line, refused with a form
 //! error while its id is listed in this fixture's `b83b_refuse_forms` table,
 //! and its submissions are recorded in `b83b_form_submits`.
 //!
@@ -53,6 +53,9 @@ const B83B_FORMS: &[&str] = &[
     "user_api_token_create",
     // A plugin's own form, served through `ApiResponse::form` (B83b PR 3).
     "test_plugin_api_note",
+    // Admin forms built and checked through `routes::admin_form` (B83c).
+    "access_rule_form",
+    "url_alias_form",
 ];
 
 /// Whether `form_id` is one of [`B83B_FORMS`].

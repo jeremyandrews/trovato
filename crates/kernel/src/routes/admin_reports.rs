@@ -835,7 +835,24 @@ async fn cron_requirement(state: &AppState) -> (Requirement, Option<i64>) {
 async fn files_requirement(state: &AppState) -> Requirement {
     const TITLE: &str = "File system";
     let Some(dir) = state.files().local_dir() else {
-        return Requirement::new(TITLE, "Remote storage", "ok");
+        let storage = state.files().storage();
+        let place = storage.describe();
+        // Bounded: a slow store must not hold the status page.
+        let checked =
+            tokio::time::timeout(std::time::Duration::from_secs(5), storage.check_usable())
+                .await
+                .unwrap_or_else(|_| {
+                    Err(anyhow::anyhow!("the store did not answer within 5 seconds"))
+                });
+        return match checked {
+            Ok(()) => Requirement::new(TITLE, format!("Object storage ({place})"), "ok"),
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "status report: file store");
+                Requirement::new(TITLE, format!("Not usable ({place})"), "error").because(
+                    "Uploads will fail. Check the S3_* settings and this server's access to the bucket.",
+                )
+            }
+        };
     };
     match crate::file::storage::check_writable(dir).await {
         Ok(()) => Requirement::new(TITLE, format!("Writable ({})", dir.display()), "ok"),

@@ -69,27 +69,32 @@ struct UserServiceInner {
 /// and audit it as every other password change is: `password.changed` (or
 /// `password.set`) with `details.via = "cli"`, and a content audit row when
 /// `trovato_audit_log` is enabled.
+///
+/// The password and its security event commit together: when the event
+/// cannot be written, the password is not changed.
 pub async fn reset_password_offline(pool: &PgPool, user_id: Uuid, password: &str) -> Result<bool> {
-    let had_password = User::find_by_id(pool, user_id)
-        .await?
-        .is_some_and(|u| !u.pass.is_empty());
-    let updated = User::update_password(pool, user_id, password).await?;
-    if updated {
-        let audit = AuditTrail::offline(pool.clone()).await;
-        audit
-            .record(
-                "password",
-                "user",
-                user_id,
-                None,
-                serde_json::json!({ "via": "cli" }),
-            )
-            .await;
-        audit
-            .security(password_event(user_id, None, had_password, "cli"))
-            .await;
-    }
-    Ok(updated)
+    let audit = AuditTrail::offline(pool.clone()).await;
+    // Hash before BEGIN: Argon2 takes a while, and a pooled connection must
+    // not sit idle in a transaction meanwhile.
+    let hashed = crate::models::user::hash_password(password)?;
+    let mut tx = pool.begin().await?;
+    let Some(had_password) = User::replace_password(&mut *tx, user_id, &hashed).await? else {
+        return Ok(false);
+    };
+    audit
+        .security_in(&mut tx, password_event(user_id, None, had_password, "cli"))
+        .await?;
+    tx.commit().await?;
+    audit
+        .record(
+            "password",
+            "user",
+            user_id,
+            None,
+            serde_json::json!({ "via": "cli" }),
+        )
+        .await;
+    Ok(true)
 }
 
 /// `password.set` when the account had no password, `password.changed` when
@@ -141,6 +146,13 @@ pub(crate) fn account_created_event(
         .detail("path", path)
         .detail("active", active)
         .detail("by", by)
+}
+
+/// An account [`UserService::update_in`] changed: the account as it is now,
+/// and its event fields as they were, for [`UserService::updated`].
+pub(crate) struct AccountUpdate {
+    pub(crate) user: User,
+    pub(crate) before: crate::models::user::AccountBefore,
 }
 
 /// The fields of an account a change to which is a security event.
@@ -381,18 +393,44 @@ impl UserService {
     ///
     /// `path` names where the account came from (`registration`, `admin`,
     /// `installer`, `cli`), for [`SecurityEventKind::AccountCreated`].
+    ///
+    /// The account and its `account.created` commit together: when the event
+    /// cannot be written, no account is created and this returns the error.
     pub async fn create(
         &self,
         input: CreateUser,
         acting_user: &UserContext,
         path: &str,
     ) -> Result<User> {
-        let user = User::create(&self.inner.pool, input).await?;
-        self.inner.cache.insert(user.id, user.clone());
-        self.dispatch_tap("tap_user_register", user.id, acting_user)
-            .await;
-        info!(user_id = %user.id, name = %user.name, "user created");
-        self.audit_created(&user, acting_user, path, true).await;
+        let pass = crate::models::user::stored_password(&input.password)?;
+        let mut tx = self.inner.pool.begin().await?;
+        let user = self
+            .create_in(&mut tx, input, &pass, 1, acting_user, path)
+            .await?;
+        tx.commit().await?;
+        self.created_with_status(&user, 1, acting_user).await;
+        Ok(user)
+    }
+
+    /// Insert an account on `tx`, the caller's transaction, and write its
+    /// `account.created` there. `pass` is what `users.pass` holds, hashed
+    /// before the transaction began; `status` and `path` are as
+    /// [`Self::create_with_status`].
+    ///
+    /// Once `tx` has committed, the caller calls [`Self::created_with_status`]
+    /// for what follows a new account.
+    pub(crate) async fn create_in(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        input: CreateUser,
+        pass: &str,
+        status: i16,
+        acting_user: &UserContext,
+        path: &str,
+    ) -> Result<User> {
+        let user = User::insert_hashed(&mut *tx, input, pass, status).await?;
+        self.audit_created_in(tx, &user, acting_user, path, status == 1)
+            .await?;
         Ok(user)
     }
 
@@ -407,9 +445,13 @@ impl UserService {
         acting_user: &UserContext,
         path: &str,
     ) -> Result<User> {
-        let user = User::create_with_status(&self.inner.pool, input, status).await?;
-        self.created_with_status(&user, status, acting_user, path)
-            .await;
+        let pass = crate::models::user::stored_password(&input.password)?;
+        let mut tx = self.inner.pool.begin().await?;
+        let user = User::insert_hashed(&mut *tx, input, &pass, status).await?;
+        self.audit_created_in(&mut tx, &user, acting_user, path, status == 1)
+            .await?;
+        tx.commit().await?;
+        self.created_with_status(&user, status, acting_user).await;
         Ok(user)
     }
 
@@ -421,7 +463,8 @@ impl UserService {
     ///
     /// # Errors
     ///
-    /// When the insert or queueing a message fails; then neither happened.
+    /// When the insert, queueing a message or writing `account.created`
+    /// fails; then none of them happened.
     pub async fn create_with_status_and_mail(
         &self,
         input: CreateUser,
@@ -439,27 +482,27 @@ impl UserService {
         for message in mail(&user) {
             email.queue(&mut *tx, message).await?;
         }
+        self.audit_created_in(&mut tx, &user, acting_user, path, status == 1)
+            .await?;
         tx.commit().await?;
         email.wake();
-        self.created_with_status(&user, status, acting_user, path)
-            .await;
+        self.created_with_status(&user, status, acting_user).await;
         Ok(user)
     }
 
-    /// What follows a committed insert: cache, `tap_user_register`, audit.
-    async fn created_with_status(
+    /// What follows a committed insert: cache, `tap_user_register`, the
+    /// content audit row.
+    pub(crate) async fn created_with_status(
         &self,
         user: &User,
         status: i16,
         acting_user: &UserContext,
-        path: &str,
     ) {
         self.inner.cache.insert(user.id, user.clone());
         self.dispatch_tap("tap_user_register", user.id, acting_user)
             .await;
         info!(user_id = %user.id, name = %user.name, status, "user created with status");
-        self.audit_created(user, acting_user, path, status == 1)
-            .await;
+        self.record_created(user, acting_user).await;
     }
 
     /// Update a user with `tap_user_update` invocation.
@@ -477,23 +520,71 @@ impl UserService {
     /// `authenticated(id, vec![])` tells every listener that a permission-less
     /// user acted, which is both false and the thing that makes a plugin's own
     /// permission check deny an entitled user.
+    ///
+    /// The update and the security events it writes (a changed username,
+    /// e-mail address, blocked state or superuser flag) commit together: when
+    /// an event cannot be written, the account is not changed and this
+    /// returns the error.
     pub async fn update(
         &self,
         id: Uuid,
         input: UpdateUser,
         acting_user: &UserContext,
     ) -> Result<Option<User>> {
-        let before = User::find_by_id(&self.inner.pool, id).await?;
-        let user = User::update(&self.inner.pool, id, input).await?;
+        let mut tx = self.inner.pool.begin().await?;
+        let Some(updated) = self.update_in(&mut tx, id, input, acting_user).await? else {
+            return Ok(None);
+        };
+        tx.commit().await?;
+        self.updated(&updated, acting_user).await;
+        Ok(Some(updated.user))
+    }
 
-        if let Some(ref u) = user {
-            self.inner.cache.insert(id, u.clone());
-            self.dispatch_tap("tap_user_update", id, acting_user).await;
-            info!(user_id = %id, "user updated");
-            self.audit_updated(before.as_ref(), u, acting_user).await;
-        }
+    /// [`Self::update`] on `tx`, the caller's transaction: the update and the
+    /// events it writes go there, and the caller calls [`Self::updated`] once
+    /// `tx` has committed. `None` when there is no such account.
+    pub(crate) async fn update_in(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        id: Uuid,
+        input: UpdateUser,
+        acting_user: &UserContext,
+    ) -> Result<Option<AccountUpdate>> {
+        let Some((user, before)) = User::update_returning_before(&mut *tx, id, input).await? else {
+            return Ok(None);
+        };
+        let actor = actor_of(acting_user);
+        let before_fields = AccountFields {
+            name: &before.name,
+            mail: &before.mail,
+            status: before.status,
+            is_admin: before.is_admin,
+        };
+        self.inner
+            .audit
+            .security_all_in(
+                tx,
+                account_change_events(id, actor, &before_fields, &(&user).into()),
+            )
+            .await?;
+        Ok(Some(AccountUpdate { user, before }))
+    }
 
-        Ok(user)
+    /// What follows a committed [`Self::update_in`]: the cache,
+    /// `tap_user_update`, the content audit row.
+    pub(crate) async fn updated(&self, updated: &AccountUpdate, acting_user: &UserContext) {
+        let AccountUpdate { user, before } = updated;
+        let id = user.id;
+        self.inner.cache.insert(id, user.clone());
+        self.dispatch_tap("tap_user_update", id, acting_user).await;
+        info!(user_id = %id, "user updated");
+        let before_fields = AccountFields {
+            name: &before.name,
+            mail: &before.mail,
+            status: before.status,
+            is_admin: before.is_admin,
+        };
+        self.record_updated(&before_fields, user, acting_user).await;
     }
 
     /// Update a user's password with `tap_user_update` invocation.
@@ -506,6 +597,8 @@ impl UserService {
     /// Emits `password.set` when the account had no password and
     /// `password.changed` when it had one, with `via` (`self_service`,
     /// `password_reset`, `recovery`, `admin`) as the event's `details.via`.
+    /// The password and its event commit together: when the event cannot be
+    /// written, the password is not changed and this returns the error.
     pub async fn update_password(
         &self,
         id: Uuid,
@@ -513,31 +606,84 @@ impl UserService {
         acting_user: &UserContext,
         via: &str,
     ) -> Result<bool> {
-        let had_password = User::find_by_id(&self.inner.pool, id)
+        self.update_password_recorded(id, new_password, acting_user, via, Vec::new())
+            .await
+    }
+
+    /// [`Self::update_password`], also writing `also` (events the caller
+    /// built, exactly as it built them) in the password's transaction, when
+    /// there is an account to change: a step whose stored change is this
+    /// password, recovery's `recovery.completed`, commits with it.
+    pub async fn update_password_recorded(
+        &self,
+        id: Uuid,
+        new_password: &str,
+        acting_user: &UserContext,
+        via: &str,
+        also: Vec<SecurityEvent>,
+    ) -> Result<bool> {
+        // Hash before BEGIN: Argon2 takes a while, and a pooled connection
+        // must not sit idle in a transaction meanwhile.
+        let hashed = crate::models::user::hash_password(new_password)?;
+        let mut tx = self.inner.pool.begin().await?;
+        if !self
+            .update_password_in(&mut tx, id, &hashed, acting_user, via)
             .await?
-            .is_some_and(|u| !u.pass.is_empty());
-        let updated = User::update_password(&self.inner.pool, id, new_password).await?;
-
-        if updated {
-            self.invalidate(id);
-            self.dispatch_tap("tap_user_update", id, acting_user).await;
-            info!(user_id = %id, "user password updated");
-            let audit = &self.inner.audit;
-            audit
-                .record(
-                    "password",
-                    "user",
-                    id,
-                    actor_of(acting_user),
-                    serde_json::json!({ "via": via }),
-                )
-                .await;
-            audit
-                .security(password_event(id, actor_of(acting_user), had_password, via))
-                .await;
+        {
+            return Ok(false);
         }
+        for event in also {
+            self.inner
+                .audit
+                .security_as_built_in(&mut tx, event)
+                .await?;
+        }
+        tx.commit().await?;
+        self.password_updated(id, acting_user, via).await;
+        Ok(true)
+    }
 
-        Ok(updated)
+    /// Store `hashed` (from `hash_password`, made before `tx` began) as the
+    /// account's password on `tx`, the caller's transaction, writing
+    /// `password.set` or `password.changed` there. Returns whether there was
+    /// such an account; the caller calls [`Self::password_updated`] once `tx`
+    /// has committed.
+    pub(crate) async fn update_password_in(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        id: Uuid,
+        hashed: &str,
+        acting_user: &UserContext,
+        via: &str,
+    ) -> Result<bool> {
+        let Some(had_password) = User::replace_password(&mut *tx, id, hashed).await? else {
+            return Ok(false);
+        };
+        let actor = actor_of(acting_user);
+        self.inner
+            .audit
+            .security_in(tx, password_event(id, actor, had_password, via))
+            .await?;
+        Ok(true)
+    }
+
+    /// What follows a committed [`Self::update_password_in`]: the cache,
+    /// `tap_user_update`, the content audit row.
+    pub(crate) async fn password_updated(&self, id: Uuid, acting_user: &UserContext, via: &str) {
+        let actor = actor_of(acting_user);
+        self.invalidate(id);
+        self.dispatch_tap("tap_user_update", id, acting_user).await;
+        info!(user_id = %id, "user password updated");
+        self.inner
+            .audit
+            .record(
+                "password",
+                "user",
+                id,
+                actor,
+                serde_json::json!({ "via": via }),
+            )
+            .await;
     }
 
     /// Remove a user's password with `tap_user_update` invocation, as
@@ -545,8 +691,25 @@ impl UserService {
     ///
     /// Authorizes nothing: the caller decides that the account keeps a way in
     /// without it.
-    pub async fn remove_password(&self, id: Uuid, acting_user: &UserContext) -> Result<bool> {
-        let removed = User::clear_password(&self.inner.pool, id).await?;
+    ///
+    /// Writes `event` (the caller's `password.removed`, as it built it) in
+    /// the same transaction as the change: when the event cannot be written,
+    /// the password stays and this returns the error.
+    pub async fn remove_password(
+        &self,
+        id: Uuid,
+        acting_user: &UserContext,
+        event: SecurityEvent,
+    ) -> Result<bool> {
+        let mut tx = self.inner.pool.begin().await?;
+        let removed = User::clear_password(&mut *tx, id).await?;
+        if removed {
+            self.inner
+                .audit
+                .security_as_built_in(&mut tx, event)
+                .await?;
+        }
+        tx.commit().await?;
 
         if removed {
             self.invalidate(id);
@@ -579,13 +742,17 @@ impl UserService {
     /// bug fix and not only a policy.
     ///
     /// Ends every session the account holds, everywhere (through `sessions`,
-    /// the site's session registry), once the row is gone: no session is worth
-    /// keeping for an account that no longer exists.
+    /// the site's session registry): no session is worth keeping for an
+    /// account that no longer exists. They live in Redis, which cannot roll
+    /// back with the delete, so they are ended just before its transaction
+    /// opens, and any session that began meanwhile once it has committed.
     ///
     /// Emits `account.deleted`, whoever called this — self-service and
     /// administrator deletion both go through here, so both are recorded the
     /// same way rather than each keeping its own copy of the emit. Its
-    /// `sessions_revoked` counts the sessions just ended.
+    /// `sessions_revoked` counts the sessions just ended. The event commits
+    /// with the delete: when it cannot be written, the account stays (signed
+    /// out of the sessions already ended) and this returns the error.
     pub async fn delete(
         &self,
         id: Uuid,
@@ -605,7 +772,60 @@ impl UserService {
             .await
             .unwrap_or(0);
 
-        let deleted = User::delete(&self.inner.pool, id).await?;
+        // Ended before the transaction opens, so `account.deleted` can say
+        // how many were: Redis cannot join the transaction, and a count taken
+        // any other way would be of sessions listed, not of sessions ended.
+        let sessions_revoked = match sessions.revoke_all_except(id, None).await {
+            Ok(ended) => ended.len(),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    user_id = %id,
+                    "failed to end a deleted account's sessions"
+                );
+                0
+            }
+        };
+
+        let actor = actor_of(acting_user).filter(|a| *a != id);
+        let by = if actor.is_some() { "admin" } else { "self" };
+        let mut tx = self.inner.pool.begin().await?;
+        let deleted = User::delete_in(&mut tx, id).await?;
+        if deleted {
+            // Deliberately **no** `.user(...)`: `security_audit_log.user_id`
+            // references `users` with `ON DELETE SET NULL`, and by now the
+            // account is gone, so an insert naming its id would fail the
+            // foreign key. The hashed subject is the only identity the row
+            // carries, which is also the point: an audit row naming the raw id
+            // of an account just erased would undercut the erasure.
+            //
+            // `actor_decided()` for the same reason: a self-deletion's signed-in
+            // user *is* the account that just vanished, and without it
+            // `with_request_context` would fill that erased id back in as the
+            // actor and the insert would fail the same foreign key.
+            //
+            // Written in the delete's own transaction: when it cannot be
+            // written, the account is not deleted.
+            self.inner
+                .audit
+                .security_in(
+                    &mut tx,
+                    SecurityEvent::new(SecurityEventKind::AccountDeleted)
+                        .subject(&id.to_string())
+                        .maybe_actor(actor)
+                        .actor_decided()
+                        .detail("by", by)
+                        .detail("items_reattributed", items)
+                        .detail("comments_reattributed", comments)
+                        .detail("sessions_revoked", sessions_revoked),
+                )
+                .await?;
+        }
+        tx.commit()
+            .await
+            .map_err(anyhow::Error::from)
+            .map_err(|e| e.context("failed to commit the account deletion"))?;
+
         if deleted {
             self.invalidate(id);
             // The delete gave the account's items to the anonymous author.
@@ -622,48 +842,16 @@ impl UserService {
                 )
                 .await;
 
-            // Revoked after the delete and without a per-session audit row:
-            // the audit log's `user_id` references `users`, and the account is
-            // gone. The count goes in `account.deleted` instead.
-            let sessions_revoked = sessions
-                .revoke_all_except(id, None)
-                .await
-                .map(|entries| entries.len())
-                .unwrap_or_else(|e| {
-                    tracing::error!(
-                        error = %e,
-                        user_id = %id,
-                        "failed to end a deleted account's sessions"
-                    );
-                    0
-                });
-
-            let actor = actor_of(acting_user).filter(|a| *a != id);
-            let by = if actor.is_some() { "admin" } else { "self" };
-            // Deliberately **no** `.user(...)`: `security_audit_log.user_id`
-            // references `users` with `ON DELETE SET NULL`, and by now the
-            // account is gone, so an insert naming its id would fail the
-            // foreign key. The hashed subject is the only identity the row
-            // carries, which is also the point: an audit row naming the raw id
-            // of an account just erased would undercut the erasure.
-            //
-            // `actor_decided()` for the same reason: a self-deletion's signed-in
-            // user *is* the account that just vanished, and without it
-            // `with_request_context` would fill that erased id back in as the
-            // actor and the insert would fail the same foreign key.
-            self.inner
-                .audit
-                .security(
-                    SecurityEvent::new(SecurityEventKind::AccountDeleted)
-                        .subject(&id.to_string())
-                        .maybe_actor(actor)
-                        .actor_decided()
-                        .detail("by", by)
-                        .detail("items_reattributed", items)
-                        .detail("comments_reattributed", comments)
-                        .detail("sessions_revoked", sessions_revoked),
-                )
-                .await;
+            // A session that began between the revoke above and the commit:
+            // ended without a per-session audit row, as those were, since the
+            // audit log's `user_id` references `users` and the account is gone.
+            if let Err(e) = sessions.revoke_all_except(id, None).await {
+                tracing::error!(
+                    error = %e,
+                    user_id = %id,
+                    "failed to end a deleted account's sessions"
+                );
+            }
         }
 
         Ok(deleted)
@@ -764,70 +952,75 @@ impl UserService {
         self.inner.cache.entry_count() as usize
     }
 
-    /// Dispatch a user tap hook with standard `{ "user_id": "..." }` payload.
-    /// Record an account created, both as a content audit row and, as the
-    /// security event every creation path shares, `account.created` (see
-    /// [`account_created_event`]).
-    async fn audit_created(
+    /// Write `account.created` (see [`account_created_event`]), the
+    /// security event every creation path shares, inside the creating
+    /// transaction.
+    async fn audit_created_in(
         &self,
+        tx: &mut sqlx::PgConnection,
         user: &User,
         acting_user: &UserContext,
         path: &str,
         active: bool,
-    ) {
-        let actor = actor_of(acting_user);
+    ) -> Result<()> {
+        self.inner
+            .audit
+            .security_in(
+                tx,
+                account_created_event(user.id, actor_of(acting_user), path, active),
+            )
+            .await
+    }
+
+    /// Record a committed account creation as a content audit row.
+    async fn record_created(&self, user: &User, acting_user: &UserContext) {
         self.inner
             .audit
             .record(
                 "create",
                 "user",
                 user.id,
-                actor,
+                actor_of(acting_user),
                 serde_json::json!({ "name": user.name, "status": user.status }),
             )
             .await;
-        self.inner
-            .audit
-            .security(account_created_event(user.id, actor, path, active))
-            .await;
     }
 
-    /// Record an account updated, and, as security events, a change to its
-    /// username, its e-mail address, its blocked state or its administrator
-    /// flag.
-    async fn audit_updated(&self, before: Option<&User>, after: &User, acting_user: &UserContext) {
-        let actor = actor_of(acting_user);
+    /// Record a committed account update as a content audit row, naming the
+    /// fields among the username, the e-mail address, the blocked state and
+    /// the administrator flag that changed.
+    async fn record_updated(
+        &self,
+        before: &AccountFields<'_>,
+        after: &User,
+        acting_user: &UserContext,
+    ) {
         let mut changed = Vec::new();
-        if let Some(before) = before {
-            if before.name != after.name {
-                changed.push("name");
-            }
-            if before.mail != after.mail {
-                changed.push("mail");
-            }
-            if before.status != after.status {
-                changed.push("status");
-            }
-            if before.is_admin != after.is_admin {
-                changed.push("is_admin");
-            }
+        if before.name != after.name {
+            changed.push("name");
         }
-        let audit = &self.inner.audit;
-        audit
+        if before.mail != after.mail {
+            changed.push("mail");
+        }
+        if before.status != after.status {
+            changed.push("status");
+        }
+        if before.is_admin != after.is_admin {
+            changed.push("is_admin");
+        }
+        self.inner
+            .audit
             .record(
                 "update",
                 "user",
                 after.id,
-                actor,
+                actor_of(acting_user),
                 serde_json::json!({ "name": after.name, "changed": changed }),
             )
             .await;
-        let Some(before) = before else { return };
-        for event in account_change_events(after.id, actor, &before.into(), &after.into()) {
-            audit.security(event).await;
-        }
     }
 
+    /// Dispatch a user tap hook with standard `{ "user_id": "..." }` payload.
     async fn dispatch_tap(&self, tap_name: &str, user_id: Uuid, acting_user: &UserContext) {
         let json = serde_json::json!({ "user_id": user_id.to_string() });
         let state = RequestState::new(acting_user.clone(), self.inner.tap_services.clone());

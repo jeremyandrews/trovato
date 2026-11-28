@@ -1,31 +1,10 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
 {% block page_title %}{% if editing %}{{ t(s="Edit redirect") }}{% else %}{{ t(s="Add redirect") }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="A redirect sends a visitor who asks for an old address on to the page that lives somewhere else now.") }}</p>{% endblock page_intro %}
 
 {% block content %}
-{% set errs = errors | default(value=[]) %}
 <div class="admin-card">
-    <form id="redirect-form" method="post" action="{{ action }}" novalidate>
-        {{ form::csrf(csrf_token=csrf_token) }}
-
-        {{ form::error_summary(errors=errs) }}
-
-        {{ form::field(name="source", label=t(s="Source path"), value=values.source | default(value=""), hint=t(s="The old path to redirect from, with an optional query string, for example {example}. A source with a query matches only a request with that query; a source with no query matches any query. Parameter order and percent-encoding are normalized, so the source is shown back as it is stored.", example="/article.php?sid=123"), required=true, errors=errs, width="30", attrs='spellcheck="false" autocapitalize="none"') }}
-
-        {{ form::field(name="destination", label=t(s="Destination"), value=values.destination | default(value=""), hint=t(s="A path on this site, such as {example}, or an http or https address.", example="/blog/the-new-page"), required=true, errors=errs, attrs='spellcheck="false" autocapitalize="none"') }}
-
-        {% if values.status_code is defined and values.status_code %}{% set current_status = values.status_code %}{% else %}{% set current_status = "301" %}{% endif %}
-        {{ form::select(name="status_code", label=t(s="Redirect type"), options=status_options, value=current_status, translate_options=true, errors=errs) }}
-
-        {{ form::field(name="language", label=t(s="Language"), value=values.language | default(value=""), hint=t(s="A language code, such as {example}. Leave blank to match every language.", example="en"), errors=errs, width="10", attrs='spellcheck="false" autocapitalize="none"') }}
-
-        {% if editing %}
-        {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/config/redirects") }}
-        {% else %}
-        {{ form::actions(submit_label=t(s="Create redirect"), cancel_url="/admin/config/redirects") }}
-        {% endif %}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}

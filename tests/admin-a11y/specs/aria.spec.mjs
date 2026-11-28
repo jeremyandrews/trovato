@@ -44,8 +44,11 @@ const PAGE_TYPES = {
   'who-can': '/admin/people/who-can?path=/admin/structure/menus',
   'a11y-report': '/admin/reports/accessibility',
   confirm: async (page) => {
+    // A row's Delete opens its own page; a bulk delete still asks here.
     await page.goto('/admin/content');
-    await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('tbody tr').first().locator('button.link-button--danger').click()]);
+    await page.locator('[data-select-row]').first().check();
+    await page.selectOption('#content_bulk_form #action', 'delete');
+    await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('#content_bulk_form [type=submit]').click()]);
   },
 };
 

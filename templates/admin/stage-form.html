@@ -1,38 +1,13 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
-{% block page_title %}{% if editing %}{{ t(s="Edit stage {label}", label=values.label | default(value="")) }}{% else %}{{ t(s="Add stage") }}{% endif %}{% endblock page_title %}
+{% block page_title %}{% if editing %}{{ t(s="Edit stage {label}", label=label | default(value="")) }}{% else %}{{ t(s="Add stage") }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="A stage is a step content passes through on its way to being published.") }}</p>{% endblock page_intro %}
 
 {% block content %}
-{% set errs = errors | default(value=[]) %}
 <div class="admin-card">
-    <form id="stage-form" method="post" action="{{ action }}" novalidate>
-        {{ form::csrf(csrf_token=csrf_token) }}
-
-        {{ form::error_summary(errors=errs) }}
-
-        {% if is_live %}
-        <p class="description">{{ t(s="This is the Live stage. Its visibility cannot be changed: published content is resolved through the one public stage, so making this one internal would take the site's published content off the site.") }}</p>
-        {% endif %}
-
-        {{ form::field(name="machine_name", label=t(s="Machine name"), value=values.machine_name | default(value=""), hint=t(s="Lowercase letters, numbers and underscores, starting with a letter. This is what config files and workflow definitions refer to the stage by."), required=true, errors=errs, width="20", attrs='spellcheck="false" autocapitalize="none"') }}
-
-        {{ form::field(name="label", label=t(s="Label"), value=values.label | default(value=""), required=true, errors=errs, width="30") }}
-
-        {{ form::field(name="description", label=t(s="Description"), value=values.description | default(value=""), hint=t(s="Optional. Shown to editors in the stage listing."), errors=errs) }}
-
-        {{ form::select(name="visibility", label=t(s="Visibility"), options=visibilities, value=values.visibility | default(value="internal"), translate_options=true, hint=t(s="Only one stage can be public, and it is the Live stage."), required=true, errors=errs) }}
-
-        {{ form::checkbox(name="is_default", label=t(s="Default stage for new content"), checked=values.is_default | default(value=false), hint=t(s="Exactly one stage is the default. Checking this here clears it on whichever stage holds it now. It cannot be cleared without giving it to another stage: new content has to land somewhere."), errors=errs) }}
-
-        {{ form::field(name="weight", type="number", label=t(s="Weight"), value=values.weight | default(value=0), hint=t(s="Lower sorts first in the listing."), errors=errs, width="4", attrs='step="1"') }}
-
-        {% if editing %}
-        {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/structure/stages") }}
-        {% else %}
-        {{ form::actions(submit_label=t(s="Create stage"), cancel_url="/admin/structure/stages") }}
-        {% endif %}
-    </form>
+    {% if is_live %}
+    <p class="description">{{ t(s="This is the Live stage. Its visibility cannot be changed: published content is resolved through the one public stage, so making this one internal would take the site's published content off the site.") }}</p>
+    {% endif %}
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}
