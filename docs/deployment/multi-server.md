@@ -11,22 +11,29 @@ sticky sessions. A single server needs none of this and none of its settings.
 |---|---|---|
 | One Postgres | All content, configuration, users, plugin status and the cron lock | `DATABASE_URL`, the same on every server |
 | One Redis | Sessions, rate limit counters, the shared cache, queues, cron locks and the cache generations | `REDIS_URL`, the same on every server |
-| One shared directory | Uploads and their image derivatives, and the Pagefind index | `UPLOADS_DIR` and `PAGEFIND_OUTPUT_DIR` pointing into it |
+| One shared directory, or S3-compatible object storage | Uploads and their image derivatives, and the Pagefind index | `UPLOADS_DIR` and `PAGEFIND_OUTPUT_DIR` pointing into it, or `PUBLIC_FILE_BACKEND=s3`/`PRIVATE_FILE_BACKEND=s3` |
 
-The shared directory is a filesystem every server mounts read-write: a
-Kubernetes `PersistentVolumeClaim` with access mode `ReadWriteMany`, an NFS
-export, or Amazon EFS. Object storage is not supported. Mount the volume one
-level above the directories Trovato writes, for example at `/shared`, and set:
+A shared directory is one option for uploads, and still the only one for the
+Pagefind index: a filesystem every server mounts read-write, a Kubernetes
+`PersistentVolumeClaim` with access mode `ReadWriteMany`, an NFS export, or
+Amazon EFS. Mount the volume one level above the directories Trovato writes,
+for example at `/shared`, and set:
 
 ```sh
 UPLOADS_DIR=/shared/uploads
 PAGEFIND_OUTPUT_DIR=/shared/pagefind
 ```
 
-Each server checks the uploads directory when it starts: it writes, reads back
-and deletes a uniquely named file there, and refuses to start, naming the
+Each server checks a local uploads directory when it starts: it writes, reads
+back and deletes a uniquely named file there, and refuses to start, naming the
 directory, if it cannot. A broken mount fails the deploy, not the first
 upload.
+
+**Uploads alone** can instead go to any S3-compatible store (AWS, MinIO, Ceph,
+DigitalOcean Spaces, Backblaze), which needs no shared volume at all — see
+[s3-minio.md](s3-minio.md). The Pagefind index still needs the shared
+directory above regardless of where uploads live; `PAGEFIND_OUTPUT_DIR` is
+unrelated to `UPLOADS_DIR`/`PUBLIC_FILE_BACKEND`.
 
 Each server's built-in cron scheduler (`cron_interval_secs` in site settings,
 default 300 seconds) calls cron on its own cadence, and an external caller to

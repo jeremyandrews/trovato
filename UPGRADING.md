@@ -126,6 +126,57 @@ in the log, and the page keeps its link and card.
 **How to find out.** `grep -rn "AdminNavDefinition {" plugins/*/src` in an
 out of tree plugin finds both kinds.
 
+### S3-compatible storage and private files (BL-109 reversed)
+
+**Who is affected:** nobody who does not set a new environment variable. A
+site with no `S3_BUCKET`, `PUBLIC_FILE_BACKEND` or `PRIVATE_FILE_BACKEND` set
+keeps storing and serving files exactly as before (local disk, under
+`UPLOADS_DIR`, at `FILES_URL`).
+
+**What changed.** `file_managed` has a new column, `visibility` (0=public,
+1=private, default 0), added nullable-with-default so it needs no backfill
+and no action on upgrade. Files now live under one of two independently
+configured schemes:
+
+- `PUBLIC_FILE_BACKEND` and `PRIVATE_FILE_BACKEND` (each `local`, the
+  default, or `s3`) pick the backend for each scheme.
+- An `s3` backend reads `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`,
+  `S3_KEY_PREFIX`, `S3_PATH_STYLE`, `S3_ACCESS_KEY_ID` and
+  `S3_SECRET_ACCESS_KEY` from the environment only — never the database,
+  never a config set. `S3_PUBLIC_BASE_URL` serves public files from a CDN or
+  the bucket's own public endpoint instead of proxying them through the
+  kernel. `S3_PRESIGN_TTL_SECS` (default 900) sets how long a presigned URL
+  is valid.
+- A local private backend uses `PRIVATE_UPLOADS_DIR` (default
+  `{UPLOADS_DIR}/private`), which a reverse proxy or web server must never
+  serve directly: the kernel's own `GET /file/{id}/download` route is the
+  only sanctioned path to its bytes.
+- A File field marks itself private with `"private": true` in its
+  `settings`; a file attached to one is marked private immediately
+  (`file_managed.visibility`), even if its bytes are still sitting in the
+  public backend from before the field was marked private — see
+  `trovato files migrate`, next.
+- `PRIVATE_FILE_SERVE` (`stream`, the default, or `redirect`) chooses
+  whether a private download streams through the kernel or 302s to a
+  presigned URL; `redirect` only takes effect on a backend that can presign
+  (S3).
+- New route: `GET /file/{id}/download`, gated the same way `/files/{path}`
+  already was. This is also the `/file/<uuid>/download` route Ritrovo's A15
+  wanted and the kernel did not have.
+- `/files/{path}` and the image style route now refuse (404) a file whose
+  `visibility` is private: that convention is for public files only.
+- New CLI command: `trovato files migrate --from <local|s3> --to
+  <local|s3>` copies every file on one backend to the other, verifying size
+  and a SHA-256 checksum before rewriting `file_managed.uri`, and resumes
+  cleanly if interrupted (it re-queries for files still on the source
+  backend, so nothing is reprocessed or lost).
+
+**How to find out.** Nothing to check before upgrading: every new setting
+defaults to the pre-upgrade behavior. After upgrading, a site that wants S3
+storage or private files sets the new environment variables and, for an
+existing local deployment moving to S3, runs `trovato files migrate --from
+local --to s3`.
+
 ## v0.105.0 — 2026-11-25
 
 ### A `CategoryReference` field kind; `FieldType` is `#[non_exhaustive]`; cardinality is enforced on every write

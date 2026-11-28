@@ -21,6 +21,7 @@ and `trovato <command> --help` print the same, from the binary.
 | `trovato cache clear [--kind <kind>]...` | Tell every running server to drop its in-memory caches (all kinds, or the ones named). |
 | `trovato item revision-delete <item> <revision>` | Delete a past revision of an item. |
 | `trovato import <file> [--dry-run]` | Import content from another site (users, items and their revisions, comments, aliases, redirects, tiles), keeping each record's id and dates. |
+| `trovato files migrate --from <local\|s3> --to <local\|s3>` | Move every file from one storage backend to another, verified and resumable. |
 | `trovato generate --items <N> --admin-password <PASSWORD>` | Write a deterministic test site of a given size (for performance tests and benchmarks). |
 
 ## `trovato migrate`
@@ -258,3 +259,32 @@ Imported 150 records from site.ndjson:
 150 change(s).
 Running servers have dropped their cached copies; the next request reads the database.
 ```
+
+## `trovato files migrate`
+
+```
+trovato files migrate --from <local|s3> --to <local|s3>
+```
+
+Copies every `file_managed` row currently stored on `--from` to `--to`, for
+moving uploads onto (or off of) S3-compatible storage (BL-109) — see
+[`docs/deployment/s3-minio.md`](deployment/s3-minio.md) for the settings this
+reads (`S3_BUCKET`, `S3_ACCESS_KEY_ID`, etc., plus `UPLOADS_DIR` and
+`PRIVATE_UPLOADS_DIR` for a `local` side) and a worked MinIO example. Each
+file's scheme (public or private) is unchanged; only its physical backend
+moves — a public file stays public, a private file stays private.
+
+- **Verified.** Each copy's size and a SHA-256 checksum are checked against
+  the source before anything in the database changes; a mismatch stops that
+  file's migration and leaves both copies in place for inspection, with no
+  row rewritten.
+- **Resumable, no progress file.** `file_managed.uri` is rewritten only after
+  a copy verifies, and the source copy is deleted only after that rewrite
+  commits. An interrupted run (Ctrl-C, a pod restart, a crash) leaves some
+  rows already pointing at `--to` and others still on `--from`; rerunning the
+  same command picks up exactly where it left off, since it only ever
+  queries for rows still on `--from`. Nothing is reprocessed, double-counted
+  or lost.
+- Prints the id, old and new URI of every file as it is moved, then a total.
+
+Runs as the operator, like every command on this page.

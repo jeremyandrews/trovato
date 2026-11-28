@@ -296,7 +296,7 @@ bear out is recorded as such in the row rather than dropped.
 | BL-106 (G-VIEW-TAP-INPUT-CARRIES-NO-VIEWER) | The plugin documentation describes `tap_item_view(input: ItemViewInput) -> RenderElement`, and there is no `ItemViewInput` in the SDK: the kernel serialises the `Item` alone and the SDK tap returns a `String`. The viewer is reachable anyway, because the tap runs with the viewer's request state, and hiding a field is not a view tap's job: `tap_field_access` carries the viewer and removes fields before any view tap runs. A documentation defect that sent a real plugin to wait for a kernel change nobody needs. | `crates/kernel/src/content/item_service.rs:573,575-583`; `docs/plugin-development.md:215,292` | open | 1.0.x | additive (documentation) |
 | BL-107 (G-FILE-NO-HOST-API) | A plugin cannot accept or store a file. There is no file interface among the WIT world's twelve imports, and a plugin route's body is UTF-8 text capped at 256 KiB, so a multipart upload to a plugin page is refused before the plugin sees it. | `crates/wit/kernel.wit:258-270` (the import list); `crates/kernel/src/routes/plugin_api.rs:92,309-313` | open | post, **Ritrovo gate** | additive if the body gains a field or a host call is added; frozen if `ApiRequest::body` changes type |
 | BL-108 (G-PLUGIN-ROUTE-NO-HEADERS) | A plugin route sees no request headers and sets none. `ApiRequest` carries callback, method, path, params, query, body, user and a CSRF token; `ApiResponse` sets status, body, content type, theme and title. So a plugin cannot redirect after a POST, set `Cache-Control`, or read `Accept-Language`. | `crates/plugin-sdk/src/types.rs:784-812,884-918`; `crates/kernel/src/routes/plugin_api.rs:408-421` | open | post | additive (new optional fields on both records) |
-| BL-109 (G-S3-STORAGE-REMOVED) | There is no S3-compatible storage backend. This is a recorded decision, not an omission: it was an unused, non-default optional feature and the last carrier of the legacy AWS-SDK TLS chain, and the source says so and names the way back. Listed so the documents that promise S3 stop being read as describing something outstanding. | `crates/kernel/src/file/storage.rs:1-8` | decided | closed, **Ritrovo gate** | n/a |
+| BL-109 (G-S3-STORAGE-REMOVED) | There is no S3-compatible storage backend. This was a recorded decision, not an omission: an unused, non-default optional feature and the last carrier of the legacy AWS-SDK TLS chain. Reversed by Jeremy's ruling 2026-11-27: the workspace is on rustls 0.23 throughout now, so the precondition the old decision named is met. [B291] adds `S3Storage` (a hand-rolled SigV4 signer over the kernel's existing `reqwest` client — no AWS SDK, no new TLS stack), a `public`/`private` file scheme each independently mapped to a backend (local or S3) in `Config`, a `GET /file/{id}/download` route (also the `/file/<uuid>/download` route Ritrovo A15 wanted), and `trovato files migrate --from --to`. | `crates/kernel/src/file/storage.rs`, `s3.rs`, `sigv4.rs`, `relocate.rs` | fixed [B291] | closed, **Ritrovo gate** | additive (new `file_managed.visibility` column, new routes, new env vars; existing local-only sites change nothing) |
 | BL-110 (G-REVISION-NO-COMPARE) | No route or template compared two revisions. `GET /item/{id}/revisions/compare?from=&to=` now does, field by field, computed from the two revisions' `fields` snapshots (`item_revision.change_summary` is never written, so there was nothing to read), with a preview of any revision beside it, both held to `view` then `edit` and filtered by field view access. | `crates/kernel/src/content/revision_compare.rs`; `crates/kernel/src/routes/item.rs` (`compare_revisions`, `preview_revision`) | fixed #169 | closed | n/a |
 | BL-111 (G-SEARCH-NO-ADMIN-OR-ANALYTICS) | Search ranking is a JSON block in a template rather than configuration, there is no search settings screen, and nothing records a query: a search of `crates/kernel/src` and `templates/` finds no query log, no top-query report and no expansion hit rate. Per-type field weights, which do have a screen, are a different thing. | `templates/search.html:100-121`; no `admin/config/search` route in `crates/kernel/src/routes/mod.rs` | fixed: the settings model, the screen at `/admin/config/search`, ranking read from it by both backends, and the AI stage switches enforced on the server (#187); query analytics, the beacon, retention and the report at `/admin/reports/search` (#188); follow-up sentiment, classified off the request path (#189) | post, **Ritrovo gate** | additive |
 
@@ -318,8 +318,9 @@ wider than their text, and the rows above carry the corrected version:
   Both carry `#[serde(default)]`, which reads as a default at a glance and does
   nothing for `sqlx::FromRow`. That is why the defect survived review (BL-91).
 
-`G-S3-STORAGE-REMOVED` is not a defect in either direction: it is a decision the
-kernel recorded, and it is listed as closed (BL-109) rather than open.
+`G-S3-STORAGE-REMOVED` was not a defect in either direction: it was a decision
+the kernel recorded, closed (BL-109) rather than open. [B291] reverses that
+decision rather than finding it wrong — see BL-109's row for why now.
 
 ### Every blocked Ritrovo row, mapped
 
@@ -614,15 +615,15 @@ the [Tally](#tally) counts from and are not folded into it.
 ## Tally
 
 123 distinct findings after merging duplicates. By status: 85 open, 5 partly fixed
-(BL-03, BL-06, BL-07, BL-21, BL-25), 30 fixed, 2 that do not reproduce, and 1 decided
-(BL-109). By class: 24 proposed to block 1.0, 34 to ship in 1.0.x, 34 to wait until
-after 1.0, and 31 closed. The two partitions cross at three rows: of the two that do
-not reproduce, BL-14 is closed and BL-71 stays in 1.0.x until two consecutive runs
-on one database confirm it; and BL-02 is fixed in the kernel and stays in 1.0 for
-the SDK half its row names. So the 31 closed are 29 of the 30 fixed, plus BL-14 and
-BL-109. Everything not closed — 92 rows — is what "open" means in the paragraph
-above, and the five partly fixed rows are inside it, each one open on the half its
-row names.
+(BL-03, BL-06, BL-07, BL-21, BL-25), 31 fixed, and 2 that do not reproduce. By class:
+24 proposed to block 1.0, 34 to ship in 1.0.x, 34 to wait until after 1.0, and 31
+closed. The two partitions cross at three rows: of the two that do not reproduce,
+BL-14 is closed and BL-71 stays in 1.0.x until two consecutive runs on one database
+confirm it; and BL-02 is fixed in the kernel and stays in 1.0 for the SDK half its
+row names. So the 31 closed are 30 of the 31 fixed (BL-109 among them, since [B291]
+reversed the decision that used to close it a different way), plus BL-14.
+Everything not closed — 92 rows — is what "open" means in the paragraph above, and
+the five partly fixed rows are inside it, each one open on the half its row names.
 
 The 24: BL-01, BL-02, BL-06, BL-07, BL-08, BL-21, BL-22, BL-46, BL-57, BL-67,
 BL-68, BL-73, BL-74, BL-85, BL-87, BL-92, BL-93, BL-98, BL-99, BL-100,
@@ -897,12 +898,12 @@ named.
 | **K10 translation write path** | BL-02 | 38.1, 38.3, 38.4, D21, P15 | additive | `routes/admin_translation.rs`, `config_storage/yaml.rs`, `crates/wit/kernel.wit`, `host/`, `content/item_service.rs` | the two templates landed with #74 at `dcb7b35` (BL-15, closed). Do not rewrite them: add the POST handler, the config entity and the host call around them |
 | **K11 interface strings and language** | BL-98, BL-104, and BL-97 with them | 38.2, D21 (with K10), 34.4's menu half | additive | `state.rs`, `services/locale.rs`, `main.rs` (a CLI import), `config_storage/yaml.rs`, `docs/tutorial/config/`, `routes/plugin_api.rs`, `crates/plugin-sdk/src/types.rs` | BL-97 carries no gate mark: it is here because A8 step 2 needs it and it is the same file set |
 | **K12 layout and search** | BL-99, BL-111, and BL-100 with them | 34.4, D12, 30.3, 30.6, 30.7 | additive | `services/tile.rs`, `static/js/search-init.js`, `static/js/scolta.js`, `templates/search.html`, a new search settings route and template | BL-100 carries no gate mark and is a 1.0 blocker on the day-one test; it is in this batch because it is the same page |
+| **K13 S3-compatible storage and private files** | BL-109 (fixed [B291]) | 39.3 | additive | `file/storage.rs`, `file/s3.rs`, `file/sigv4.rs`, `file/relocate.rs`, `file/service.rs`, `content/file_refs.rs`, `content/item_service.rs`, `config.rs`, `routes/file.rs`, `routes/image_style.rs`, `routes/admin_reports.rs`, `main.rs` | none open; independent, and no longer waits on the ruling below |
 
-**BL-109 is in no batch.** There is no S3 backend and its removal is a recorded
-decision with a named way back. Ritrovo row 39.3 waits on it and therefore cannot
-close, which makes 39.3 the one gate this order cannot schedule. That is recorded,
-not waived: lifting the mark on 39.3, or reopening S3, is a decision for the person
-who made the ruling.
+**BL-109 was in no batch**, until Jeremy's ruling 2026-11-27 reversed the decision
+it recorded: the workspace is on rustls 0.23 throughout now (the precondition the
+original removal named), so an S3 backend returned without bringing an AWS SDK
+back, in K13. Ritrovo row 39.3 no longer waits on anything.
 
 ### The critical path
 
