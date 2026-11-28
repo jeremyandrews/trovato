@@ -13,10 +13,13 @@
 //!
 //! Needs Postgres, Redis and the S3 test store (`TROVATO_TEST_S3_ENDPOINT`,
 //! `TROVATO_TEST_S3_BUCKET`, the store's `AWS_ACCESS_KEY_ID` and
-//! `AWS_SECRET_ACCESS_KEY`). Without the store it skips locally and fails
-//! under CI.
+//! `AWS_SECRET_ACCESS_KEY`), always set in CI (real MinIO). Without them, a
+//! local run starts an in-process fake S3 server instead of skipping
+//! (`fake_s3`, below).
 
 mod common;
+#[path = "common/fake_s3.rs"]
+mod fake_s3;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
@@ -68,13 +71,14 @@ fn s3_config() -> Option<S3Config> {
             prefix: Some(format!("serving-{}", Uuid::now_v7().simple())),
         }),
         _ => {
-            assert!(
-                std::env::var_os("CI").is_none(),
-                "CI must run the S3 serving tests: set TROVATO_TEST_S3_ENDPOINT and \
-                 TROVATO_TEST_S3_BUCKET (the workflow starts MinIO for them)"
-            );
-            eprintln!("skipping: no S3 test store (TROVATO_TEST_S3_ENDPOINT) configured");
-            None
+            let (endpoint, bucket) = fake_s3::ensure("trovato-serving-fake");
+            Some(S3Config {
+                bucket,
+                region: Some("us-east-1".to_string()),
+                allow_http: true,
+                endpoint: Some(endpoint),
+                prefix: Some(format!("serving-{}", Uuid::now_v7().simple())),
+            })
         }
     }
 }

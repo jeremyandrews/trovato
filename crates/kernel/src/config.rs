@@ -438,6 +438,19 @@ pub struct RuntimeConfig {
     /// `timer_settings` `site_config` row edited on `/admin/reports/timers`,
     /// as `CRON_INTERVAL_SECS` wins over the cron interval.
     pub timer_overrides: crate::timer::TimerOverrides,
+
+    /// Whether `/files/` and an image style derivative may serve a stored
+    /// path that has no `file_managed` row (`SERVE_UNMANAGED_FILES`, default
+    /// `true`, which serves exactly as every site has so far).
+    ///
+    /// A ported site's files are copied into the store ahead of the importer,
+    /// so between the copy and the last `file` record some, or on a flawed
+    /// migration all, of them have no row — and with no row there is no
+    /// ownership or reference check to refuse a private one with. Set to
+    /// `false`, a path with no row is `404` before storage is ever read, so a
+    /// migration that failed to register every file can never leak one; set it
+    /// back to `true` only once every migrated file has a `file` record.
+    pub serve_unmanaged_files: bool,
 }
 
 /// The SMTP configuration mail is sent with, as an administrator may see it.
@@ -900,6 +913,18 @@ impl Config {
             Some("0" | "false" | "no" | "off") => false,
             Some(other) => anyhow::bail!("MIGRATE_ON_START must be true or false, not {other:?}"),
         };
+        // Strict, as `MIGRATE_ON_START` is: a typo here must not quietly leave
+        // a ported site's unregistered files servable to anyone.
+        let serve_unmanaged_files = match get("SERVE_UNMANAGED_FILES")
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("" | "1" | "true" | "yes" | "on") => true,
+            Some("0" | "false" | "no" | "off") => false,
+            Some(other) => {
+                anyhow::bail!("SERVE_UNMANAGED_FILES must be true or false, not {other:?}")
+            }
+        };
         let default_drain = if get("KUBERNETES_SERVICE_HOST").is_some() {
             5
         } else {
@@ -977,6 +1002,7 @@ impl Config {
                 .transpose()
                 .context("CRON_INTERVAL_SECS must be a valid non-negative integer")?,
             timer_overrides: crate::timer::TimerOverrides::from_lookup(get)?,
+            serve_unmanaged_files,
         };
 
         Ok(Self {

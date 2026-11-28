@@ -14,8 +14,8 @@ use uuid::Uuid;
 
 use crate::content::FileAccess;
 use crate::file::{
-    MAX_FILE_SIZE, MAX_UPLOAD_BODY_SIZE, UploadRejected, UploadResult, mime_for_filename,
-    resolve_mime_type,
+    FileStream, MAX_FILE_SIZE, MAX_UPLOAD_BODY_SIZE, UploadRejected, UploadResult,
+    is_range_not_satisfiable, mime_for_filename, parse_range_header, resolve_mime_type,
 };
 use crate::state::AppState;
 
@@ -208,6 +208,72 @@ pub(crate) async fn unmanaged_is_servable(state: &AppState, uri: &str) -> anyhow
     Ok(!state.files().is_other_spelling_of_managed(uri).await?)
 }
 
+/// The `Range: bytes=...` header of a request, parsed to the one range it
+/// asks for (`None` for no header, several ranges, or a value this server does
+/// not understand — each served as the whole file, `200`).
+pub(crate) fn requested_range(headers: &HeaderMap) -> Option<crate::file::ByteRange> {
+    headers
+        .get(axum::http::header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_range_header)
+}
+
+/// Build the response for a [`FileStream`] already resolved against a
+/// request's range: `200` with the whole body when no `Range` header was
+/// understood, `206` with `Content-Range` when one was. Shared by the plain
+/// file route and image style derivatives, so both answer a `Range` request
+/// the same way.
+pub(crate) fn stream_response(
+    stream: FileStream,
+    had_range_request: bool,
+    mut headers: Vec<(axum::http::HeaderName, String)>,
+) -> Response {
+    let status = if had_range_request {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+    headers.push((
+        axum::http::header::CONTENT_LENGTH,
+        (stream.end - stream.start).to_string(),
+    ));
+    headers.push((axum::http::header::ACCEPT_RANGES, "bytes".to_string()));
+    if had_range_request {
+        headers.push((
+            axum::http::header::CONTENT_RANGE,
+            format!(
+                "bytes {}-{}/{}",
+                stream.start,
+                stream.end.saturating_sub(1),
+                stream.total
+            ),
+        ));
+    }
+    let mut builder = axum::http::Response::builder().status(status);
+    for (name, value) in headers {
+        builder = builder.header(name, value);
+    }
+    // Infallible: a valid status and ASCII header values cannot fail to build.
+    #[allow(clippy::unwrap_used)]
+    builder
+        .body(axum::body::Body::from_stream(stream.stream))
+        .unwrap()
+        .into_response()
+}
+
+/// `416 Range Not Satisfiable`, for a `Range` request naming bytes past the
+/// end of a file of `total` bytes.
+pub(crate) fn range_not_satisfiable_response(total: u64) -> Response {
+    // Infallible: a valid status and ASCII header value cannot fail to build.
+    #[allow(clippy::unwrap_used)]
+    axum::http::Response::builder()
+        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+        .header(axum::http::header::CONTENT_RANGE, format!("bytes */{total}"))
+        .body(axum::body::Body::empty())
+        .unwrap()
+        .into_response()
+}
+
 /// One of Trovato's own working file names (see [`is_original_upload_path`]).
 fn is_working_name(c: &str) -> bool {
     // Case-blind, for a case-insensitive local filesystem.
@@ -265,6 +331,7 @@ async fn get_file_info(
 async fn serve_uploaded_file(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path(path): Path<String>,
 ) -> Response {
     let path = path.trim_start_matches('/');
@@ -292,16 +359,25 @@ async fn serve_uploaded_file(
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
     let content_type = match state.items().file_access(&uri, &viewer).await {
         Ok(FileAccess::Allowed { filemime }) => filemime,
-        Ok(FileAccess::Unmanaged) => match unmanaged_is_servable(&state, &uri).await {
-            Ok(true) => mime_for_filename(path)
-                .unwrap_or("application/octet-stream")
-                .to_string(),
-            Ok(false) => return StatusCode::NOT_FOUND.into_response(),
-            Err(e) => {
-                warn!(error = %format!("{e:#}"), path = %path, "failed to authorize file access");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        Ok(FileAccess::Unmanaged) => {
+            // BG16 follow-up: a ported or hosted site that cannot promise
+            // every stored object has a `file_managed` row sets
+            // `SERVE_UNMANAGED_FILES=false`, so an unregistered private file
+            // is refused before storage is ever read.
+            if !state.runtime().serve_unmanaged_files {
+                return StatusCode::NOT_FOUND.into_response();
             }
-        },
+            match unmanaged_is_servable(&state, &uri).await {
+                Ok(true) => mime_for_filename(path)
+                    .unwrap_or("application/octet-stream")
+                    .to_string(),
+                Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+                Err(e) => {
+                    warn!(error = %format!("{e:#}"), path = %path, "failed to authorize file access");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            }
+        }
         Ok(FileAccess::Denied) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             warn!(error = %e, path = %path, "failed to authorize file access");
@@ -309,8 +385,9 @@ async fn serve_uploaded_file(
         }
     };
 
-    match state.files().load_file_data(&uri).await {
-        Ok(Some(data)) => {
+    let range = requested_range(&headers);
+    match state.files().storage().read_stream(&uri, range).await {
+        Ok(stream) => {
             let cache_control = served_file_cache_control(&state, &uri, &viewer, 604_800).await;
 
             // Use inline disposition for images/PDFs, attachment for everything else
@@ -322,20 +399,30 @@ async fn serve_uploaded_file(
                     "attachment"
                 };
 
-            // Infallible: Response::builder() with a valid status and ASCII header values cannot fail
-            #[allow(clippy::unwrap_used)]
-            axum::http::Response::builder()
-                .status(StatusCode::OK)
-                .header(axum::http::header::CONTENT_TYPE, &content_type)
-                .header(axum::http::header::CACHE_CONTROL, cache_control)
-                .header(axum::http::header::CONTENT_DISPOSITION, disposition)
-                .header("X-Content-Type-Options", "nosniff")
-                .body(axum::body::Body::from(data))
-                .unwrap()
-                .into_response()
+            stream_response(
+                stream,
+                range.is_some(),
+                vec![
+                    (axum::http::header::CONTENT_TYPE, content_type),
+                    (axum::http::header::CACHE_CONTROL, cache_control),
+                    (
+                        axum::http::header::CONTENT_DISPOSITION,
+                        disposition.to_string(),
+                    ),
+                    (
+                        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+                        "nosniff".to_string(),
+                    ),
+                ],
+            )
         }
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
+            if let Some(total) = is_range_not_satisfiable(&e) {
+                return range_not_satisfiable_response(total);
+            }
+            if crate::file::is_not_found(&e) {
+                return StatusCode::NOT_FOUND.into_response();
+            }
             warn!(error = %e, path = %path, "failed to serve uploaded file");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }

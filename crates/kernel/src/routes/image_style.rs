@@ -4,15 +4,17 @@
 
 use axum::{
     Router,
-    body::Body,
     extract::{Path, State},
-    http::{StatusCode, header},
-    response::IntoResponse,
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use tower_sessions::Session;
 
-use crate::routes::file::served_file_cache_control;
+use crate::file::memory_stream;
+use crate::routes::file::{
+    range_not_satisfiable_response, requested_range, served_file_cache_control, stream_response,
+};
 use crate::state::AppState;
 
 /// Public cache lifetime for a derivative anyone may fetch (one year).
@@ -69,8 +71,9 @@ fn is_style_name(name: &str) -> bool {
 async fn serve_derivative(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path((style_name, file_path)): Path<(String, String)>,
-) -> impl IntoResponse {
+) -> Response {
     // Invalid paths are 404 like a denied file, so a malformed spelling reveals
     // nothing the plain file route would not.
     // The style is one machine name, never a path: axum decodes `%2F` in the
@@ -98,6 +101,12 @@ async fn serve_derivative(
     match state.items().file_access(&original_uri, &viewer).await {
         Ok(crate::content::FileAccess::Allowed { .. }) => {}
         Ok(crate::content::FileAccess::Unmanaged) => {
+            // BG16 follow-up: a ported or hosted site with
+            // `SERVE_UNMANAGED_FILES=false` never serves a derivative of an
+            // original with no `file_managed` row, before storage is read.
+            if !state.runtime().serve_unmanaged_files {
+                return StatusCode::NOT_FOUND.into_response();
+            }
             // No row: a deleted file's leftover derivatives must never become
             // public, so a derivative is served only while its original is
             // still stored, and never for a managed file spelled in other
@@ -127,23 +136,26 @@ async fn serve_derivative(
     }
     let cache_control =
         served_file_cache_control(&state, &original_uri, &viewer, PUBLIC_MAX_AGE).await;
+    let range = requested_range(&headers);
+    let response_headers = || {
+        vec![
+            (header::CONTENT_TYPE, guess_content_type(&file_path)),
+            (header::CACHE_CONTROL, cache_control.clone()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        ]
+    };
 
     // A derivative made before, by any server, is in the file store beside
     // the originals (`styles/<style>/<path>`), so every server finds it.
     let derivative_uri = crate::services::image_style::derivative_uri(&style_name, &file_path);
-    match state.files().storage().read(&derivative_uri).await {
-        Ok(data) => {
-            let content_type = guess_content_type(&file_path);
-            return (
-                StatusCode::OK,
-                [
-                    (header::CONTENT_TYPE, content_type),
-                    (header::CACHE_CONTROL, cache_control),
-                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-                ],
-                Body::from(data),
-            )
-                .into_response();
+    match state.files().storage().read_stream(&derivative_uri, range).await {
+        Ok(stream) => {
+            return stream_response(stream, range.is_some(), response_headers());
+        }
+        Err(e) if crate::file::is_range_not_satisfiable(&e).is_some() => {
+            // The derivative exists; the requested range does not.
+            #[allow(clippy::unwrap_used)]
+            return range_not_satisfiable_response(crate::file::is_range_not_satisfiable(&e).unwrap());
         }
         Err(e) if crate::file::is_not_found(&e) => {
             // Not made yet, generate below
@@ -239,17 +251,16 @@ async fn serve_derivative(
         }
     };
 
-    let content_type = guess_content_type(&file_path);
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, content_type),
-            (header::CACHE_CONTROL, cache_control),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-        ],
-        Body::from(derivative),
-    )
-        .into_response()
+    // Served from the bytes just made, whether or not the write above
+    // succeeded: a derivative this server cannot cache is still generated and
+    // streamed to this request, exactly as before.
+    match memory_stream(derivative, range) {
+        Ok(stream) => stream_response(stream, range.is_some(), response_headers()),
+        Err(e) => {
+            #[allow(clippy::unwrap_used)]
+            range_not_satisfiable_response(crate::file::is_range_not_satisfiable(&e).unwrap())
+        }
+    }
 }
 
 /// Synthesize a width-based image style from a `w{N}` style name.
