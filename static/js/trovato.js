@@ -273,11 +273,14 @@ Trovato.updateFieldDelta = function(args) {
 
 // Reset the add field form after successful submission
 Trovato.resetAddFieldForm = function() {
-    var form = document.getElementById('add-field-form');
+    // The section around the form carries the id; the form is the one its
+    // "Add field" button submits.
+    var section = document.getElementById('add-field-form');
+    var form = section && section.querySelector('form');
     if (form) {
         form.reset();
         // Clear the userEdited flag so auto-generation works again
-        var nameInput = document.getElementById('new_field_name');
+        var nameInput = form.querySelector('input[name="name"]');
         if (nameInput) {
             delete nameInput.dataset.userEdited;
         }
