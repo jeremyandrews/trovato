@@ -3,13 +3,13 @@
 //! classifier in [`crate::net_policy`] that refuses every such destination by
 //! default.
 //!
-//! [`crate::net_policy::is_disallowed_ip`] stays unchanged and is still what
-//! every request is checked against first. This module is consulted only when
-//! that check would otherwise refuse the request, and only to ask one
-//! question: did the operator name exactly this plugin, this destination and
-//! this port? A match here never *lowers* the default fence for anyone else:
-//! a different plugin, a different port, or a redirect to anywhere else still
-//! meets the same refusal every other request does. See
+//! [`crate::net_policy::is_disallowed_ip`] stays unchanged and is still the
+//! classifier a request falls back to whenever this module grants nothing.
+//! This module is consulted first, but only to ask one question: did the
+//! operator name exactly this plugin, this destination and this port? A
+//! match here never *lowers* the default fence for anyone else: a different
+//! plugin, a different port, or a redirect to anywhere else still meets the
+//! same refusal every other request does. See
 //! `docs/plugin-development.md#reaching-private-addresses-from-plugins` for the
 //! operator-facing syntax and the Varnish example that motivated it.
 //!
