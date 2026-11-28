@@ -12,3 +12,4 @@
 # record the CI figure, not a local one.
 
 trovato-kernel::plugin_queue_v2_test | 32.4 | A target entry: its tests queue on one std Mutex by design (the drain claims every row for the one fixture plugin, so concurrent tests would steal each other's jobs; see the file's header), so each is charged its wait and the last in the queue nearly the target's whole time. 32.4 s is the target's time in run 45406677098, before dependencies were optimized.
+trovato-kernel::field_index_test a_save_during_the_fill_keeps_its_value | 36.0 | Creates, migrates and seeds its own scratch database, builds every field index once, then marks a field and runs the fill again over every seeded item while a held save blocks it on one row: a migration and two full fills. 31.3 s, 31.5 s, 36.0 s, 34.7 s and 32.2 s on CI in run 46120138942 (its slowest test there; 11.4 s locally).
