@@ -237,3 +237,95 @@ fn a_telephone_manually_configured_for_search_is_never_indexed() {
         });
     });
 }
+
+/// A Telephone field named `field_body` is never indexed either, with no
+/// manual search configuration at all: the long text field's fallback names
+/// (BL-21), which assume a field under either name is text so a type that
+/// declares no fields is still findable by its body, must still check a
+/// field's real kind before falling back to it as text.
+#[test]
+fn a_telephone_field_named_field_body_is_never_indexed() {
+    run_test(async {
+        let app = shared_app().await;
+        let name = format!("b302t_{}", &Uuid::now_v7().simple().to_string()[20..]);
+        let fields = vec![FieldDefinition::new("field_body", FieldType::Telephone).label("Body")];
+        app.state
+            .content_types()
+            .create(
+                &name,
+                "Telephone body probe",
+                Some("telephone named field_body fixture"),
+                serde_json::json!({ "fields": serde_json::to_value(&fields).unwrap() }),
+            )
+            .await
+            .expect("create the fixture type");
+
+        let registry = std::sync::Arc::clone(app.state.content_types());
+        let pool = app.db.clone();
+        let machine_name = name.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM item WHERE type = $1")
+                .bind(&machine_name)
+                .execute(&pool)
+                .await;
+            let _ = sqlx::query("DELETE FROM item_type WHERE type = $1")
+                .bind(&machine_name)
+                .execute(&pool)
+                .await;
+            registry.invalidate(&machine_name);
+        });
+
+        let tag: String = Uuid::now_v7()
+            .simple()
+            .to_string()
+            .chars()
+            .filter(char::is_ascii_digit)
+            .take(6)
+            .collect();
+        let phone_word = format!("5559900{tag}");
+
+        let item = app
+            .state
+            .items()
+            .create(
+                CreateItem {
+                    item_type: name.clone(),
+                    title: "B302 field_body telephone probe".to_string(),
+                    author_id: Uuid::nil(),
+                    status: Some(1),
+                    promote: None,
+                    sticky: None,
+                    fields: Some(serde_json::json!({ "field_body": phone_word })),
+                    stage_id: None,
+                    language: None,
+                    log: None,
+                },
+                &admin(),
+            )
+            .await
+            .expect("create item");
+
+        assert_eq!(
+            found(app, &phone_word).await,
+            (vec![], vec![]),
+            "a Telephone field named field_body is never indexed by either backend"
+        );
+
+        let pool = app.db.clone();
+        let id = item.id;
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("UPDATE item SET current_revision_id = NULL WHERE id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await;
+            let _ = sqlx::query("DELETE FROM item_revision WHERE item_id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await;
+            let _ = sqlx::query("DELETE FROM item WHERE id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await;
+        });
+    });
+}

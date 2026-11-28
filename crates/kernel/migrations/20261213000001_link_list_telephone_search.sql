@@ -72,7 +72,15 @@ BEGIN
             WHERE c.bundle = p_type
               AND COALESCE(fk.kind, 'text') <> 'telephone'
             UNION
-            SELECT unnest(ARRAY['field_body', 'body']), 'text', NULL::jsonb
+            -- The long text field's fallback names (BL-21) assumed a field by
+            -- either name is text, which held until a type could name a field
+            -- `field_body` or `body` and give it a different kind: looked up
+            -- the same way, so a Telephone field with one of those names is
+            -- excluded here too, not indexed by name alone.
+            SELECT bf.name, COALESCE(fk.kind, 'text') AS kind, fk.allowed_values
+            FROM unnest(ARRAY['field_body', 'body']) AS bf(name)
+            LEFT JOIN field_kinds fk ON fk.field_name = bf.name
+            WHERE COALESCE(fk.kind, 'text') <> 'telephone'
         )
         SELECT n.field_name, COALESCE(c.weight, 'D') AS weight, n.kind, n.allowed_values
         FROM names n

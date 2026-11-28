@@ -511,6 +511,7 @@ pub async fn indexable_documents_for(
         .map(|r| (r.source, r.alias))
         .collect();
 
+    let empty_telephones = std::collections::HashSet::new();
     let mut documents = Vec::with_capacity(visible.len());
     for item in &visible {
         let fields = searchable_fields(
@@ -523,6 +524,9 @@ pub async fn indexable_documents_for(
                 .get(&item.item_type)
                 .map(Vec::as_slice)
                 .unwrap_or_default(),
+            telephone_fields
+                .get(&item.item_type)
+                .unwrap_or(&empty_telephones),
         );
 
         // Use friendly URL alias if available, otherwise /item/{id}
@@ -531,9 +535,20 @@ pub async fn indexable_documents_for(
 
         // Extract structured metadata from fields for richer result cards
         // The long text field under either of its two names (BL-21), so a
-        // `page` item's result card is not left with no description.
+        // `page` item's result card is not left with no description. Not
+        // when that name is a Telephone field on this type: the description
+        // meta is shown in a result snippet, so a phone number has no more
+        // business there than it does in the indexed content.
+        let item_telephones = telephone_fields.get(&item.item_type);
         let description = extract_field_text(&item.fields, "field_description")
-            .or_else(|| crate::content::body_field::body_text(&item.fields))
+            .or_else(|| {
+                let name = crate::content::body_field::body_field_name(&item.fields)?;
+                if item_telephones.is_some_and(|t| t.contains(name)) {
+                    None
+                } else {
+                    crate::content::body_field::body_text(&item.fields)
+                }
+            })
             .unwrap_or_default();
         // Plain text, then truncated, for a clean description meta.
         let description_clean = plain_text(&description);
@@ -732,6 +747,7 @@ fn searchable_fields(
     fields: &serde_json::Value,
     text_fields: &[SearchableField],
     configs: &[(String, f32)],
+    telephone_fields: &std::collections::HashSet<String>,
 ) -> Vec<IndexedField> {
     let mut names: Vec<(&str, &SearchFieldKind)> = text_fields
         .iter()
@@ -742,8 +758,13 @@ fn searchable_fields(
             names.push((name.as_str(), &SearchFieldKind::Text));
         }
     }
+    // The long text field's fallback names (BL-21) assume a field by either
+    // name is text, which held until a type could name a field `field_body`
+    // or `body` and give it a different kind: a Telephone field with one of
+    // those names must still never be indexed, so it is excluded here too,
+    // the same as a `search_field_config` entry.
     for name in crate::content::body_field::BODY_FIELD_NAMES {
-        if !names.iter().any(|(n, _)| *n == name) {
+        if !names.iter().any(|(n, _)| *n == name) && !telephone_fields.contains(name) {
             names.push((name, &SearchFieldKind::Text));
         }
     }
