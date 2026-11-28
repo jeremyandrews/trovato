@@ -571,3 +571,169 @@ fn a_language_prefix_does_not_conjure_a_missing_page() {
         );
     });
 }
+
+// =============================================================================
+// B83c: the alias form and its delete confirmation on the form pipeline
+// =============================================================================
+
+async fn body_text(response: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .unwrap();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// GET `uri` as `cookies`, expecting 200: the page.
+async fn page(app: &common::TestApp, cookies: &str, uri: &str) -> String {
+    let response = app
+        .request_with_cookies(Request::get(uri).body(Body::empty()).unwrap(), cookies)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK, "GET {uri}");
+    body_text(response).await
+}
+
+/// POST a form body to `uri` as `cookies`: the status and the page.
+async fn post_body(
+    app: &common::TestApp,
+    cookies: &str,
+    uri: &str,
+    body: String,
+) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::post(uri)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, body_text(response).await)
+}
+
+/// The first `_token` on `html`.
+fn token_in(html: &str) -> String {
+    let marker = r#"name="_token" value=""#;
+    let start = html.find(marker).expect("a token") + marker.len();
+    html[start..].split('"').next().unwrap().to_string()
+}
+
+/// The alias form and the delete confirmation are pipeline forms: a post
+/// without a build id is refused as expired, a validation error is shown on
+/// its field, and the list's Delete is a link to the confirmation, whose
+/// form deletes.
+#[test]
+fn the_alias_forms_go_through_the_pipeline() {
+    run_test(async {
+        let app = shared_app().await;
+        let name = common::username("b83c_alias");
+        let cookies = app
+            .create_and_login_admin(&name, "password123", &format!("{name}@test.local"))
+            .await;
+        let alias = format!("/b83c-{}", &uuid::Uuid::now_v7().simple().to_string()[20..]);
+        let pool = app.db.clone();
+        let cleanup = alias.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM url_alias WHERE alias = $1")
+                .bind(&cleanup)
+                .execute(&pool)
+                .await;
+        });
+        let count = || async {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM url_alias WHERE alias = $1")
+                .bind(&alias)
+                .fetch_one(&app.db)
+                .await
+                .unwrap()
+        };
+
+        let add = "/admin/structure/aliases/add";
+        let html = page(app, &cookies, add).await;
+        assert!(common::form_in(&html, "url_alias_form").is_some(), "{html}");
+        let encoded = alias.replace('/', "%2F");
+        let (status, text) = post_body(
+            app,
+            &cookies,
+            add,
+            format!(
+                "_token={}&source=%2Fitem%2Fb83c&alias={encoded}&language=en",
+                token_in(&html)
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("expired"), "{text}");
+        assert_eq!(count().await, 0);
+
+        let html = page(app, &cookies, add).await;
+        let (status, text) = post_body(
+            app,
+            &cookies,
+            add,
+            format!(
+                "{}&source=&alias={encoded}&language=en",
+                common::form_fields(&html, "url_alias_form")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let form = common::form_in(&text, "url_alias_form").expect("the form again");
+        assert!(form.contains("Source path is required."), "{form}");
+        assert!(form.contains(r#"aria-invalid="true""#), "{form}");
+        assert_eq!(count().await, 0);
+
+        let html = page(app, &cookies, add).await;
+        let (status, _) = post_body(
+            app,
+            &cookies,
+            add,
+            format!(
+                "{}&source=%2Fitem%2Fb83c&alias={encoded}&language=en",
+                common::form_fields(&html, "url_alias_form")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(count().await, 1);
+        let id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM url_alias WHERE alias = $1")
+            .bind(&alias)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+
+        let delete = format!("/admin/structure/aliases/{id}/delete");
+        let list = page(
+            app,
+            &cookies,
+            &format!("/admin/structure/aliases?q={alias}"),
+        )
+        .await;
+        assert!(
+            list.replace("&#x2F;", "/")
+                .contains(&format!(r#"href="{delete}""#)),
+            "the list links to the confirmation"
+        );
+        let html = page(app, &cookies, &delete).await;
+        assert!(html.contains("Are you sure you want to delete this alias?"));
+        let (status, _) = post_body(
+            app,
+            &cookies,
+            &delete,
+            format!("_token={}", token_in(&html)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(count().await, 1, "not deleted");
+        let html = page(app, &cookies, &delete).await;
+        let (status, _) = post_body(
+            app,
+            &cookies,
+            &delete,
+            common::form_fields(&html, "url_alias_delete_form"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(count().await, 0, "deleted");
+    });
+}

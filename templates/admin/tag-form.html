@@ -1,37 +1,11 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
-{% block page_title %}{% if editing %}{{ t(s="Edit tag {name}", name=values.label | default(value="")) }}{% else %}{{ t(s="Add tag to {category}", category=category.label) }}{% endif %}{% endblock page_title %}
+{% block page_title %}{% if editing %}{{ t(s="Edit tag {name}", name=label) }}{% else %}{{ t(s="Add tag to {category}", category=category.label) }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="A tag is one term in the {category} category.", category=category.label) }}</p>{% endblock page_intro %}
 {% block page_actions %}<a href="{{ urls.list }}" class="button button--secondary">{{ t(s="Tags in {category}", category=category.label) }}</a>{% endblock page_actions %}
 
 {% block content %}
-{% set errs = errors | default(value=[]) %}
 <div class="admin-card">
-    <form id="tag-form" method="post" action="{{ action }}" novalidate>
-        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
-
-        {{ form::error_summary(errors=errs) }}
-
-        {{ form::field(name="label", label=t(s="Name"), value=values.label | default(value=""), required=true, errors=errs, width="30") }}
-
-        {{ form::textarea(name="description", label=t(s="Description"), value=values.description | default(value=""), rows=3, errors=errs) }}
-
-        {{ form::field(name="slug", label=t(s="URL slug"), value=values.slug | default(value=""), hint=t(s='Lowercase letters, digits, and hyphens (e.g. "rust", "ai-data"). Used in URL aliases. Leave empty if not needed.'), errors=errs, width="20", attrs='pattern="[a-z0-9][a-z0-9\-]*" maxlength="128" spellcheck="false" autocapitalize="none"') }}
-
-        {% if category.hierarchy > 0 %}
-        {% if values.parent_id is defined and values.parent_id %}{% set parent = values.parent_id %}{% else %}{% set parent = "" %}{% endif %}
-        {{ form::select(name="parent_id", label=t(s="Parent tag"), options=parent_options, value=parent, empty=t(s="- None (root) -"), hint=t(s="Select a parent tag to create a hierarchy."), errors=errs) }}
-        {% endif %}
-
-        {% if values.weight is defined and values.weight %}{% set weight = values.weight ~ "" %}{% else %}{% set weight = "0" %}{% endif %}
-        {{ form::field(name="weight", type="number", label=t(s="Weight"), value=weight, hint=t(s="Lower weights appear first in listings."), errors=errs, width="10") }}
-
-        {% if editing %}
-        {{ form::actions(submit_label=t(s="Save changes"), cancel_url=urls.list) }}
-        {% else %}
-        {{ form::actions(submit_label=t(s="Create tag"), cancel_url=urls.list) }}
-        {% endif %}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}
