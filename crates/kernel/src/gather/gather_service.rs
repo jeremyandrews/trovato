@@ -10,13 +10,15 @@ use super::access;
 use super::access::GatherAccessConfig;
 use super::category_service::CategoryService;
 use super::extension::GatherExtensionRegistry;
-use super::query_builder::{GatherQueryBuilder, field_value_text_sql};
+use super::field_sql::{self, FieldKind};
+use super::handlers::is_safe_identifier;
+use super::query_builder::GatherQueryBuilder;
 use super::types::{
     AggregateFunction, ContextualValue, FilterOperator, FilterValue, GatherQuery, GatherResult,
     MAX_GROUP_DEPTH, QueryContext, QueryDefinition, QueryDisplay, QueryFilter,
 };
 use crate::cache::generation::{CacheKind, bump};
-use crate::content::{ItemService, RecordTypeRegistry};
+use crate::content::{ContentTypeRegistry, ItemService, RecordTypeRegistry};
 use crate::metrics::{CacheName, Metrics};
 use crate::models::UrlAlias;
 use crate::services::ai_provider::AiProviderService;
@@ -129,6 +131,16 @@ pub struct GatherService {
     /// unset (a narrow test harness), rows get no `author` key at all, same as
     /// an unwired `item_access` skips the access pass rather than failing.
     users: OnceLock<Arc<UserService>>,
+    /// The content types (B207), late-bound like [`Self::item_access`]: a
+    /// gather on an item type reads each field through the reader its kind
+    /// calls for ([`FieldKind`]), the expression that field's index covers.
+    /// Unset (a narrow test harness), every field reads as text, or as a
+    /// number when compared with one.
+    content_types: OnceLock<Arc<ContentTypeRegistry>>,
+    /// Which fields of each item type are read from the copy column and
+    /// its indexes, and whether the type's GIN is ready (B207), as
+    /// `field_index::served` last reported.
+    served: std::sync::RwLock<HashMap<String, (HashSet<String>, bool)>>,
     /// Serializes this server's query writes with its reloads. A write holds it
     /// from its database write until `queries` is updated; a reload holds it
     /// from reading the rows until it has applied them. Without it a reload
@@ -266,6 +278,8 @@ impl GatherService {
             site_page_size: parking_lot::RwLock::new(None),
             record_types: OnceLock::new(),
             users: OnceLock::new(),
+            content_types: OnceLock::new(),
+            served: std::sync::RwLock::new(HashMap::new()),
             metrics,
         })
     }
@@ -328,14 +342,103 @@ impl GatherService {
     }
 
     /// Whether every late binding `AppState` makes after construction is in
-    /// place: the item-access seam, the record type registry and the user
-    /// service. A caller handed this service before then could read rows that
-    /// skipped a seam, so startup checks it before releasing gather to work
-    /// that runs concurrently with the rest of startup.
+    /// place: the item-access seam, the record type registry, the content type
+    /// registry (without it every field reads as text, from the document) and
+    /// the user service. A caller handed this service before then could read
+    /// rows that skipped a seam, so startup checks it before releasing gather
+    /// to work that runs concurrently with the rest of startup.
     pub fn late_bindings_complete(&self) -> bool {
         self.item_access.get().is_some()
             && self.record_types.get().is_some()
+            && self.content_types.get().is_some()
             && self.users.get().is_some()
+    }
+
+    /// Late-bind the content type registry (B207). Idempotent (first wins).
+    pub fn set_content_types(&self, content_types: Arc<ContentTypeRegistry>) {
+        let _ = self.content_types.set(content_types);
+    }
+
+    /// How each field of `item_type` is read in SQL, by field name: empty
+    /// when the type is unknown or the registry is not wired.
+    /// Load `item_type`'s definition into the content type cache if it is
+    /// not there, before the sync readers below look at it.
+    ///
+    /// The registry's cache expires its entries (`time_to_live`), and
+    /// [`Self::field_kinds`] reads it without loading, being sync. Before this,
+    /// a gather run after an entry expired saw no field kinds: every field read
+    /// from `fields` as text, with no index, and a number compared as text.
+    /// Each async entry point calls this first; the entry it loads is fresh.
+    async fn load_content_type(&self, item_type: Option<&str>) {
+        if let (Some(item_type), Some(types)) = (item_type, self.content_types.get())
+            && types.get(item_type).is_none()
+            && let Err(e) = types.get_or_load(item_type).await
+        {
+            tracing::warn!(item_type, error = %e, "loading a content type for Gather failed");
+        }
+    }
+
+    pub fn field_kinds(&self, item_type: Option<&str>) -> HashMap<String, FieldKind> {
+        let (Some(item_type), Some(types)) = (item_type, self.content_types.get()) else {
+            return HashMap::new();
+        };
+        types
+            .get(item_type)
+            .map(|def| {
+                def.fields
+                    .iter()
+                    .filter_map(|f| FieldKind::of(f).map(|k| (f.field_name.clone(), k)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The fields of `item_type` Gather reads from the copy column, and
+    /// whether the type's GIN over the whole copy is ready (B207). Empty
+    /// until the first [`Self::refresh_served`].
+    pub fn served(&self, item_type: &str) -> (HashSet<String>, bool) {
+        self.served
+            .read()
+            .ok()
+            .and_then(|map| map.get(item_type).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Reload which fields are served from `item_field_index`: after the
+    /// field index job changes anything, at startup and on every cron run.
+    /// On failure the previous answer stands.
+    pub async fn refresh_served(&self) {
+        match super::field_index::served(&self.pool).await {
+            Ok(map) => {
+                if let Ok(mut guard) = self.served.write() {
+                    *guard = map;
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "reading served item fields failed"),
+        }
+    }
+
+    /// Whether `item_type.field` is served from the copy column with an index.
+    fn field_served(&self, item_type: &str, field: &str) -> bool {
+        self.served
+            .read()
+            .is_ok_and(|map| map.get(item_type).is_some_and(|(f, _)| f.contains(field)))
+    }
+
+    /// Whether the list field `field` of `item_type` contains `placeholder`,
+    /// on the field's index when it is served (B207).
+    fn item_list_contains(&self, item_type: &str, field: &str, placeholder: &str) -> String {
+        let served = self.field_served(item_type, field)
+            && self.field_kinds(Some(item_type)).get(field) == Some(&FieldKind::List);
+        super::field_sql::list_contains("item", field, served, placeholder)
+    }
+
+    /// The SQL reader of `field` of `kind` on `item`, from the copy when the
+    /// field is served (B207).
+    fn item_reader(&self, item_type: &str, field: &str, kind: FieldKind) -> String {
+        let served = self.field_served(item_type, field)
+            && self.field_kinds(Some(item_type)).get(field) == Some(&kind);
+        field_sql::read("item", field, kind, served)
     }
 
     /// Register a query definition.
@@ -557,6 +660,7 @@ impl GatherService {
         source_field: &str,
         item_type: &str,
     ) -> Result<Vec<String>> {
+        self.load_content_type(Some(item_type)).await;
         if item_type.is_empty() {
             tracing::debug!(
                 source_field,
@@ -580,25 +684,43 @@ impl GatherService {
             return Ok(Vec::new());
         };
 
-        // Validate the key portion so it is safe to use as a bind parameter.
-        if !is_valid_field_name(jsonb_key) {
+        // Validate the key and the type: both are written into the SQL as
+        // literals, so the reader is the one its index covers and the type
+        // proves that index's partial predicate.
+        if !is_valid_field_name(jsonb_key) || !is_safe_identifier(item_type) {
             return Ok(Vec::new());
         }
 
-        let reader = field_value_text_sql("fields", "$1");
-        let sql = format!(
-            "SELECT DISTINCT {reader} \
-             FROM item \
-             WHERE type = $2 \
-               AND status = 1 \
-               AND {reader} IS NOT NULL \
-               AND {reader} <> '' \
-             ORDER BY 1 \
-             LIMIT $3"
-        );
+        let reader = self.item_reader(item_type, jsonb_key, FieldKind::Text);
+        let indexed = self.field_kinds(Some(item_type)).get(jsonb_key) == Some(&FieldKind::Text)
+            && self.field_served(item_type, jsonb_key);
+        let sql = if indexed {
+            // A walk down the field's index, one step per distinct value: each
+            // step finds the next value above the last, so a field with 12
+            // values costs 12 index probes, not a read of every item.
+            format!(
+                "WITH RECURSIVE o(v) AS ( \
+                   (SELECT {reader} FROM item WHERE type = '{item_type}' AND status = 1 \
+                      AND {reader} > '' ORDER BY 1 LIMIT 1) \
+                   UNION ALL \
+                   SELECT (SELECT {reader} FROM item WHERE type = '{item_type}' AND status = 1 \
+                             AND {reader} > o.v ORDER BY 1 LIMIT 1) \
+                   FROM o WHERE o.v IS NOT NULL) \
+                 SELECT v FROM o WHERE v IS NOT NULL LIMIT $1"
+            )
+        } else {
+            format!(
+                "SELECT DISTINCT {reader} \
+                 FROM item \
+                 WHERE type = '{item_type}' \
+                   AND status = 1 \
+                   AND {reader} IS NOT NULL \
+                   AND {reader} <> '' \
+                 ORDER BY 1 \
+                 LIMIT $1"
+            )
+        };
         let values: Vec<String> = sqlx::query_scalar(AssertSqlSafe(sql))
-            .bind(jsonb_key)
-            .bind(item_type)
             .bind(Self::DISTINCT_VALUES_LIMIT)
             .fetch_all(&self.pool)
             .await
@@ -681,6 +803,7 @@ impl GatherService {
         exclude_field: &str,
         active: &HashMap<String, FilterValue>,
     ) -> Result<Vec<String>> {
+        self.load_content_type(Some(item_type)).await;
         let (eq_scope, tag_scope) = self
             .build_facet_scope(all_exposed, exclude_field, active)
             .await?;
@@ -689,7 +812,7 @@ impl GatherService {
             return self.fetch_distinct_values(source_field, item_type).await;
         }
 
-        if item_type.is_empty() {
+        if item_type.is_empty() || !is_safe_identifier(item_type) {
             return Ok(Vec::new());
         }
 
@@ -700,50 +823,119 @@ impl GatherService {
             return Ok(Vec::new());
         }
 
-        // Build SQL with validated scope conditions interpolated as key names.
-        let reader = field_value_text_sql("fields", "$1");
-        let mut sql = format!(
+        // Every key is validated by is_valid_field_name and the type by
+        // is_safe_identifier, so both are written in as literals: the readers
+        // are then the expressions the fields' indexes cover.
+        let reader = self.item_reader(item_type, jsonb_key, FieldKind::Text);
+        let (scope, binds) = self.facet_scope_sql(item_type, &eq_scope, &tag_scope);
+
+        // With the field indexed and its whole option list known (fewer
+        // values than the cap), ask once per option whether any item in scope
+        // has it. Each question stops at its first match and is answered from
+        // an index, the option's or a scope field's, whichever the planner
+        // finds cheaper; the alternative reads every item in scope.
+        if self.field_kinds(Some(item_type)).get(jsonb_key) == Some(&FieldKind::Text)
+            && self.field_served(item_type, jsonb_key)
+        {
+            let options = self.fetch_distinct_values(source_field, item_type).await?;
+            if (options.len() as i64) < Self::DISTINCT_VALUES_LIMIT {
+                let n = binds.len() + 1;
+                let sql = format!(
+                    "SELECT o.v FROM unnest(${n}::text[]) WITH ORDINALITY AS o(v, i) \
+                     WHERE EXISTS (SELECT 1 FROM item \
+                       WHERE type = '{item_type}' AND status = 1 \
+                         AND {reader} = o.v{scope}) \
+                     ORDER BY o.i"
+                );
+                let mut q = sqlx::query_scalar::<_, String>(AssertSqlSafe(sql));
+                for value in binds {
+                    q = q.bind(value);
+                }
+                return q
+                    .bind(options)
+                    .fetch_all(&self.pool)
+                    .await
+                    .context("failed to fetch faceted distinct values");
+            }
+        }
+
+        let sql = format!(
             "SELECT DISTINCT {reader} \
              FROM item \
-             WHERE type = $2 \
+             WHERE type = '{item_type}' \
                AND status = 1 \
                AND {reader} IS NOT NULL \
-               AND {reader} <> ''"
-        );
-        let mut param_idx = 3i32;
-        for (key, _) in &eq_scope {
-            // key validated by is_valid_field_name above
-            let eq_reader = field_value_text_sql("fields", &format!("'{key}'"));
-            sql.push_str(&format!(" AND {eq_reader} = ${param_idx}"));
-            param_idx += 1;
-        }
-        for (key, _) in &tag_scope {
-            // key validated by is_valid_field_name above
-            sql.push_str(&format!(
-                " AND EXISTS (\
-                    SELECT 1 FROM jsonb_array_elements_text(fields->'{key}') t \
-                    WHERE t = ANY(${param_idx}))"
-            ));
-            param_idx += 1;
-        }
-        sql.push_str(&format!(
-            " ORDER BY 1 LIMIT {}",
+               AND {reader} <> ''{scope} \
+             ORDER BY 1 LIMIT {}",
             Self::DISTINCT_VALUES_LIMIT
-        ));
+        );
 
-        let mut q = sqlx::query_scalar::<_, String>(AssertSqlSafe(sql))
-            .bind(jsonb_key)
-            .bind(item_type);
-        for (_, val) in &eq_scope {
-            q = q.bind(val.clone());
+        let mut q = sqlx::query_scalar::<_, String>(AssertSqlSafe(sql));
+        for value in binds {
+            q = q.bind(value);
         }
-        for (_, ids) in &tag_scope {
-            q = q.bind(ids.clone());
-        }
-
         q.fetch_all(&self.pool)
             .await
             .context("failed to fetch faceted distinct values")
+    }
+
+    /// The `AND …` conditions of a facet's scope, and the values bound to
+    /// them (`$1`, `$2`, …), each written through the reader its field's kind
+    /// calls for, so each is served by that field's index.
+    ///
+    /// An equality on a number field compares numbers when the value is one;
+    /// a tag scope is containment of any of its tags, ORed. Keys must already
+    /// have passed [`is_valid_field_name`].
+    fn facet_scope_sql(
+        &self,
+        item_type: &str,
+        eq_scope: &[(String, String)],
+        tag_scope: &[(String, Vec<String>)],
+    ) -> (String, Vec<String>) {
+        let kinds = self.field_kinds(Some(item_type));
+        let mut sql = String::new();
+        let mut binds: Vec<String> = Vec::new();
+        for (key, value) in eq_scope {
+            let kind = kinds.get(key).copied().unwrap_or(FieldKind::Text);
+            match kind {
+                FieldKind::Number if value.trim().parse::<f64>().is_ok_and(f64::is_finite) => {
+                    binds.push(value.trim().to_string());
+                    sql.push_str(&format!(
+                        " AND {} = ${}::numeric",
+                        self.item_reader(item_type, key, FieldKind::Number),
+                        binds.len()
+                    ));
+                }
+                FieldKind::List => {
+                    binds.push(value.clone());
+                    let placeholder = format!("${}", binds.len());
+                    sql.push_str(" AND ");
+                    sql.push_str(&self.item_list_contains(item_type, key, &placeholder));
+                }
+                _ => {
+                    binds.push(value.clone());
+                    sql.push_str(&format!(
+                        " AND {} = ${}",
+                        self.item_reader(item_type, key, FieldKind::Text),
+                        binds.len()
+                    ));
+                }
+            }
+        }
+        for (key, ids) in tag_scope {
+            let mut placeholders = Vec::new();
+            for id in ids {
+                binds.push(id.clone());
+                placeholders.push(format!("${}", binds.len()));
+            }
+            let served = self.field_served(item_type, key)
+                && self.field_kinds(Some(item_type)).get(key.as_str()) == Some(&FieldKind::List);
+            match super::field_sql::list_overlaps("item", key, served, &placeholders) {
+                Some(any) => sql.push_str(&format!(" AND {any}")),
+                None => sql.push_str(" AND FALSE"),
+            }
+        }
+        (sql, binds)
     }
 
     /// Fetch UUIDs of tags appearing in `tag_field` for items matching the scope.
@@ -759,6 +951,7 @@ impl GatherService {
         exclude_field: &str,
         active: &HashMap<String, FilterValue>,
     ) -> Result<Option<HashSet<Uuid>>> {
+        self.load_content_type(Some(item_type)).await;
         let (eq_scope, tag_scope) = self
             .build_facet_scope(all_exposed, exclude_field, active)
             .await?;
@@ -767,7 +960,7 @@ impl GatherService {
             return Ok(None);
         }
 
-        if item_type.is_empty() {
+        if item_type.is_empty() || !is_safe_identifier(item_type) {
             return Ok(Some(HashSet::new()));
         }
 
@@ -778,37 +971,22 @@ impl GatherService {
             return Ok(None);
         }
 
+        let (scope, binds) = self.facet_scope_sql(item_type, &eq_scope, &tag_scope);
         // key validated by is_valid_field_name above
-        let mut sql = format!(
+        let list = self.item_reader(item_type, jsonb_key, FieldKind::List);
+        let sql = format!(
             "SELECT DISTINCT t.value \
              FROM item \
-             CROSS JOIN LATERAL jsonb_array_elements_text(fields->'{jsonb_key}') AS t(value) \
-             WHERE type = $1 \
-               AND status = 1"
+             CROSS JOIN LATERAL jsonb_array_elements_text(\
+                CASE WHEN jsonb_typeof({list}) = 'array' THEN {list} ELSE '[]'::jsonb END\
+             ) AS t(value) \
+             WHERE type = '{item_type}' \
+               AND status = 1{scope}"
         );
-        let mut param_idx = 2i32;
-        for (key, _) in &eq_scope {
-            // key validated by is_valid_field_name above
-            let eq_reader = field_value_text_sql("fields", &format!("'{key}'"));
-            sql.push_str(&format!(" AND {eq_reader} = ${param_idx}"));
-            param_idx += 1;
-        }
-        for (key, _) in &tag_scope {
-            // key validated by is_valid_field_name above
-            sql.push_str(&format!(
-                " AND EXISTS (\
-                    SELECT 1 FROM jsonb_array_elements_text(fields->'{key}') tt \
-                    WHERE tt = ANY(${param_idx}))"
-            ));
-            param_idx += 1;
-        }
 
-        let mut q = sqlx::query_scalar::<_, String>(AssertSqlSafe(sql)).bind(item_type);
-        for (_, val) in &eq_scope {
-            q = q.bind(val.clone());
-        }
-        for (_, ids) in &tag_scope {
-            q = q.bind(ids.clone());
+        let mut q = sqlx::query_scalar::<_, String>(AssertSqlSafe(sql));
+        for value in binds {
+            q = q.bind(value);
         }
 
         let tag_strings: Vec<String> = q
@@ -1220,13 +1398,29 @@ impl GatherService {
             ..final_definition
         };
 
+        // Each field read through its kind's reader, the expression its index
+        // covers (B207). A record gather's fields are its own columns.
+        let field_kinds = if record_ctx.is_none() && builder_def.base_table == "item" {
+            self.load_content_type(builder_def.item_type.as_deref())
+                .await;
+            self.field_kinds(builder_def.item_type.as_deref())
+        } else {
+            HashMap::new()
+        };
+        let (served, type_gin) = match (&record_ctx, builder_def.item_type.as_deref()) {
+            (None, Some(t)) if builder_def.base_table == "item" => self.served(t),
+            _ => (HashSet::new(), false),
+        };
+
         // Build and execute queries (per_page clamped to the maximum above)
         let per_page = requested.min(max_page);
         let builder = GatherQueryBuilder::new_with_stages(builder_def, stage_ids.to_vec())
             .with_extensions(self.extensions.clone())
             .with_language(context.language.clone())
             .with_viewer(context.viewer.clone())
-            .with_record_published(record_ctx.as_ref().and_then(|c| c.published_column.clone()));
+            .with_record_published(record_ctx.as_ref().and_then(|c| c.published_column.clone()))
+            .with_field_kinds(field_kinds)
+            .with_served(served, type_gin);
 
         // Execute count and main queries with a statement timeout for safety.
         // Use a transaction so SET LOCAL applies correctly and resets on commit/rollback.
@@ -1440,12 +1634,14 @@ impl GatherService {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<Vec<serde_json::Value>> {
         let main_sql = builder.build(page, per_page);
-        sqlx::query_scalar(AssertSqlSafe(format!(
+        let mut rows: Vec<serde_json::Value> = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT row_to_json(t) FROM ({main_sql}) t"
         )))
         .fetch_all(&mut **tx)
         .await
-        .context("failed to execute main query")
+        .context("failed to execute main query")?;
+        strip_copy_column(&mut rows);
+        Ok(rows)
     }
 
     /// Replace each `url` filter with the items its paths name
@@ -1554,11 +1750,15 @@ impl GatherService {
         // count what was scanned. Page N starts at the raw position of the
         // visible row that opens it, so pages neither overlap nor skip; a page
         // the count does not reach starts where the raw offset would have.
+        //
+        // The scan names the five columns it reads rather than turning each
+        // whole row into JSON: `to_jsonb` of the row would decompress every
+        // candidate's field document, up to `max_scan` of them a request.
         let scan_sql = builder.build_window(0, max_scan);
         let candidates: Vec<serde_json::Value> = sqlx::query_scalar(AssertSqlSafe(format!(
-            "SELECT jsonb_build_object('id', r->'id', 'type', r->'type', \
-             'author_id', r->'author_id', 'stage_id', r->'stage_id', 'status', r->'status') \
-             FROM (SELECT to_jsonb(t) AS r FROM ({scan_sql}) t) s"
+            "SELECT jsonb_build_object('id', to_jsonb(t.id), 'type', to_jsonb(t.type), \
+             'author_id', to_jsonb(t.author_id), 'stage_id', to_jsonb(t.stage_id), \
+             'status', to_jsonb(t.status)) FROM ({scan_sql}) t"
         )))
         .fetch_all(&mut **tx)
         .await
@@ -1593,12 +1793,13 @@ impl GatherService {
             // Clamp so the cumulative scan never exceeds the hard cap.
             let this_window = window.min(max_scan - scanned);
             let main_sql = builder.build_window(base_offset + scanned, this_window);
-            let batch: Vec<serde_json::Value> = sqlx::query_scalar(AssertSqlSafe(format!(
+            let mut batch: Vec<serde_json::Value> = sqlx::query_scalar(AssertSqlSafe(format!(
                 "SELECT row_to_json(t) FROM ({main_sql}) t"
             )))
             .fetch_all(&mut **tx)
             .await
             .context("failed to execute main query window")?;
+            strip_copy_column(&mut batch);
             let got = batch.len() as u64;
             scanned += got;
 
@@ -3278,6 +3479,17 @@ fn row_id(row: &serde_json::Value) -> Option<String> {
 /// [`row_id`] for `id`.
 fn row_author_id(row: &serde_json::Value) -> Option<Uuid> {
     row.get("author_id")?.as_str()?.parse().ok()
+}
+
+/// Remove the copy column (`item.filter_values`, B207) from rows selected
+/// as `item.*`: it repeats some of `fields` for the indexes, and is not part
+/// of an item.
+fn strip_copy_column(rows: &mut [serde_json::Value]) {
+    for row in rows {
+        if let Some(obj) = row.as_object_mut() {
+            obj.remove(field_sql::COPY_COLUMN);
+        }
+    }
 }
 
 #[cfg(test)]

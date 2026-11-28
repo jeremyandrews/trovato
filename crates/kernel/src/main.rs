@@ -744,6 +744,8 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     // never from the request's Host header; say so once when it cannot be a
     // public address.
     routes::feed::warn_if_site_url_unusable(&state.runtime().site_url);
+    warn_missing_field_indexes(&state).await;
+    state.reconcile_field_indexes();
 
     let inner_router: Router<AppState> = Router::new()
         .merge(routes::front::router())
@@ -1853,4 +1855,22 @@ fn init_tracing() -> Result<system_log::SystemLogReceiver> {
         );
     }
     Ok(log_receiver)
+}
+
+/// Name every field marked "Filterable and sortable" whose index is not
+/// built yet (B207). The background reconcile started next queues the
+/// missing ones; until each is built, filtering or sorting on that field
+/// reads every item of its type.
+async fn warn_missing_field_indexes(state: &AppState) {
+    match crate::gather::field_index::missing(state.db()).await {
+        Ok(missing) => {
+            for (item_type, field, index_state) in missing {
+                warn!(
+                    item_type,
+                    field, index_state, "marked field has no ready index yet; it will be built"
+                );
+            }
+        }
+        Err(e) => warn!(error = %e, "could not check item field indexes"),
+    }
 }

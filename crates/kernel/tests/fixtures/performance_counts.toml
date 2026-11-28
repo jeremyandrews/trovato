@@ -457,7 +457,7 @@ sql = "with event as (insert into security_audit_log (kind, user_id, actor_id, s
 
 ["category.anonymous.cold"]
 queries = 19
-cache_gets = 19
+cache_gets = 21
 cache_misses = 14
 cache_sets = 0
 plugin_calls = 0
@@ -485,13 +485,13 @@ sql = "select id, menu_name, path, title, parent_id, weight, hidden, plugin, sta
 count = 1
 sql = "select permission from role_permissions where role_id = $?"
 
-["category.anonymous.cold".statements."select:select:7a1798d4"]
+["category.anonymous.cold".statements."select:select:289b112e"]
 count = 1
-sql = 'select jsonb_build_object(?, r->?, r->?, r->?, r->?, r->?) from (select to_jsonb(t) as r from (select "item".* from "item" where "item"."status" = ? and (item.fields->? @> json_build_array(?::text)::jsonb) and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t) s'
+sql = 'select jsonb_build_object(?, to_jsonb(t.id), ?, to_jsonb(t.type), ?, to_jsonb(t.author_id), ?, to_jsonb(t.stage_id), ?, to_jsonb(t.status)) from (select "item".* from "item" where "item"."status" = ? and (trovato_field_list(item.filter_values->?) @> array_append(?::text[], ?::text)) and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
-["category.anonymous.cold".statements."select:select:fd497c0f"]
+["category.anonymous.cold".statements."select:select:d449cb9c"]
 count = 1
-sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and (item.fields->? @> json_build_array(?::text)::jsonb) and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
+sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and (trovato_field_list(item.filter_values->?) @> array_append(?::text[], ?::text)) and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
 ["category.anonymous.cold".statements."select:site_config:51f89970"]
 count = 1
@@ -523,7 +523,7 @@ sql = "set local statement_timeout = ?"
 
 ["category.anonymous.warm"]
 queries = 15
-cache_gets = 19
+cache_gets = 21
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
@@ -539,13 +539,13 @@ sql = "commit"
 count = 1
 sql = "select id, category_id, label, description, slug, weight, created, changed from category_tag where category_id = $? and slug = $?"
 
-["category.anonymous.warm".statements."select:select:7a1798d4"]
+["category.anonymous.warm".statements."select:select:289b112e"]
 count = 1
-sql = 'select jsonb_build_object(?, r->?, r->?, r->?, r->?, r->?) from (select to_jsonb(t) as r from (select "item".* from "item" where "item"."status" = ? and (item.fields->? @> json_build_array(?::text)::jsonb) and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t) s'
+sql = 'select jsonb_build_object(?, to_jsonb(t.id), ?, to_jsonb(t.type), ?, to_jsonb(t.author_id), ?, to_jsonb(t.stage_id), ?, to_jsonb(t.status)) from (select "item".* from "item" where "item"."status" = ? and (trovato_field_list(item.filter_values->?) @> array_append(?::text[], ?::text)) and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
-["category.anonymous.warm".statements."select:select:fd497c0f"]
+["category.anonymous.warm".statements."select:select:d449cb9c"]
 count = 1
-sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and (item.fields->? @> json_build_array(?::text)::jsonb) and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
+sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and (trovato_field_list(item.filter_values->?) @> array_append(?::text[], ?::text)) and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
 ["category.anonymous.warm".statements."select:site_config:51f89970"]
 count = 1
@@ -573,7 +573,7 @@ sql = "set local statement_timeout = ?"
 
 ["category.user.cold"]
 queries = 21
-cache_gets = 19
+cache_gets = 21
 cache_misses = 14
 cache_sets = 0
 plugin_calls = 0
@@ -609,13 +609,13 @@ sql = "select permission from role_permissions where role_id = $?"
 count = 1
 sql = "select r.* from roles r join user_roles ur on r.id = ur.role_id where ur.user_id = $? order by r.name"
 
-["category.user.cold".statements."select:select:4d37324a"]
+["category.user.cold".statements."select:select:3f9064ec"]
 count = 1
-sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and (item.fields->? @> json_build_array(?::text)::jsonb) and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
+sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and (trovato_field_list(item.filter_values->?) @> array_append(?::text[], ?::text)) and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
-["category.user.cold".statements."select:select:ea9a7e54"]
+["category.user.cold".statements."select:select:a0d27005"]
 count = 1
-sql = 'select jsonb_build_object(?, r->?, r->?, r->?, r->?, r->?) from (select to_jsonb(t) as r from (select "item".* from "item" where "item"."status" = ? and (item.fields->? @> json_build_array(?::text)::jsonb) and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t) s'
+sql = 'select jsonb_build_object(?, to_jsonb(t.id), ?, to_jsonb(t.type), ?, to_jsonb(t.author_id), ?, to_jsonb(t.stage_id), ?, to_jsonb(t.status)) from (select "item".* from "item" where "item"."status" = ? and (trovato_field_list(item.filter_values->?) @> array_append(?::text[], ?::text)) and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
 ["category.user.cold".statements."select:site_config:51f89970"]
 count = 1
@@ -647,7 +647,7 @@ sql = "set local statement_timeout = ?"
 
 ["category.user.warm"]
 queries = 15
-cache_gets = 19
+cache_gets = 21
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
@@ -663,13 +663,13 @@ sql = "commit"
 count = 1
 sql = "select id, category_id, label, description, slug, weight, created, changed from category_tag where category_id = $? and slug = $?"
 
-["category.user.warm".statements."select:select:4d37324a"]
+["category.user.warm".statements."select:select:3f9064ec"]
 count = 1
-sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and (item.fields->? @> json_build_array(?::text)::jsonb) and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
+sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and (trovato_field_list(item.filter_values->?) @> array_append(?::text[], ?::text)) and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
-["category.user.warm".statements."select:select:ea9a7e54"]
+["category.user.warm".statements."select:select:a0d27005"]
 count = 1
-sql = 'select jsonb_build_object(?, r->?, r->?, r->?, r->?, r->?) from (select to_jsonb(t) as r from (select "item".* from "item" where "item"."status" = ? and (item.fields->? @> json_build_array(?::text)::jsonb) and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t) s'
+sql = 'select jsonb_build_object(?, to_jsonb(t.id), ?, to_jsonb(t.type), ?, to_jsonb(t.author_id), ?, to_jsonb(t.stage_id), ?, to_jsonb(t.status)) from (select "item".* from "item" where "item"."status" = ? and (trovato_field_list(item.filter_values->?) @> array_append(?::text[], ?::text)) and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
 ["category.user.warm".statements."select:site_config:51f89970"]
 count = 1
@@ -735,7 +735,7 @@ sql = "select * from users where id = $?"
 
 ["feed.anonymous.cold"]
 queries = 12
-cache_gets = 11
+cache_gets = 13
 cache_misses = 10
 cache_sets = 0
 plugin_calls = 0
@@ -763,9 +763,9 @@ sql = "select permission from role_permissions where role_id = $?"
 count = 1
 sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
-["feed.anonymous.cold".statements."select:select:84866fa8"]
+["feed.anonymous.cold".statements."select:select:e5881287"]
 count = 1
-sql = 'select jsonb_build_object(?, r->?, r->?, r->?, r->?, r->?) from (select to_jsonb(t) as r from (select "item".* from "item" where "item"."status" = ? and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t) s'
+sql = 'select jsonb_build_object(?, to_jsonb(t.id), ?, to_jsonb(t.type), ?, to_jsonb(t.author_id), ?, to_jsonb(t.stage_id), ?, to_jsonb(t.status)) from (select "item".* from "item" where "item"."status" = ? and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
 ["feed.anonymous.cold".statements."select:site_config:897f0424"]
 count = 1
@@ -793,7 +793,7 @@ sql = "set local statement_timeout = ?"
 
 ["feed.anonymous.warm"]
 queries = 9
-cache_gets = 11
+cache_gets = 13
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
@@ -817,9 +817,9 @@ sql = "select i.id, i.changed, u.name from item i left join users u on u.id = i.
 count = 1
 sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
-["feed.anonymous.warm".statements."select:select:84866fa8"]
+["feed.anonymous.warm".statements."select:select:e5881287"]
 count = 1
-sql = 'select jsonb_build_object(?, r->?, r->?, r->?, r->?, r->?) from (select to_jsonb(t) as r from (select "item".* from "item" where "item"."status" = ? and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t) s'
+sql = 'select jsonb_build_object(?, to_jsonb(t.id), ?, to_jsonb(t.type), ?, to_jsonb(t.author_id), ?, to_jsonb(t.stage_id), ?, to_jsonb(t.status)) from (select "item".* from "item" where "item"."status" = ? and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
 ["feed.anonymous.warm".statements."select:site_config:897f0424"]
 count = 1
@@ -839,7 +839,7 @@ sql = "set local statement_timeout = ?"
 
 ["front.anonymous.cold"]
 queries = 17
-cache_gets = 17
+cache_gets = 19
 cache_misses = 13
 cache_sets = 0
 plugin_calls = 0
@@ -863,9 +863,9 @@ sql = "select permission from role_permissions where role_id = $?"
 count = 1
 sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
-["front.anonymous.cold".statements."select:select:84866fa8"]
+["front.anonymous.cold".statements."select:select:e5881287"]
 count = 1
-sql = 'select jsonb_build_object(?, r->?, r->?, r->?, r->?, r->?) from (select to_jsonb(t) as r from (select "item".* from "item" where "item"."status" = ? and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t) s'
+sql = 'select jsonb_build_object(?, to_jsonb(t.id), ?, to_jsonb(t.type), ?, to_jsonb(t.author_id), ?, to_jsonb(t.stage_id), ?, to_jsonb(t.status)) from (select "item".* from "item" where "item"."status" = ? and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
 ["front.anonymous.cold".statements."select:site_config:51f89970"]
 count = 1
@@ -901,7 +901,7 @@ sql = "set local statement_timeout = ?"
 
 ["front.anonymous.warm"]
 queries = 14
-cache_gets = 17
+cache_gets = 19
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
@@ -917,9 +917,9 @@ sql = "commit"
 count = 1
 sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
-["front.anonymous.warm".statements."select:select:84866fa8"]
+["front.anonymous.warm".statements."select:select:e5881287"]
 count = 1
-sql = 'select jsonb_build_object(?, r->?, r->?, r->?, r->?, r->?) from (select to_jsonb(t) as r from (select "item".* from "item" where "item"."status" = ? and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t) s'
+sql = 'select jsonb_build_object(?, to_jsonb(t.id), ?, to_jsonb(t.type), ?, to_jsonb(t.author_id), ?, to_jsonb(t.stage_id), ?, to_jsonb(t.status)) from (select "item".* from "item" where "item"."status" = ? and "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
 ["front.anonymous.warm".statements."select:site_config:51f89970"]
 count = 1
@@ -951,7 +951,7 @@ sql = "set local statement_timeout = ?"
 
 ["front.user.cold"]
 queries = 19
-cache_gets = 17
+cache_gets = 19
 cache_misses = 13
 cache_sets = 0
 plugin_calls = 0
@@ -979,13 +979,13 @@ sql = "select permission from role_permissions where role_id = $?"
 count = 1
 sql = "select r.* from roles r join user_roles ur on r.id = ur.role_id where ur.user_id = $? order by r.name"
 
-["front.user.cold".statements."select:select:930baebb"]
-count = 1
-sql = 'select jsonb_build_object(?, r->?, r->?, r->?, r->?, r->?) from (select to_jsonb(t) as r from (select "item".* from "item" where "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t) s'
-
 ["front.user.cold".statements."select:select:aef516c8"]
 count = 1
 sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
+
+["front.user.cold".statements."select:select:fcc4855e"]
+count = 1
+sql = 'select jsonb_build_object(?, to_jsonb(t.id), ?, to_jsonb(t.type), ?, to_jsonb(t.author_id), ?, to_jsonb(t.stage_id), ?, to_jsonb(t.status)) from (select "item".* from "item" where "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
 ["front.user.cold".statements."select:site_config:51f89970"]
 count = 1
@@ -1021,7 +1021,7 @@ sql = "set local statement_timeout = ?"
 
 ["front.user.warm"]
 queries = 14
-cache_gets = 17
+cache_gets = 19
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
@@ -1033,13 +1033,13 @@ renders = 1
 count = 1
 sql = "commit"
 
-["front.user.warm".statements."select:select:930baebb"]
-count = 1
-sql = 'select jsonb_build_object(?, r->?, r->?, r->?, r->?, r->?) from (select to_jsonb(t) as r from (select "item".* from "item" where "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t) s'
-
 ["front.user.warm".statements."select:select:aef516c8"]
 count = 1
 sql = 'select row_to_json(t) from (select "item".* from "item" where "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
+
+["front.user.warm".statements."select:select:fcc4855e"]
+count = 1
+sql = 'select jsonb_build_object(?, to_jsonb(t.id), ?, to_jsonb(t.type), ?, to_jsonb(t.author_id), ?, to_jsonb(t.stage_id), ?, to_jsonb(t.status)) from (select "item".* from "item" where "item"."status" = ? and "item"."stage_id" = ? and "item"."type" = ? order by "item"."created" desc limit ? offset ?) t'
 
 ["front.user.warm".statements."select:site_config:51f89970"]
 count = 1
