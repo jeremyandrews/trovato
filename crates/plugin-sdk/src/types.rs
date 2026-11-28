@@ -1492,6 +1492,65 @@ pub struct QueueOptions {
     pub delay: i64,
 }
 
+/// A precise timer to set (B278), for [`crate::host::timer_set`].
+///
+/// Setting a name the plugin already holds replaces that timer. Added by
+/// B278, after 0.106.0.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct TimerRequest {
+    /// Unique among this plugin's timers.
+    pub name: String,
+    /// When it fires, Unix seconds (UTC). A time already past fires at once.
+    pub run_at: i64,
+    /// Fire again every this many seconds; `None` fires once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_secs: Option<i64>,
+    /// Handed back to `tap_timer` when it fires.
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+/// One of this plugin's timers, as [`crate::host::timer_get`] answers.
+///
+/// Added by B278, after 0.106.0.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TimerInfo {
+    pub name: String,
+    /// Next run, Unix seconds.
+    pub run_at: i64,
+    pub repeat_secs: Option<i64>,
+    pub payload: serde_json::Value,
+    /// `scheduled`, `paused`, `running` or `failed`.
+    pub status: String,
+    pub attempts: i32,
+    /// Last fired, Unix seconds.
+    pub last_fired_at: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+/// What `tap_timer` receives when one of the plugin's timers is due.
+///
+/// Return an object with an `error` string (or trap) to fail the attempt:
+/// it is retried with backoff, then left `failed` for an administrator.
+/// Added by B278, after 0.106.0.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TimerInput {
+    /// The timer's name.
+    pub name: String,
+    /// The payload it was set with.
+    #[serde(default)]
+    pub payload: serde_json::Value,
+    /// When this attempt was due, Unix seconds.
+    pub run_at: i64,
+    /// When it was claimed, Unix seconds.
+    pub fired_at: i64,
+    /// The repeat interval, for a repeating timer.
+    #[serde(default)]
+    pub repeat_secs: Option<i64>,
+    /// This attempt, from 1.
+    pub attempt: i32,
+}
+
 /// Public facts about one of the site's users, as `host::load_users` answers
 /// them. Never an address, a password hash or the user's private `data`.
 ///

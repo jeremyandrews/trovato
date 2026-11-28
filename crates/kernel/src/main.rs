@@ -50,6 +50,7 @@ mod system_log;
 mod tap;
 mod telemetry;
 mod theme;
+mod timer;
 mod update_status;
 
 use std::net::SocketAddr;
@@ -670,6 +671,19 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         tokio::spawn(async move { cron.run_scheduler(token).await })
     };
 
+    // Precise timers (B278): one loop per process that sleeps until the next
+    // timer is due, wakes for a write that moves one earlier (in this process,
+    // and on every server through Postgres NOTIFY), and rechecks at least once
+    // a minute. Always spawned: an idle site runs one indexed query a minute.
+    // On `workers_token`, like the cron scheduler: no timer starts from the
+    // signal on, and the ones firing are waited for below, within the
+    // shutdown deadline.
+    let timer_scheduler = {
+        let timers = state.timers().clone();
+        let token = workers_token.clone();
+        tokio::spawn(async move { timers.run_scheduler(token).await })
+    };
+
     // The mail workers (BG18): whenever a transport is configured, so a
     // queued message is sent within seconds with nothing else to enable. On the
     // same token as the queue runner: they take no new message from SIGTERM on,
@@ -730,6 +744,8 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     // never from the request's Host header; say so once when it cannot be a
     // public address.
     routes::feed::warn_if_site_url_unusable(&state.runtime().site_url);
+    warn_missing_field_indexes(&state).await;
+    state.reconcile_field_indexes();
 
     let inner_router: Router<AppState> = Router::new()
         .merge(routes::front::router())
@@ -978,6 +994,14 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
             .is_err()
     {
         warn!("The scheduled cron run did not finish; its lock expires on its own TTL");
+    }
+    // Always waited for, within the deadline: a timer firing finishes, and
+    // one cut off here is claimed again by any server when its lease ends.
+    if tokio::time::timeout_at(deadline, timer_scheduler)
+        .await
+        .is_err()
+    {
+        warn!("A timer did not finish before the shutdown deadline; its lease returns it");
     }
     // Always waited for, within the deadline: a mail worker stops after at most
     // the one send in flight, and putting its other claims back now saves them
@@ -1813,4 +1837,22 @@ fn init_tracing() -> Result<system_log::SystemLogReceiver> {
         );
     }
     Ok(log_receiver)
+}
+
+/// Name every field marked "Filterable and sortable" whose index is not
+/// built yet (B207). The background reconcile started next queues the
+/// missing ones; until each is built, filtering or sorting on that field
+/// reads every item of its type.
+async fn warn_missing_field_indexes(state: &AppState) {
+    match crate::gather::field_index::missing(state.db()).await {
+        Ok(missing) => {
+            for (item_type, field, index_state) in missing {
+                warn!(
+                    item_type,
+                    field, index_state, "marked field has no ready index yet; it will be built"
+                );
+            }
+        }
+        Err(e) => warn!(error = %e, "could not check item field indexes"),
+    }
 }

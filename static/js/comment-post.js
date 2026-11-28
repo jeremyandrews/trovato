@@ -36,6 +36,11 @@
     }
 
     form.addEventListener('submit', function (event) {
+        // Preview is a page of its own (the reply page with the comment shown
+        // above the form), so its button posts the form normally.
+        if (event.submitter && event.submitter.name === 'preview') {
+            return;
+        }
         var body = form.querySelector('[name="body"]');
         var parent = form.querySelector('[name="parent_id"]');
         if (!body || !body.value.trim()) {
@@ -49,7 +54,7 @@
             payload.parent_id = parent.value;
         }
 
-        var button = form.querySelector('button[type="submit"]');
+        var button = form.querySelector('button[name="op"]');
         if (button) {
             button.disabled = true;
         }

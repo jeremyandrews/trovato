@@ -106,11 +106,13 @@
         <div class="filter-row">
             {% if default_status_pending %}{% set default_status = "pending" %}{% else %}{% set default_status = "published" %}{% endif %}
             {{ form::select(name="default_status", label=t(s="New comments"), options=default_status_options, value=default_status, translate_options=true, wrapper="filter-item") }}
+            {{ form::checkbox(name="notify_authors", label=t(s="E-mail content authors about new comments"), checked=notify_authors, wrapper="filter-item") }}
             <div class="filter-item">
                 <button type="submit" class="button button--secondary">{{ t(s="Save") }}</button>
             </div>
         </div>
         {{ form::effect(text=t(s="Whether a comment posted from now on is shown at once or waits in this list for approval. Comments already posted keep their status.")) }}
+        {{ form::effect(text=t(s="When ticked, the author of a post is e-mailed when a comment on it is published or approved. Their own comments never are.")) }}
     </form>
 </section>
 {% endblock content %}

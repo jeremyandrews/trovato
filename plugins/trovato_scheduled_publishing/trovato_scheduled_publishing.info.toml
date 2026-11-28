@@ -9,6 +9,10 @@ implements = [
     "tap_menu",
     "tap_perm",
     "tap_cron",
+    "tap_item_insert",
+    "tap_item_update",
+    "tap_item_delete",
+    "tap_timer",
 ]
 weight = 0
 
@@ -26,7 +30,9 @@ files = [
 # claims each item by removing its date (execute-raw), `item-api` for the
 # status change: an item service update, so the item write taps fire, a
 # revision is recorded and the item is queued for the search index, as for an
-# editor's save. From cron that needs `item_background`.
-host_interfaces = ["db", "logging", "item-api"]
+# editor's save. From cron and from a timer that needs `item_background`.
+# `timer` for the precise timer each future date gets (B278), so an item goes
+# live at the second rather than at the next cron run.
+host_interfaces = ["db", "logging", "item-api", "timer"]
 raw_sql = true
 item_background = true

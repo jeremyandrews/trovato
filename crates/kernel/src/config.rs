@@ -431,6 +431,13 @@ pub struct RuntimeConfig {
     /// `0`, which turns the scheduler off): this wins outright, the same
     /// precedence `UPDATE_CHECK` gives the environment over a site setting.
     pub cron_interval_override: Option<u64>,
+
+    /// Process-level overrides of the timer throttles (B278):
+    /// `TIMER_MAX_CONCURRENT`, `TIMER_MAX_PER_PLUGIN`, `TIMER_MIN_REPEAT_SECS`
+    /// and `TIMER_MAX_PAYLOAD_BYTES`. Each one set wins over the
+    /// `timer_settings` `site_config` row edited on `/admin/reports/timers`,
+    /// as `CRON_INTERVAL_SECS` wins over the cron interval.
+    pub timer_overrides: crate::timer::TimerOverrides,
 }
 
 /// The SMTP configuration mail is sent with, as an administrator may see it.
@@ -963,6 +970,7 @@ impl Config {
                 .map(|raw| raw.trim().parse::<u64>())
                 .transpose()
                 .context("CRON_INTERVAL_SECS must be a valid non-negative integer")?,
+            timer_overrides: crate::timer::TimerOverrides::from_lookup(get)?,
         };
 
         Ok(Self {

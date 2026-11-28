@@ -640,6 +640,7 @@ async fn status_report(State(state): State<AppState>, session: Session) -> Respo
     let (cron_row, last_cron) = cron_requirement(&state).await;
     rows.push(cron_row);
     rows.push(files_requirement(&state).await);
+    rows.push(field_index_requirement(&state).await);
     rows.push(match state.runtime().cookie_secure {
         crate::session::CookieSecure::Never => Requirement::new(
             "Session cookies",
@@ -676,6 +677,37 @@ async fn status_report(State(state): State<AppState>, session: Session) -> Respo
     context.insert("may_run_cron", &may_run_cron(&viewer));
     context.insert("path", "/admin/reports/status");
     render_admin_template(&state, &viewer, "admin/reports/status.html", context).await
+}
+
+/// Whether every field marked "Filterable and sortable" has a ready, valid
+/// index (B207). A field without one still answers, by reading every item of
+/// its type.
+async fn field_index_requirement(state: &AppState) -> Requirement {
+    const TITLE: &str = "Field indexes";
+    match crate::gather::field_index::missing(state.db()).await {
+        Ok(missing) if missing.is_empty() => Requirement::new(TITLE, "All ready", "ok"),
+        Ok(missing) => {
+            let failed = missing.iter().any(|(_, _, s)| s == "failed");
+            let names: Vec<String> = missing
+                .iter()
+                .map(|(t, f, s)| match f.as_str() {
+                    "*" => format!("{t}, several fields at once ({s})"),
+                    "+" => format!("{t}, newest first ({s})"),
+                    _ => format!("{t}.{f} ({s})"),
+                })
+                .collect();
+            if failed {
+                Requirement::new(TITLE, names.join(", "), "error").because(
+                    "Building an index failed. The content type's fields page shows the error; cron tries again after an hour. Listings on these fields read every item of the type until then.",
+                )
+            } else {
+                Requirement::new(TITLE, names.join(", "), "warning").because(
+                    "These indexes are queued or being built. Listings on these fields read every item of the type until they are ready.",
+                )
+            }
+        }
+        Err(_) => Requirement::new(TITLE, "Could not be read", "warning"),
+    }
 }
 
 /// Whether the viewer may run cron by hand.
