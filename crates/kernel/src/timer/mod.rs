@@ -299,6 +299,29 @@ pub async fn save_settings(pool: &PgPool, settings: TimerSettings) -> Result<()>
     crate::models::SiteConfig::set(pool, TIMER_SETTINGS_KEY, serde_json::to_value(settings)?).await
 }
 
+/// [`save_settings`], writing `event` (the `timer.settings_changed`
+/// recording the change) in the same transaction: the settings and their
+/// event commit together, or neither does.
+pub async fn save_settings_recorded(
+    pool: &PgPool,
+    settings: TimerSettings,
+    audit: &crate::audit::SecurityAudit,
+    event: crate::audit::SecurityEvent,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    crate::models::SiteConfig::set_in(
+        &mut *tx,
+        TIMER_SETTINGS_KEY,
+        serde_json::to_value(settings)?,
+    )
+    .await?;
+    audit.record_in(&mut tx, event).await?;
+    tx.commit().await?;
+    // Every server drops its in-memory site config, as `SiteConfig::set` does.
+    crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
+    Ok(())
+}
+
 // =============================================================================
 // Timers
 // =============================================================================
@@ -716,6 +739,26 @@ pub async fn admin_change(
     change: &AdminChange,
     settings: &TimerSettings,
 ) -> Result<(Timer, Option<Timer>), TimerRefused> {
+    admin_change_recorded(pool, id, change, settings, None).await
+}
+
+/// What records an administrator's change to a timer: the stream, and the
+/// event it writes given the timer before and, unless cancelled, after.
+pub type ChangeRecord<'a> = (
+    &'a crate::audit::SecurityAudit,
+    Box<dyn FnOnce(&Timer, Option<&Timer>) -> crate::audit::SecurityEvent + Send + 'a>,
+);
+
+/// [`admin_change`], writing the event `record` makes (the `timer.changed`
+/// recording the change) in the change's own transaction: the change and its
+/// event commit together, or neither does.
+pub async fn admin_change_recorded(
+    pool: &PgPool,
+    id: i64,
+    change: &AdminChange,
+    settings: &TimerSettings,
+    record: Option<ChangeRecord<'_>>,
+) -> Result<(Timer, Option<Timer>), TimerRefused> {
     let mut tx = pool.begin().await?;
     let before: Timer = sqlx::query_as(safe_sql!(
         "SELECT {TIMER_COLUMNS} FROM scheduled_timer WHERE id = $1 FOR UPDATE"
@@ -783,6 +826,11 @@ pub async fn admin_change(
         }
     };
     notify(&mut tx, after.as_ref().map_or(before.run_at, |t| t.run_at)).await?;
+    if let Some((audit, event)) = record {
+        audit
+            .record_in(&mut tx, event(&before, after.as_ref()))
+            .await?;
+    }
     tx.commit().await?;
     if let Some(t) = &after {
         wake_local(t.run_at.timestamp_millis());
@@ -996,6 +1044,18 @@ impl TimerService {
     ) -> Result<(Timer, Option<Timer>), TimerRefused> {
         let settings = self.settings().await?;
         admin_change(&self.pool, id, change, &settings).await
+    }
+
+    /// [`Self::admin_change`], with its event written in the change's own
+    /// transaction (see [`admin_change_recorded`]).
+    pub async fn admin_change_recorded(
+        &self,
+        id: i64,
+        change: &AdminChange,
+        record: ChangeRecord<'_>,
+    ) -> Result<(Timer, Option<Timer>), TimerRefused> {
+        let settings = self.settings().await?;
+        admin_change_recorded(&self.pool, id, change, &settings, Some(record)).await
     }
 
     /// Wake the loop if `at_ms` is before the time it will next look.
