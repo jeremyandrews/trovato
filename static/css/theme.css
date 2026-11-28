@@ -1030,7 +1030,8 @@ html {
     box-shadow: var(--shadow-xs);
 }
 
-.gather-exposed-filters .form-group--inline {
+/* The form pipeline draws the form (routes::gather::exposed_filter_form). */
+.gather-exposed-filters .form-item {
     display: flex;
     flex-direction: column;
     gap: 0.375rem;
@@ -1044,7 +1045,8 @@ html {
     color: var(--gray-500);
 }
 
-.gather-exposed-filters .form-control {
+.gather-exposed-filters .form-select,
+.gather-exposed-filters .form-text {
     padding: 0.5rem 0.875rem;
     font-size: 0.875rem;
     border: 1.5px solid var(--gray-200);
@@ -1055,7 +1057,8 @@ html {
     font-family: inherit;
 }
 
-.gather-exposed-filters .form-control:focus {
+.gather-exposed-filters .form-select:focus,
+.gather-exposed-filters .form-text:focus {
     outline: none;
     border-color: var(--primary);
     box-shadow: 0 0 0 3px var(--primary-light);
@@ -1067,6 +1070,7 @@ html {
     gap: 0.5rem;
 }
 
+.gather-exposed-filters .form-submit,
 .gather-exposed-filters .btn,
 .btn {
     display: inline-flex;
@@ -1086,6 +1090,7 @@ html {
     font-family: inherit;
 }
 
+.gather-exposed-filters .form-submit:hover,
 .gather-exposed-filters .btn:hover,
 .btn:hover {
     opacity: 0.9;
@@ -1597,10 +1602,6 @@ html {
    comes later in the sheet at the same specificity, would win over the link
    style and leave Logout larger than its neighbours. The focus ring is the
    global :focus-visible one, the same as the links'. */
-.site-nav__logout-form {
-    display: inline;
-}
-
 .site-nav__logout {
     appearance: none;
     margin: 0;
@@ -2233,4 +2234,22 @@ form select:focus {
 .maintenance-page__login {
     margin-top: 2rem;
     font-size: 0.875rem;
+}
+
+/* The search page's box: the field and its button on one row, as before the
+   form renderer drew them in a form item and an actions row (B83c). */
+.search-form.form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.search-form.form > .form-item {
+    flex: 1 1 16rem;
+    margin: 0;
+}
+
+.search-form.form > .form-actions {
+    margin: 0;
 }

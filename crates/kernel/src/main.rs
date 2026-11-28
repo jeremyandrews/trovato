@@ -1573,16 +1573,13 @@ async fn create_user_from_cli(
     for name in &account.roles {
         match models::Role::find_by_name(state.db(), name).await? {
             Some(role) => roles.push(role),
-            None => problems.push(routes::admin_form::FieldError::form(
-                i18n::UiMessage::new("Role '{name}' not found.").arg("name", name),
-            )),
+            None => problems.push(form::ValidationError::form(format!(
+                "Role '{name}' not found."
+            ))),
         }
     }
     if !problems.is_empty() {
-        let lines: Vec<String> = problems
-            .iter()
-            .map(|p| p.message.text(None, "en"))
-            .collect();
+        let lines: Vec<String> = problems.iter().map(|p| p.message.clone()).collect();
         anyhow::bail!("{}", lines.join("\n"));
     }
 

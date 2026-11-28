@@ -263,15 +263,21 @@ async fn revoke_other_sessions(
 
 // ─── Admin oversight (AC-3) ──────────────────────────────────────────────────
 
+/// The admin sessions page's one form. Each row's Sign out button joins it
+/// through its `form` attribute and names its own revoke address in
+/// `formaction`, so a list of any length builds one form.
+const ADMIN_SESSIONS_FORM_ID: &str = "admin_sessions_form";
+
 /// `GET /admin/users/{user_id}/sessions` — any account's active sessions.
 async fn admin_sessions_page(
     State(state): State<AppState>,
     session: Session,
     Path(user_id): Path<Uuid>,
 ) -> Response {
-    if let Err(resp) = require_permission(&state, &session, "administer users").await {
-        return resp;
-    }
+    let admin = match require_permission(&state, &session, "administer users").await {
+        Ok(admin) => admin,
+        Err(resp) => return resp,
+    };
 
     let Ok(Some(subject)) = state.users().find_by_id(user_id).await else {
         return render_not_found();
@@ -283,18 +289,31 @@ async fn admin_sessions_page(
         .await
         .unwrap_or_default();
     // An admin viewing someone else's list has no "current" session in it.
-    let views: Vec<SessionView> = entries.iter().map(|e| to_view(e, None)).collect();
+    let listed: Vec<SessionView> = entries.iter().map(|e| to_view(e, None)).collect();
 
-    let csrf_token = crate::form::csrf::generate_csrf_token(&session).await;
-
+    let path = format!("/admin/users/{user_id}/sessions");
     let mut context = tera::Context::new();
-    context.insert("csrf_token", &csrf_token);
+    if !listed.is_empty() {
+        let form = crate::form::Form::new(ADMIN_SESSIONS_FORM_ID).action(path.clone());
+        match crate::routes::admin_form::render(&state, &session, &admin, form, &[]).await {
+            Ok(html) => context.insert("form", &html),
+            Err(response) => return response,
+        }
+    }
+    context.insert("form_id", ADMIN_SESSIONS_FORM_ID);
+    // For the admin layout's `csrf-token` meta tag, which a script revoking
+    // through the JSON answer sends back in `X-CSRF-Token`; the form carries
+    // its own.
+    context.insert(
+        "csrf_token",
+        &crate::form::csrf::generate_csrf_token(&session).await,
+    );
     context.insert("user", &subject);
-    context.insert("sessions", &views);
+    context.insert("sessions", &listed);
     context.insert("is_admin_view", &true);
     let flash: Option<String> = session.remove(ADMIN_SESSIONS_FLASH).await.ok().flatten();
     context.insert("flash", &flash);
-    context.insert("path", &format!("/admin/users/{user_id}/sessions"));
+    context.insert("path", &path);
 
     // In the admin shell, like every other admin page; it used to render the
     // account owner's own front end page.
@@ -316,27 +335,42 @@ async fn admin_revoke_session(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    // The admin page posts an ordinary form, so signing a device out works
+    // The admin page posts its pipeline form, so signing a device out works
     // with JavaScript off; a script (and the tests) send the CSRF header and
     // get JSON back, as before.
-    let form_token = headers
+    let posted = headers
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .filter(|ct| ct.starts_with("application/x-www-form-urlencoded"))
         .map(|_| {
-            url::form_urlencoded::parse(&body)
-                .find(|(k, _)| k == "_token")
-                .map(|(_, v)| v.into_owned())
-                .unwrap_or_default()
+            crate::content::submission::PostedForm(
+                url::form_urlencoded::parse(&body).into_owned().collect(),
+            )
         });
     let back = format!("/admin/users/{user_id}/sessions");
-    let admin = if let Some(token) = &form_token {
+    let mut form_state = None;
+    let admin = if let Some(posted) = &posted {
         let admin = match require_permission(&state, &session, "administer users").await {
             Ok(u) => u,
             Err(refusal) => return refusal,
         };
-        if let Err(refusal) = crate::routes::helpers::require_csrf(&session, token).await {
-            return refusal;
+        match crate::routes::admin_form::check(
+            &state,
+            &session,
+            &admin,
+            posted,
+            ADMIN_SESSIONS_FORM_ID,
+            Vec::new(),
+        )
+        .await
+        {
+            Ok(checked) => form_state = Some(checked),
+            Err(Ok(_)) => {
+                return crate::routes::helpers::render_error(
+                    "The form has expired. Reload the page and try again.",
+                );
+            }
+            Err(Err(refusal)) => return refusal,
         }
         admin
     } else {
@@ -377,7 +411,8 @@ async fn admin_revoke_session(
                         .detail("device_name", entry.device_name),
                 )
                 .await;
-            if form_token.is_some() {
+            if let (Some(posted), Some(form_state)) = (&posted, &form_state) {
+                crate::routes::admin_form::submitted(&state, &admin, form_state, posted).await;
                 if let Err(e) = session
                     .insert(ADMIN_SESSIONS_FLASH, "The device was signed out.")
                     .await
@@ -388,7 +423,7 @@ async fn admin_revoke_session(
             }
             Json(serde_json::json!({ "success": true })).into_response()
         }
-        Ok(None) if form_token.is_some() => render_not_found(),
+        Ok(None) if posted.is_some() => render_not_found(),
         Ok(None) => crate::error::AppError::with_status(StatusCode::NOT_FOUND, "No such session.")
             .into_response(),
         Err(e) => {

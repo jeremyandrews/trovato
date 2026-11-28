@@ -1,0 +1,29 @@
+{#- A person's grid of per-provider token limit overrides, which
+    routes::admin_ai_budget renders into a markup element of the kernel-built
+    override form. -#}
+{% if provider_usage | length > 0 %}
+<div class="table-scroll" role="region" aria-labelledby="user-overrides-caption" tabindex="0">
+    <table class="table">
+        <caption id="user-overrides-caption">{{ t(s="Token limit overrides for {name}", name=user_name) }}</caption>
+        <thead>
+            <tr>
+                <th scope="col">{{ t(s="Provider") }}</th>
+                <th scope="col">{{ t(s="Current Usage") }}</th>
+                <th scope="col">{{ t(s="Override Limit") }}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for u in provider_usage %}
+            <tr>
+                <th scope="row">{{ u.label }}</th>
+                <td>{{ u.used }}</td>
+                <td>
+                    <label class="visually-hidden" for="override_{{ u.provider_id }}">{{ t(s="Override limit for {provider}", provider=u.label) }}</label>
+                    <input type="number" id="override_{{ u.provider_id }}" name="override_{{ u.provider_id }}" value="{% if u.override is defined and u.override %}{{ u.override }}{% endif %}" min="0" placeholder="{{ t(s='Role default') }}" aria-describedby="user-overrides-hint">
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}

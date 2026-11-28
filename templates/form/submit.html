@@ -3,9 +3,9 @@
         type="submit"
         id="{{ name }}"
         name="{{ name }}"
-        class="form-submit button button--primary"
+        class="form-submit button {% if element.attributes and element.attributes.class %}{{ element.attributes.class }}{% else %}button--primary{% endif %}"
         {% if element.disabled %}disabled{% endif %}
-        {% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}
+        {% if element.attributes %}{% for key, value in element.attributes %}{% if key != "class" %} {{ key }}="{{ value }}"{% endif %}{% endfor %}{% endif %}
     >
         {{ element.value | default(value="Submit") }}
     </button>

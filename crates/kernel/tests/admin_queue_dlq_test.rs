@@ -16,10 +16,14 @@ use sqlx::Row;
 
 const DLQ_PLUGIN: &str = "test_dlq_admin";
 
-/// Extract the CSRF token from the admin page for header-based CSRF.
+/// The session's CSRF token, for header-based CSRF: the `csrf-token` meta tag a
+/// signed-in front-end page carries.
 async fn csrf_token(app: &common::TestApp, cookies: &str) -> String {
     let response = app
-        .request_with_cookies(Request::get("/admin").body(Body::empty()).unwrap(), cookies)
+        .request_with_cookies(
+            Request::get("/user/login").body(Body::empty()).unwrap(),
+            cookies,
+        )
         .await;
     let body = axum::body::to_bytes(response.into_body(), 1_000_000)
         .await

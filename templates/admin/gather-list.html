@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {#- The gather listing. `list` is its filter, sort and page
@@ -10,11 +9,9 @@
 
 {% block content %}
 <div class="admin-card">
-    {{ list::filter_start(action="/admin/gather", label=t(s="Filter gather queries")) }}
-        {{ form::field(name="q", type="search", label=t(s="Label, ID, table or plugin contains"), value=list.q, width="20", wrapper="filter-item") }}
-    {{ list::filter_end(list=list, action="/admin/gather") }}
+    {{ filter_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::admin_list::render_forms); every value is escaped by the form templates #}
 </div>
-{{ list::sort_form(list=list, action="/admin/gather") }}
+{{ sort_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
 {% if queries | length > 0 %}
 <div class="admin-card">

@@ -673,7 +673,7 @@ pub async fn execute_and_render(
     let filter_values: HashMap<String, String> = params
         .filters
         .iter()
-        .filter(|(k, _)| !["page", "stage"].contains(&k.as_str()))
+        .filter(|(k, _)| !["page", "stage", EXPOSED_FILTER_SUBMIT].contains(&k.as_str()))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
@@ -686,6 +686,22 @@ pub async fn execute_and_render(
         params.link_base.as_deref().unwrap_or(base_path)
     };
 
+    // The exposed filter form, through the form pipeline: a GET form, so
+    // building it runs `tap_form_alter` and saves nothing.
+    let filter_form = match exposed_filter_form(&gather_query, &filter_values, link_base, &preload)
+    {
+        Some(form) => {
+            let anonymous = UserContext::anonymous();
+            let viewer = query_context.viewer.as_ref().unwrap_or(&anonymous);
+            super::admin_form::render_as(state, session, viewer, form, &[])
+                .await
+                .map_err(|_| {
+                    GatherPageError::Failed("This page could not be displayed.".to_string())
+                })?
+        }
+        None => String::new(),
+    };
+
     // Render gather content (either via theme template or fallback HTML)
     let term = params.term.as_ref();
     let content_html = render_gather_with_theme(
@@ -695,6 +711,7 @@ pub async fn execute_and_render(
         &filter_values,
         link_base,
         &preload,
+        &filter_form,
         term,
     )
     .unwrap_or_else(|| {
@@ -703,7 +720,7 @@ pub async fn execute_and_render(
             &result,
             &filter_values,
             link_base,
-            &preload,
+            &filter_form,
             term,
         )
     });
@@ -807,6 +824,7 @@ fn render_gather_with_theme(
     filter_values: &HashMap<String, String>,
     base_path: &str,
     preload: &WidgetPreloadData,
+    filter_form: &str,
     term: Option<&serde_json::Value>,
 ) -> Option<String> {
     // Try to find a template for this query
@@ -835,7 +853,10 @@ fn render_gather_with_theme(
     context.insert("has_prev", &result.has_prev);
     context.insert("base_path", base_path);
 
-    // Exposed filters for template rendering (includes widget type + options)
+    // The exposed filter form, built through the form pipeline (empty when
+    // the query exposes none); the filters' metadata and values stay in the
+    // context for a theme's own template.
+    context.insert("exposed_filter_form", filter_form);
     let exposed_filters = collect_exposed_filters(query, preload);
     context.insert("exposed_filters", &exposed_filters);
     context.insert("filter_values", filter_values);
@@ -1186,86 +1207,75 @@ fn collect_exposed_filters(
         .collect()
 }
 
-/// Render exposed filter form as HTML (fallback path, no theme template).
+/// The id of a gather page's exposed filter form.
+pub const EXPOSED_FILTER_FORM_ID: &str = "gather_exposed_filters";
+
+/// The name of the exposed filter form's Apply button, which a browser sends
+/// with the filters; it is no filter, so pager links leave it out.
+const EXPOSED_FILTER_SUBMIT: &str = "op";
+
+/// The exposed filter form of `query` (B83c): a GET form to `base_path`
+/// holding each exposed filter's widget with its value from `filter_values`,
+/// or `None` when the query exposes no filter. [`execute_and_render`] builds
+/// it through the form pipeline, for the theme template and the fallback
+/// markup alike.
 ///
-/// Renders appropriate controls for each widget type:
-/// - `Boolean` → `<select>` with Any / Yes / No
-/// - `CategorySelect` → `<select>` indented by hierarchy depth
-/// - `DynamicOptions` → `<select>` (≤ threshold) or `<datalist>` autocomplete (> threshold)
-/// - `Text` → plain `<input type="text">`
-fn render_exposed_filter_form(
+/// A boolean filter is a select of Yes and No; a category select lists the
+/// category's terms indented by depth; dynamic options are a select up to
+/// their threshold and, above it, a text field the browser completes from a
+/// datalist of the values; a text filter is a text field. Each field is
+/// named for its filter, so the query string the form sends is the one the
+/// gather reads.
+fn exposed_filter_form(
     query: &GatherQuery,
     filter_values: &HashMap<String, String>,
     base_path: &str,
     preload: &WidgetPreloadData,
-) -> String {
+) -> Option<crate::form::Form> {
+    use crate::form::{Form, FormElement};
+
     let exposed: Vec<_> = query
         .definition
         .filters
         .iter()
         .filter(|f| f.exposed)
         .collect();
-
     if exposed.is_empty() {
-        return String::new();
+        return None;
     }
 
-    let mut html = format!(
-        "<form method=\"get\" action=\"{}\" class=\"gather-exposed-filters\">\n",
-        escape_html(base_path)
-    );
-
-    for filter in &exposed {
+    let mut form = Form::new(EXPOSED_FILTER_FORM_ID)
+        .method("get")
+        .action(base_path)
+        .attribute("class", "gather-exposed-filters");
+    for (weight, filter) in (0..).zip(&exposed) {
         let label = filter.exposed_label.as_deref().unwrap_or(&filter.field);
-        let field_escaped = escape_html(&filter.field);
-        let label_escaped = escape_html(label);
         let current = filter_values
             .get(&filter.field)
-            .map(String::as_str)
-            .unwrap_or("");
-
-        html.push_str(&format!(
-            "<div class=\"form-group form-group--inline\">\
-             <label for=\"filter-{field_escaped}\">{label_escaped}</label>\n"
-        ));
-
-        match &filter.widget {
-            ExposedWidget::Boolean => {
-                let sel_true = if current == "true" { " selected" } else { "" };
-                let sel_false = if current == "false" { " selected" } else { "" };
-                html.push_str(&format!(
-                    "<select id=\"filter-{field_escaped}\" name=\"{field_escaped}\" \
-                     class=\"form-control\">\n\
-                     <option value=\"\">Any</option>\n\
-                     <option value=\"true\"{sel_true}>Yes</option>\n\
-                     <option value=\"false\"{sel_false}>No</option>\n\
-                     </select>\n"
-                ));
-            }
+            .cloned()
+            .unwrap_or_default();
+        let element = match &filter.widget {
+            ExposedWidget::Boolean => FormElement::select(vec![
+                ("true".to_string(), "Yes".to_string()),
+                ("false".to_string(), "No".to_string()),
+            ])
+            .placeholder("Any"),
             ExposedWidget::CategorySelect { category } => {
-                html.push_str(&format!(
-                    "<select id=\"filter-{field_escaped}\" name=\"{field_escaped}\" \
-                     class=\"form-control\">\n\
-                     <option value=\"\">Any</option>\n"
-                ));
-
                 let tags = preload
                     .category_options
                     .get(category)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
-
-                for twd in tags {
-                    let indent = "\u{00a0}\u{00a0}".repeat(twd.depth as usize);
-                    let tag_id = twd.tag.id.to_string();
-                    let selected = if current == tag_id { " selected" } else { "" };
-                    let label_text = escape_html(&twd.tag.label);
-                    html.push_str(&format!(
-                        "<option value=\"{id}\"{selected}>{indent}{label_text}</option>\n",
-                        id = escape_html(&tag_id),
-                    ));
-                }
-                html.push_str("</select>\n");
+                FormElement::select(
+                    tags.iter()
+                        .map(|twd| {
+                            let depth = usize::try_from(twd.depth).unwrap_or(0);
+                            let indent = "\u{00a0}\u{00a0}".repeat(depth);
+                            (twd.tag.id.to_string(), format!("{indent}{}", twd.tag.label))
+                        })
+                        .collect(),
+                )
+                .placeholder("Any")
             }
             ExposedWidget::DynamicOptions {
                 source_field,
@@ -1276,67 +1286,48 @@ fn render_exposed_filter_form(
                     .get(source_field)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
-
                 if values.len() > *autocomplete_threshold {
-                    // Autocomplete: text input + datalist
-                    html.push_str(&format!(
-                        "<input type=\"text\" id=\"filter-{field_escaped}\" \
-                         name=\"{field_escaped}\" value=\"{value}\" \
-                         class=\"form-control\" list=\"{field_escaped}-options\">\n\
-                         <datalist id=\"{field_escaped}-options\">\n",
-                        value = escape_html(current),
-                    ));
-                    for v in values {
-                        html.push_str(&format!("<option value=\"{}\"></option>\n", escape_html(v)));
-                    }
-                    html.push_str("</datalist>\n");
+                    let list = format!("{}-options", filter.field);
+                    let options: String = values
+                        .iter()
+                        .map(|v| format!("<option value=\"{}\"></option>", escape_html(v)))
+                        .collect();
+                    FormElement::textfield()
+                        .attribute("list", list.clone())
+                        .suffix(format!(
+                            "<datalist id=\"{}\">{options}</datalist>",
+                            escape_html(&list)
+                        ))
                 } else {
-                    // Dropdown select
-                    html.push_str(&format!(
-                        "<select id=\"filter-{field_escaped}\" name=\"{field_escaped}\" \
-                         class=\"form-control\">\n\
-                         <option value=\"\">Any</option>\n"
-                    ));
-                    for v in values {
-                        let selected = if current == v { " selected" } else { "" };
-                        let v_esc = escape_html(v);
-                        html.push_str(&format!(
-                            "<option value=\"{v_esc}\"{selected}>{v_esc}</option>\n"
-                        ));
-                    }
-                    html.push_str("</select>\n");
+                    FormElement::select(values.iter().map(|v| (v.clone(), v.clone())).collect())
+                        .placeholder("Any")
                 }
             }
-            ExposedWidget::Text => {
-                html.push_str(&format!(
-                    "<input type=\"text\" id=\"filter-{field_escaped}\" \
-                     name=\"{field_escaped}\" value=\"{value}\" class=\"form-control\">\n",
-                    value = escape_html(current),
-                ));
-            }
-        }
-
-        html.push_str("</div>\n");
+            ExposedWidget::Text => FormElement::textfield(),
+        };
+        form = form.element(
+            filter.field.clone(),
+            element.title(label).default_value(current).weight(weight),
+        );
     }
-
-    html.push_str(&format!(
-        "<div class=\"form-actions\">\
-         <button type=\"submit\" class=\"btn\">Apply</button>\
-         <a href=\"{}\" class=\"btn btn--secondary\">Clear</a>\
-         </div>\n</form>\n",
+    let clear = format!(
+        "<a href=\"{}\" class=\"btn btn--secondary\">Clear</a>",
         escape_html(base_path)
-    ));
-
-    html
+    );
+    Some(form.element(
+        EXPOSED_FILTER_SUBMIT,
+        FormElement::submit("Apply").suffix(clear).weight(i32::MAX),
+    ))
 }
 
-/// Render gather content as an HTML fragment (no page wrapper).
+/// Render gather content as an HTML fragment (no page wrapper), with the
+/// exposed filter form `filter_form` already rendered (empty for none).
 fn render_gather_content_html(
     query: &GatherQuery,
     result: &crate::gather::GatherResult,
     filter_values: &HashMap<String, String>,
     base_path: &str,
-    preload: &WidgetPreloadData,
+    filter_form: &str,
     term: Option<&serde_json::Value>,
 ) -> String {
     let mut html = String::new();
@@ -1352,13 +1343,7 @@ fn render_gather_content_html(
         html.push_str(&format!("<p>{}</p>\n", escape_html(desc)));
     }
 
-    // Exposed filter form
-    html.push_str(&render_exposed_filter_form(
-        query,
-        filter_values,
-        base_path,
-        preload,
-    ));
+    html.push_str(filter_form);
 
     // Results
     if result.items.is_empty() {
@@ -1561,7 +1546,7 @@ mod language_context_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod widget_tests {
-    use super::{WidgetPreloadData, collect_exposed_filters, render_exposed_filter_form};
+    use super::{WidgetPreloadData, collect_exposed_filters, exposed_filter_form};
     use crate::gather::{
         ExposedWidget, FilterOperator, FilterValue, GatherQuery, QueryDefinition, QueryDisplay,
         QueryFilter,
@@ -1622,6 +1607,44 @@ mod widget_tests {
         }
     }
 
+    /// The exposed filter form as the real templates draw it, so these check
+    /// the markup a browser gets; empty when the query exposes no filter.
+    fn render_exposed_filter_form(
+        query: &GatherQuery,
+        values: &HashMap<String, String>,
+        base_path: &str,
+        preload: &WidgetPreloadData,
+    ) -> String {
+        let Some(form) = exposed_filter_form(query, values, base_path, preload) else {
+            return String::new();
+        };
+        let templates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+        crate::theme::ThemeEngine::new(&[templates], None, Default::default())
+            .unwrap()
+            .render_form(&form)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_form_is_a_get_pipeline_form_to_the_listing() {
+        let query = make_query(vec![make_filter("title", ExposedWidget::Text, "Title")]);
+        let html =
+            render_exposed_filter_form(&query, &HashMap::new(), "/conferences", &empty_preload());
+        assert!(
+            html.contains(
+                r#"<form id="gather_exposed_filters" action="/conferences" method="get""#
+            ),
+            "{html}"
+        );
+        assert!(html.contains("data-form-pipeline"), "{html}");
+        assert!(
+            !html.contains("_token"),
+            "a GET form carries no token: {html}"
+        );
+        assert!(html.contains(r#"href="/conferences" class="btn btn--secondary">Clear"#));
+        assert!(html.contains("Apply"), "{html}");
+    }
+
     // ── Boolean widget ────────────────────────────────────────────────
 
     #[test]
@@ -1634,7 +1657,10 @@ mod widget_tests {
         let html =
             render_exposed_filter_form(&query, &HashMap::new(), "/gather/test_q", &empty_preload());
         assert!(html.contains("<select"), "expected <select>: {html}");
-        assert!(html.contains(">Any<"), "expected Any option: {html}");
+        assert!(
+            html.contains("<option value=\"\">"),
+            "expected the empty (any) choice: {html}"
+        );
         assert!(html.contains(">Yes<"), "expected Yes option: {html}");
         assert!(html.contains(">No<"), "expected No option: {html}");
         // No option should be pre-selected when value is empty
@@ -1698,7 +1724,10 @@ mod widget_tests {
 
         let html = render_exposed_filter_form(&query, &HashMap::new(), "/gather/test_q", &preload);
         assert!(html.contains("<select"), "expected <select>: {html}");
-        assert!(html.contains(">Any<"), "expected Any option: {html}");
+        assert!(
+            html.contains("<option value=\"\">"),
+            "expected the empty (any) choice: {html}"
+        );
         assert!(html.contains("Science"), "expected Science: {html}");
         assert!(html.contains("Physics"), "expected Physics: {html}");
     }
@@ -1753,7 +1782,10 @@ mod widget_tests {
         let html =
             render_exposed_filter_form(&query, &HashMap::new(), "/gather/test_q", &empty_preload());
         assert!(html.contains("<select"), "expected <select>: {html}");
-        assert!(html.contains(">Any<"), "expected Any option: {html}");
+        assert!(
+            html.contains("<option value=\"\">"),
+            "expected the empty (any) choice: {html}"
+        );
     }
 
     // ── DynamicOptions widget ─────────────────────────────────────────

@@ -38,14 +38,14 @@ async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-fn csrf_from(html: &str) -> String {
-    let needle = r#"name="_token" value=""#;
-    let start = html
-        .find(needle)
-        .map(|i| i + needle.len())
-        .expect("a form on this page must carry a CSRF token");
-    let end = html[start..].find('"').expect("token must be terminated");
-    html[start..start + end].to_string()
+/// The `_token` and `_form_build_id` of the role delete form on `html`, the
+/// confirmation page at `/admin/people/roles/{id}/delete`.
+fn delete_fields(html: &str) -> (String, String) {
+    let form = common::form_in(html, "role_delete_form").expect("the role delete form");
+    (
+        common::input_value_in(form, "_token").expect("a CSRF token"),
+        common::form_build_id(html, "role_delete_form"),
+    )
 }
 
 async fn get_page(app: &TestApp, cookies: &str, path: &str) -> (String, String) {
@@ -204,8 +204,23 @@ fn the_delete_confirmation_names_the_members_it_affects() {
         let cookies = admin_session(app).await;
         let (role_id, name, users) = seed_role(app, 3).await;
 
-        let (_, html) = get_page(app, &cookies, "/admin/people/roles").await;
+        let (cookies, html) = get_page(app, &cookies, "/admin/people/roles").await;
+        assert!(
+            html.contains("Deleting a role removes it from everyone who holds it"),
+            "the page must state the consequence outside the confirmation too"
+        );
+        assert!(html.contains(&name));
+        assert!(
+            html.contains(&format!(r#"href="/admin/people/roles/{role_id}/delete""#)),
+            "each role links to its delete confirmation"
+        );
 
+        let (_, html) = get_page(
+            app,
+            &cookies,
+            &format!("/admin/people/roles/{role_id}/delete"),
+        )
+        .await;
         assert!(
             html.contains("3 user(s) hold it and will lose it"),
             "the confirmation must count the members, got: {html}"
@@ -214,11 +229,8 @@ fn the_delete_confirmation_names_the_members_it_affects() {
             html.contains("accounts are not deleted"),
             "the confirmation must say the accounts survive"
         );
-        assert!(
-            html.contains("Deleting a role removes it from everyone who holds it"),
-            "the page must state the consequence outside the dialog too"
-        );
         assert!(html.contains(&name));
+        assert!(common::form_in(&html, "role_delete_form").is_some());
 
         cleanup(app, role_id, &users).await;
     });
@@ -242,14 +254,15 @@ fn deleting_a_role_removes_its_assignments_and_nothing_else() {
             .await
             .unwrap();
 
-        let (cookies, html) = get_page(app, &cookies, "/admin/people/roles").await;
-        let token = csrf_from(&html);
+        let delete = format!("/admin/people/roles/{role_id}/delete");
+        let (cookies, html) = get_page(app, &cookies, &delete).await;
+        let (token, build) = delete_fields(&html);
 
         let response = post_form(
             app,
             &cookies,
-            &format!("/admin/people/roles/{role_id}/delete"),
-            &[("_token", &token)],
+            &delete,
+            &[("_token", &token), ("_form_build_id", &build)],
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -448,13 +461,32 @@ fn a_delegate_cannot_delete_a_role_carrying_a_permission_they_lack() {
         .await
         .unwrap();
 
-        let (cookies, html) = get_page(app, &cookies, "/admin/people/roles").await;
-        let token = csrf_from(&html);
+        // Not offered the confirmation for it.
+        let confirm = app
+            .request_with_cookies(
+                Request::get(format!("/admin/people/roles/{role_id}/delete"))
+                    .header("x-forwarded-for", test_ip_for("rolesadmin"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(confirm.status(), StatusCode::FORBIDDEN);
+
+        // And refused when posting a real delete form anyway: the one for
+        // their own role, which they may delete, sent to the other role.
+        let (cookies, html) = get_page(
+            app,
+            &cookies,
+            &format!("/admin/people/roles/{delegate_role}/delete"),
+        )
+        .await;
+        let (token, build) = delete_fields(&html);
         let response = post_form(
             app,
             &cookies,
             &format!("/admin/people/roles/{role_id}/delete"),
-            &[("_token", &token)],
+            &[("_token", &token), ("_form_build_id", &build)],
         )
         .await;
 
@@ -478,13 +510,14 @@ fn a_delegate_can_delete_a_role_within_their_permissions() {
             delegate_session(app, &["access content"]).await;
         let (role_id, _name, users) = seed_role(app, 1).await;
 
-        let (cookies, html) = get_page(app, &cookies, "/admin/people/roles").await;
-        let token = csrf_from(&html);
+        let delete = format!("/admin/people/roles/{role_id}/delete");
+        let (cookies, html) = get_page(app, &cookies, &delete).await;
+        let (token, build) = delete_fields(&html);
         let response = post_form(
             app,
             &cookies,
-            &format!("/admin/people/roles/{role_id}/delete"),
-            &[("_token", &token)],
+            &delete,
+            &[("_token", &token), ("_form_build_id", &build)],
         )
         .await;
 

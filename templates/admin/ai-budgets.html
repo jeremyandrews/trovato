@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
 {% block page_title %}{{ t(s="AI Token Budgets") }}{% endblock page_title %}
 
@@ -68,62 +67,6 @@
 <section class="admin-card" aria-labelledby="budget-config-heading">
     <h2 id="budget-config-heading">{{ t(s="Budget Configuration") }}</h2>
 
-    <form method="post" action="/admin/system/ai-budgets" novalidate>
-        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
-
-        {% set period_daily = ["daily", t(s="Daily")] %}
-        {% set period_weekly = ["weekly", t(s="Weekly")] %}
-        {% set period_monthly = ["monthly", t(s="Monthly")] %}
-        {% set periods = [period_daily, period_weekly, period_monthly] %}
-        {{ form::select(name="period", label=t(s="Budget Period"), options=periods, value=config_period) }}
-
-        {% set action_deny = ["deny", t(s="Deny request")] %}
-        {% set action_warn = ["warn", t(s="Allow with warning")] %}
-        {% set limit_actions = [action_deny, action_warn] %}
-        {{ form::select(name="action_on_limit", label=t(s="Action When Limit Exceeded"), options=limit_actions, value=config_action) }}
-
-        {% if providers | length > 0 and roles | length > 0 %}
-        <h3 id="budget-limits-heading">{{ t(s="Per-Provider, Per-Role Token Limits") }}</h3>
-        <p id="budget-limits-hint">{{ t(s="Set the maximum tokens per period for each role. Enter 0 for unlimited. Leave blank for no budget.") }}</p>
-
-        <div class="table-scroll" role="region" aria-labelledby="budget-limits-caption" tabindex="0">
-            <table class="table">
-                <caption id="budget-limits-caption">{{ t(s="Token limit per period for each provider and role") }}</caption>
-                <thead>
-                    <tr>
-                        <th scope="col">{{ t(s="Provider") }}</th>
-                        {% for role in roles %}
-                        <th scope="col">{{ role.name }}</th>
-                        {% endfor %}
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for provider in providers %}
-                    {% set provider_index = loop.index %}
-                    <tr>
-                        <th scope="row">{{ provider.label }}</th>
-                        {% for role in roles %}
-                        <td>
-                            {# Look up current default: defaults_grid[provider.id][role.name] #}
-                            {% set current_val = "" %}
-                            {% if defaults_grid[provider.id] is defined and defaults_grid[provider.id][role.name] is defined %}
-                                {% set current_val = defaults_grid[provider.id][role.name] %}
-                            {% endif %}
-                            <label class="visually-hidden" for="budget-limit-{{ provider_index }}-{{ loop.index }}">{{ t(s="Token limit for {role} on {provider}", role=role.name, provider=provider.label) }}</label>
-                            <input type="number" id="budget-limit-{{ provider_index }}-{{ loop.index }}" name="limit_{{ provider.id }}_{{ role.name }}" value="{{ current_val }}" min="0" class="ai-budget-limit" placeholder="—" aria-describedby="budget-limits-hint">
-                        </td>
-                        {% endfor %}
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <p>{{ t(s="Configure AI providers first, then set per-role budgets here.") }} <a href="/admin/system/ai-providers">{{ t(s="Manage AI providers") }}</a></p>
-        {% endif %}
-
-        {{ form::effect(text=t(s="how much each role may spend on each AI provider in a period, and whether a request over the limit is refused or allowed with a warning, from the next request on.")) }}
-        {{ form::actions(submit_label=t(s="Save configuration"), cancel_url="/admin/system/ai-budgets") }}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </section>
 {% endblock content %}

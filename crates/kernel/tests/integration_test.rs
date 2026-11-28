@@ -1503,14 +1503,16 @@ fn e2e_admin_delete_user() {
             .create_and_login_admin("admin_users_5", "password123", "users5@test.com")
             .await;
 
-        // Fetch CSRF token from user list page
-        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/people").await;
+        // The delete form, from the confirmation the list links to.
+        let (cookies, html) =
+            fetch_page(app, &cookies, &format!("/admin/people/{user_id}/delete")).await;
+        let fields = common::form_fields(&html, "user_delete_form");
 
         let response = app
             .request_with_cookies(
                 Request::post(format!("/admin/people/{user_id}/delete"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &cookies,
             )
@@ -1556,14 +1558,36 @@ fn e2e_admin_cannot_delete_self() {
         // Login as the same admin user we're trying to delete
         let cookies = app.login(&username, "testpass123").await;
 
-        // Fetch CSRF token
-        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/people").await;
+        // Not offered the confirmation for one's own account.
+        let confirm = app
+            .request_with_cookies(
+                Request::get(format!("/admin/people/{user_id}/delete"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(confirm.status(), StatusCode::BAD_REQUEST);
+
+        // And refused a real delete form posted for it: the one for another
+        // account.
+        let other = format!("selfother_{}", &unique_id[..16]);
+        app.create_test_user(&other, "testpass123", &format!("{other}@test.com"))
+            .await;
+        let other_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
+            .bind(&other)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        let (cookies, html) =
+            fetch_page(app, &cookies, &format!("/admin/people/{other_id}/delete")).await;
+        let fields = common::form_fields(&html, "user_delete_form");
 
         let response = app
             .request_with_cookies(
                 Request::post(format!("/admin/people/{user_id}/delete"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &cookies,
             )
@@ -1712,14 +1736,20 @@ fn e2e_admin_delete_role() {
             .create_and_login_admin("admin_roles_3", "password123", "roles3@test.com")
             .await;
 
-        // Fetch CSRF token from roles list page
-        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/people/roles").await;
+        // The delete form, from the confirmation the roles list links to.
+        let (cookies, html) = fetch_page(
+            app,
+            &cookies,
+            &format!("/admin/people/roles/{role_id}/delete"),
+        )
+        .await;
+        let fields = common::form_fields(&html, "role_delete_form");
 
         let response = app
             .request_with_cookies(
                 Request::post(format!("/admin/people/roles/{role_id}/delete"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &cookies,
             )
@@ -1752,19 +1782,38 @@ fn e2e_admin_cannot_delete_builtin_roles() {
             .create_and_login_admin("admin_roles_4", "password123", "roles4@test.com")
             .await;
 
-        // Fetch CSRF token from the add-role page (the list page only has tokens
-        // on non-built-in role delete buttons, which may not exist in a clean DB).
-        let (cookies, csrf_token) =
-            fetch_csrf_token(app, &cookies, "/admin/people/roles/add").await;
-
         // Try to delete anonymous role (UUID 1)
         let anonymous_role_id = uuid::Uuid::from_u128(1);
+
+        // Not offered the confirmation for it.
+        let confirm = app
+            .request_with_cookies(
+                Request::get(format!("/admin/people/roles/{anonymous_role_id}/delete"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(confirm.status(), StatusCode::BAD_REQUEST);
+
+        // And refused a real delete form posted for it: the one for a role of
+        // this test's own.
+        let unique_id = uuid::Uuid::now_v7().simple().to_string();
+        let own_role =
+            common::create_test_role(app, &format!("BuiltinGuard_{}", &unique_id[..16])).await;
+        let (cookies, html) = fetch_page(
+            app,
+            &cookies,
+            &format!("/admin/people/roles/{own_role}/delete"),
+        )
+        .await;
+        let fields = common::form_fields(&html, "role_delete_form");
 
         let response = app
             .request_with_cookies(
                 Request::post(format!("/admin/people/roles/{anonymous_role_id}/delete"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &cookies,
             )
@@ -4001,11 +4050,6 @@ fn url_encode(value: &str) -> String {
     result
 }
 
-/// Build a form-urlencoded POST body with the given CSRF token.
-fn csrf_form_body(csrf_token: &str) -> Body {
-    Body::from(format!("_token={}", url_encode(csrf_token)))
-}
-
 // =============================================================================
 // JSON API Tests
 // =============================================================================
@@ -4946,15 +4990,12 @@ fn e2e_admin_plugin_toggle() {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_text(response).await;
 
-        // Extract CSRF token from the form
-        let csrf_token = body
-            .split("name=\"_token\" value=\"")
-            .nth(1)
-            .and_then(|s| s.split('"').next())
-            .expect("CSRF token");
+        // The listing's buttons all submit one pipeline form; a button posts
+        // its action as its name and the plugin as its value.
+        let fields = common::form_fields(&body, "plugin_toggle_form");
 
         // Disable the redirects plugin (safe to toggle — it has no gated routes)
-        let form_body = format!("_token={csrf_token}&plugin_name=trovato_redirects&action=disable");
+        let form_body = format!("{fields}&disable=trovato_redirects");
 
         let response = app
             .request_with_cookies(
@@ -4996,13 +5037,9 @@ fn e2e_admin_plugin_toggle() {
             .await;
 
         let body = response_text(response).await;
-        let csrf_token = body
-            .split("name=\"_token\" value=\"")
-            .nth(1)
-            .and_then(|s| s.split('"').next())
-            .expect("CSRF token for re-enable");
+        let fields = common::form_fields(&body, "plugin_toggle_form");
 
-        let form_body = format!("_token={csrf_token}&plugin_name=trovato_redirects&action=enable");
+        let form_body = format!("{fields}&enable=trovato_redirects");
 
         let response = app
             .request_with_cookies(
@@ -5056,14 +5093,10 @@ fn e2e_toggle_gated_plugin_waits_for_restart() {
             response_text(response).await
         };
         let toggle = |body: String, action: &'static str| async move {
-            let csrf_token = body
-                .split("name=\"_token\" value=\"")
-                .nth(1)
-                .and_then(|s| s.split('"').next())
-                .expect("CSRF token")
-                .to_string();
-            let form_body =
-                format!("_token={csrf_token}&plugin_name=trovato_categories&action={action}");
+            let form_body = format!(
+                "{}&{action}=trovato_categories",
+                common::form_fields(&body, "plugin_toggle_form")
+            );
             app.request_with_cookies(
                 Request::post("/admin/plugins/toggle")
                     .header("content-type", "application/x-www-form-urlencoded")
@@ -7721,11 +7754,12 @@ fn e2e_admin_ai_budgets_save_config() {
             page_cookies
         };
         let body = response_text(response).await;
-        let csrf_token = extract_csrf_token(&body).expect("Should have CSRF token");
 
-        // POST budget config
-        let form_data =
-            format!("_token={csrf_token}&_form_build_id=test&period=daily&action_on_limit=warn");
+        // POST budget config: the fields the page's pipeline form built.
+        let form_data = format!(
+            "{}&period=daily&action_on_limit=warn",
+            common::form_fields(&body, "ai_budget_config_form")
+        );
 
         let response = app
             .request_with_cookies(
@@ -8909,11 +8943,11 @@ fn e2e_ai_chat_admin_save_config() {
             .await;
 
         // Fetch CSRF token from the chat config page
-        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/system/ai-chat").await;
+        let (cookies, html) = fetch_page(app, &cookies, "/admin/system/ai-chat").await;
 
         let form_body = format!(
-            "_token={}&system_prompt={}&rag_max_results=5&rag_min_score=0.5&max_history_turns=10&rate_limit_per_hour=60&max_tokens=2048&temperature=0.5",
-            url_encode(&csrf_token),
+            "{}&system_prompt={}&rag_max_results=5&rag_min_score=0.5&max_history_turns=10&rate_limit_per_hour=60&max_tokens=2048&temperature=0.5",
+            common::form_fields(&html, "ai_chat_config_form"),
             url_encode("You are a helpful assistant for {site_name}.")
         );
 
@@ -8964,11 +8998,11 @@ fn e2e_ai_chat_admin_blank_temperature_saves_unset() {
         let cookies = app
             .create_and_login_admin("chat_blank_t", "password12345", "chatblankt@test.com")
             .await;
-        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/system/ai-chat").await;
+        let (cookies, html) = fetch_page(app, &cookies, "/admin/system/ai-chat").await;
 
         let form_body = format!(
-            "_token={}&system_prompt={}&rag_max_results=5&rag_min_score=0.5&max_history_turns=10&rate_limit_per_hour=60&max_tokens=2048&temperature=",
-            url_encode(&csrf_token),
+            "{}&system_prompt={}&rag_max_results=5&rag_min_score=0.5&max_history_turns=10&rate_limit_per_hour=60&max_tokens=2048&temperature=",
+            common::form_fields(&html, "ai_chat_config_form"),
             url_encode("You are a helpful assistant for {site_name}.")
         );
         let response = app
@@ -9067,5 +9101,290 @@ fn e2e_ai_chat_rate_limit_returns_429() {
         config.rate_limit_per_hour = 20;
         app.state.ai_chat().save_config(&config).await.unwrap();
         trovato_kernel::routes::api_chat::clear_chat_rate_limits(&app.state).await;
+    });
+}
+
+// =============================================================================
+// B83c: the AI admin forms on the form pipeline (AI providers, AI budgets, AI
+// chat). The assistant's admin page and conversation are in ai_assistant_test.
+// =============================================================================
+
+/// The `_token` and `_form_build_id` of the pipeline form `form_id` on a
+/// fresh GET of `page` (tokens are single use), or with `expired` only the
+/// token: a submission whose form state is missing, which the pipeline
+/// refuses as expired.
+async fn b83c_fields(
+    app: &TestApp,
+    cookies: &str,
+    page: &str,
+    form_id: &str,
+    expired: bool,
+) -> String {
+    let (_, html) = fetch_page(app, cookies, page).await;
+    let fields = common::form_fields(&html, form_id);
+    if expired {
+        fields.split("&_form_build_id=").next().unwrap().to_string()
+    } else {
+        fields
+    }
+}
+
+/// POST a url-encoded `body` to `path`: its status and text.
+async fn b83c_post(app: &TestApp, cookies: &str, path: &str, body: String) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::post(path)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, response_text(response).await)
+}
+
+#[test]
+fn b83c_the_ai_provider_forms_are_pipeline_forms() {
+    run_test(async {
+        common::hold_until_cleanup(AI_CHAT_LOCK.lock().await);
+        let app = shared_app().await;
+        let cookies = app
+            .create_and_login_admin("b83c_ai_prov", "password123!", "b83c_ai_prov@test.com")
+            .await;
+        let label = "B83c probe provider";
+        let forget = move |app: &'static TestApp| async move {
+            for p in app.state.ai_providers().list_providers().await.unwrap() {
+                if p.label == label {
+                    app.state
+                        .ai_providers()
+                        .delete_provider(&p.id)
+                        .await
+                        .unwrap();
+                }
+            }
+        };
+        forget(app).await;
+        common::defer_cleanup(move || forget(app));
+        let add = "/admin/system/ai-providers/add";
+        let form_id = "ai_provider_form";
+
+        // The add form is a pipeline form.
+        let (cookies, html) = fetch_page(app, &cookies, add).await;
+        let form = common::form_in(&html, form_id).expect("the provider form");
+        assert!(form.contains("data-form-pipeline"), "{form}");
+        assert!(
+            form.contains(r#"id="model-rows""#),
+            "the model rows stay: {form}"
+        );
+
+        // Without its build id, a submission is refused as expired.
+        let base_url = url_encode("https://api.example.com/v1");
+        let fields = b83c_fields(app, &cookies, add, form_id, true).await;
+        let (status, text) = b83c_post(
+            app,
+            &cookies,
+            add,
+            format!("{fields}&label=x&protocol=anthropic&base_url={base_url}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("The form has expired"), "{text}");
+
+        // A missing label is shown on its field.
+        let fields = b83c_fields(app, &cookies, add, form_id, false).await;
+        let (status, text) = b83c_post(
+            app,
+            &cookies,
+            add,
+            format!("{fields}&label=&protocol=anthropic&base_url={base_url}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let form = common::form_in(&text, form_id).expect("the form again");
+        assert!(form.contains(r#"aria-invalid="true""#), "{form}");
+        assert!(form.contains("Label is required."), "{form}");
+
+        // A good submission saves the provider (disabled: nothing calls it).
+        let fields = b83c_fields(app, &cookies, add, form_id, false).await;
+        let (status, text) = b83c_post(
+            app,
+            &cookies,
+            add,
+            format!(
+                "{fields}&label={}&protocol=anthropic&base_url={base_url}\
+                 &op_0=chat&model_0=probe-model",
+                url_encode(label)
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{text}");
+        let provider = app
+            .state
+            .ai_providers()
+            .list_providers()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|p| p.label == label)
+            .expect("the provider was saved");
+        assert_eq!(provider.models.len(), 1, "the model row was read");
+
+        // The list: the defaults form and the test form are pipeline forms,
+        // each row's Test button belongs to the test form, and Delete is a
+        // link to a confirmation page.
+        let list_path = "/admin/system/ai-providers";
+        let (cookies, list) = fetch_page(app, &cookies, list_path).await;
+        assert!(common::form_in(&list, "ai_provider_defaults_form").is_some());
+        assert!(common::form_in(&list, "ai_provider_test_form").is_some());
+        assert!(
+            list.contains(&format!(
+                r#"form="ai_provider_test_form" formaction="/admin/system/ai-providers/{}/test""#,
+                provider.id
+            )),
+            "{list}"
+        );
+        let delete = format!("/admin/system/ai-providers/{}/delete", provider.id);
+        assert!(list.contains(&format!(r#"href="{delete}""#)), "{list}");
+
+        // The defaults form saves through the pipeline (and the site's
+        // defaults are put back after).
+        let before = app.state.ai_providers().get_defaults().await.unwrap();
+        let defaults = "/admin/system/ai-providers/defaults";
+        let fields = b83c_fields(app, &cookies, list_path, "ai_provider_defaults_form", true).await;
+        let (status, text) = b83c_post(app, &cookies, defaults, fields).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        let fields =
+            b83c_fields(app, &cookies, list_path, "ai_provider_defaults_form", false).await;
+        let (status, text) = b83c_post(app, &cookies, defaults, fields).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{text}");
+        app.state
+            .ai_providers()
+            .save_defaults(before)
+            .await
+            .unwrap();
+
+        // Delete asks first, then deletes.
+        let (cookies, confirm) = fetch_page(app, &cookies, &delete).await;
+        assert!(
+            confirm.contains("Delete the B83c probe provider provider?"),
+            "{confirm}"
+        );
+        let fields = b83c_fields(app, &cookies, &delete, "ai_provider_delete_form", true).await;
+        let (status, text) = b83c_post(app, &cookies, &delete, fields).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        let fields = b83c_fields(app, &cookies, &delete, "ai_provider_delete_form", false).await;
+        let (status, text) = b83c_post(app, &cookies, &delete, fields).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{text}");
+        assert!(
+            app.state
+                .ai_providers()
+                .get_provider(&provider.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "the provider was deleted"
+        );
+    });
+}
+
+#[test]
+fn b83c_the_ai_budget_forms_are_pipeline_forms() {
+    run_test(async {
+        common::hold_until_cleanup(AI_BUDGET_LOCK.lock().await);
+        let app = shared_app().await;
+        defer_ai_config_cleanup(app, None);
+        let cookies = app
+            .create_and_login_admin("b83c_ai_budget", "password123!", "b83c_ai_budget@test.com")
+            .await;
+        let path = "/admin/system/ai-budgets";
+        let form_id = "ai_budget_config_form";
+
+        let (cookies, html) = fetch_page(app, &cookies, path).await;
+        let form = common::form_in(&html, form_id).expect("the budget form");
+        assert!(form.contains("data-form-pipeline"), "{form}");
+
+        let fields = b83c_fields(app, &cookies, path, form_id, true).await;
+        let (status, text) = b83c_post(
+            app,
+            &cookies,
+            path,
+            format!("{fields}&period=daily&action_on_limit=warn"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("The form has expired"), "{text}");
+
+        let fields = b83c_fields(app, &cookies, path, form_id, false).await;
+        let (status, text) = b83c_post(
+            app,
+            &cookies,
+            path,
+            format!("{fields}&period=hourly&action_on_limit=warn"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let form = common::form_in(&text, form_id).expect("the form again");
+        assert!(form.contains(r#"aria-invalid="true""#), "{form}");
+        assert!(form.contains("Invalid budget period."), "{form}");
+
+        // A person's overrides.
+        let user = trovato_kernel::models::User::find_by_name(&app.db, "b83c_ai_budget")
+            .await
+            .unwrap()
+            .expect("the admin exists");
+        let path = format!("/admin/system/ai-budgets/user/{}", user.id);
+        let form_id = "ai_budget_override_form";
+        let (cookies, html) = fetch_page(app, &cookies, &path).await;
+        assert!(common::form_in(&html, form_id).is_some());
+        let fields = b83c_fields(app, &cookies, &path, form_id, true).await;
+        let (status, text) = b83c_post(app, &cookies, &path, fields).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        let fields = b83c_fields(app, &cookies, &path, form_id, false).await;
+        let (status, text) = b83c_post(app, &cookies, &path, fields).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{text}");
+    });
+}
+
+#[test]
+fn b83c_the_ai_chat_form_is_a_pipeline_form() {
+    run_test(async {
+        common::hold_until_cleanup(AI_CHAT_LOCK.lock().await);
+        let app = shared_app().await;
+        let cookies = app
+            .create_and_login_admin("b83c_ai_chat", "password123!", "b83c_ai_chat@test.com")
+            .await;
+        let path = "/admin/system/ai-chat";
+        let form_id = "ai_chat_config_form";
+
+        let (cookies, html) = fetch_page(app, &cookies, path).await;
+        let form = common::form_in(&html, form_id).expect("the chat form");
+        assert!(form.contains("data-form-pipeline"), "{form}");
+        let rest = "rag_max_results=5&rag_min_score=0.5&max_history_turns=10\
+                    &rate_limit_per_hour=60&max_tokens=2048&temperature=";
+
+        let fields = b83c_fields(app, &cookies, path, form_id, true).await;
+        let (status, text) = b83c_post(
+            app,
+            &cookies,
+            path,
+            format!("{fields}&system_prompt=Hello&{rest}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("The form has expired"), "{text}");
+
+        let fields = b83c_fields(app, &cookies, path, form_id, false).await;
+        let (status, text) = b83c_post(
+            app,
+            &cookies,
+            path,
+            format!("{fields}&system_prompt=&{rest}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let form = common::form_in(&text, form_id).expect("the form again");
+        assert!(form.contains(r#"aria-invalid="true""#), "{form}");
+        assert!(form.contains("System prompt cannot be empty."), "{form}");
     });
 }

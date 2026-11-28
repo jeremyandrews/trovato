@@ -6,25 +6,34 @@
 //! declared, each with a switch and a prompt override, plus the ones that were
 //! **dropped** and why — a registry rejection is otherwise only visible in a
 //! startup log nobody reads.
+//!
+//! The page is one form built by `FormService` (B83c). The scopes half is a
+//! template rendered into a markup element of it, because its fields are
+//! named per scope (`scope_enabled[name]`) and labelled with each scope's own
+//! name.
 
 use std::collections::HashMap;
 
-use axum::Router;
 use axum::extract::State;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
+use axum::{Form, Router};
 use tower_sessions::Session;
 
-use crate::form::csrf::generate_csrf_token;
+use crate::content::submission::PostedForm;
+use crate::form::{FormElement, ValidationError};
+use crate::models::User;
 use crate::services::ai_assistant::{
     AssistantConfig, AssistantScopeConfig, DEFAULT_CORE_PROMPT, risk_name,
 };
 use crate::services::ai_provider::AiOperationType;
 use crate::state::AppState;
 
+use super::admin_form;
+use super::admin_nav::AdminText;
 use super::helpers::{
-    parse_optional_temperature, render_admin_template, render_error, render_server_error,
-    require_csrf, require_permission,
+    parse_optional_temperature, render_admin_template, render_server_error, require_permission,
+    user_context_for,
 };
 
 /// Session key for the flash message.
@@ -34,14 +43,17 @@ const FLASH_KEY: &str = "ai_assistant_flash";
 /// returns to it.
 const PATH: &str = "/admin/system/ai-assistant";
 
-/// The submitted settings, parsed by hand.
+/// The assistant settings form.
+const ASSISTANT_FORM_ID: &str = "ai_assistant_config_form";
+
+/// The submitted settings, split by hand.
 ///
-/// Hand-parsed rather than `Form<T>` because the per-scope fields are named
+/// Split by hand rather than `Form<T>` because the per-scope fields are named
 /// `scope_enabled[name]` and `scope_prompt[name]`, and `serde_urlencoded` has no
 /// notion of bracket nesting: it would hand back a key called literally
 /// `scope_prompt[test_widget]` and no map at all. The set of scopes is whatever
-/// the plugins declared, so it cannot be a struct field either. One small parser
-/// is cheaper than either workaround.
+/// the plugins declared, so it cannot be a struct field either. One small
+/// splitter is cheaper than either workaround.
 #[derive(Debug, Default)]
 struct SubmittedConfig {
     fields: HashMap<String, String>,
@@ -50,21 +62,28 @@ struct SubmittedConfig {
 }
 
 impl SubmittedConfig {
-    /// Parse an `application/x-www-form-urlencoded` body.
-    fn parse(body: &str) -> Self {
+    /// Split the submitted name and value pairs.
+    fn from_pairs(pairs: &[(String, String)]) -> Self {
         let mut submitted = Self::default();
-        for (key, value) in url::form_urlencoded::parse(body.as_bytes()) {
-            let key = key.into_owned();
-            let value = value.into_owned();
-            if let Some(name) = bracketed(&key, "scope_enabled") {
-                submitted.scope_enabled.insert(name, value);
-            } else if let Some(name) = bracketed(&key, "scope_prompt") {
-                submitted.scope_prompt.insert(name, value);
+        for (key, value) in pairs {
+            if let Some(name) = bracketed(key, "scope_enabled") {
+                submitted.scope_enabled.insert(name, value.clone());
+            } else if let Some(name) = bracketed(key, "scope_prompt") {
+                submitted.scope_prompt.insert(name, value.clone());
             } else {
-                submitted.fields.insert(key, value);
+                submitted.fields.insert(key.clone(), value.clone());
             }
         }
         submitted
+    }
+
+    /// Parse an `application/x-www-form-urlencoded` body.
+    #[cfg(test)]
+    fn parse(body: &str) -> Self {
+        let pairs: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+            .into_owned()
+            .collect();
+        Self::from_pairs(&pairs)
     }
 
     fn text(&self, key: &str) -> &str {
@@ -90,38 +109,23 @@ fn bracketed(key: &str, prefix: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
-/// GET the page.
-async fn assistant_config_page(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
-        return redirect;
-    }
+// =============================================================================
+// The form
+// =============================================================================
 
-    let config = match state.ai_assistant().load_config().await {
-        Ok(config) => config,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to load the assistant configuration");
-            return render_server_error("Failed to load the assistant configuration.");
-        }
-    };
+/// A number field of the form, with its HTML bounds.
+fn number(title: &str, value: impl ToString, min: &str, max: &str) -> FormElement {
+    FormElement::input("number")
+        .title(title)
+        .default_value(value.to_string())
+        .attribute("min", min)
+        .attribute("max", max)
+}
 
-    // Enabled providers only: offering a disabled one would let a site pick
-    // something that cannot answer.
-    let providers: Vec<serde_json::Value> = state
-        .ai_providers()
-        .list_providers()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|provider| provider.enabled)
-        .map(|provider| {
-            serde_json::json!({
-                "id": provider.id,
-                "label": provider.label,
-                "protocol": provider.protocol.to_string(),
-            })
-        })
-        .collect();
-
+/// The scopes half of the page (`admin/ai-assistant-scopes.html`) for
+/// `config`, in the page's language. `None` (logged) when the template fails
+/// to render.
+fn scopes_html(state: &AppState, text: &AdminText, config: &AssistantConfig) -> Option<String> {
     let scopes: Vec<serde_json::Value> = state
         .assistant_scopes()
         .scopes()
@@ -174,59 +178,327 @@ async fn assistant_config_page(State(state): State<AppState>, session: Session) 
         })
         .collect();
 
-    let csrf_token = generate_csrf_token(&session).await;
+    let mut context = tera::Context::new();
+    context.insert("scopes", &scopes);
+    context.insert("rejections", &rejections);
+    text.scope(|| {
+        state
+            .theme()
+            .tera()
+            .render("admin/ai-assistant-scopes.html", &context)
+    })
+    .map_err(|e| tracing::error!(error = %e, "failed to render the assistant scopes"))
+    .ok()
+}
+
+/// The settings form for `config`, its temperature box holding
+/// `temperature` (what was posted when the form is shown again), and the
+/// scopes half already rendered.
+async fn assistant_form(
+    state: &AppState,
+    text: &AdminText,
+    config: &AssistantConfig,
+    temperature: String,
+    scopes: String,
+) -> crate::form::Form {
+    // Enabled providers only: offering a disabled one would let a site pick
+    // something that cannot answer.
+    let providers: Vec<(String, String)> = state
+        .ai_providers()
+        .list_providers()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|provider| provider.enabled)
+        .map(|provider| {
+            let label = format!("{} ({})", provider.label, provider.protocol);
+            (provider.id, label)
+        })
+        .collect();
+
+    let model = FormElement::fieldset()
+        .title("Model")
+        .child(
+            "provider_id",
+            FormElement::select(providers)
+                .title("Provider")
+                .description("Only enabled providers are listed.")
+                .placeholder(format!("Site default for {}", AiOperationType::Chat))
+                .default_value(config.provider_id.clone().unwrap_or_default())
+                .suffix(format!(
+                    r#"<p><a href="/admin/system/ai-providers">{}</a></p>"#,
+                    text.html("Manage providers", &[])
+                ))
+                .weight(0),
+        )
+        .child(
+            "model",
+            FormElement::textfield()
+                .title("Model")
+                .description(
+                    "Leave blank to use whatever the provider is configured to use for chat.",
+                )
+                .default_value(config.model.clone().unwrap_or_default())
+                .attribute("spellcheck", "false")
+                .weight(1),
+        )
+        .child(
+            "temperature",
+            number("Temperature", temperature, "0", "2")
+                .description(
+                    "Leave blank to send none and let the model use its own default. Current \
+                     Anthropic models (newer than Claude Sonnet 4.6) refuse a request that sets \
+                     one. Clamped to 0.0–2.0.",
+                )
+                .attribute("step", "0.1")
+                .weight(2),
+        )
+        .child(
+            "max_response_tokens",
+            number(
+                "Max response tokens",
+                config.max_response_tokens,
+                "64",
+                "16384",
+            )
+            .weight(3),
+        )
+        .weight(1);
+
+    let limits = FormElement::fieldset_collapsible(true)
+        .title("Limits")
+        .child(
+            "turn_timeout_secs",
+            number(
+                "Model call timeout (seconds)",
+                config.turn_timeout_secs,
+                "5",
+                "150",
+            )
+            .description("One message gets three times this in total, however many calls it takes.")
+            .weight(0),
+        )
+        .child(
+            "max_tool_calls_per_message",
+            number(
+                "Tool calls per message",
+                config.max_tool_calls_per_message,
+                "1",
+                "32",
+            )
+            .weight(1),
+        )
+        .child(
+            "max_messages",
+            number("Messages per conversation", config.max_messages, "4", "400")
+                .description(
+                    "At the limit the conversation goes read-only. Start over opens a fresh one.",
+                )
+                .weight(2),
+        )
+        .child(
+            "max_tokens_per_conversation",
+            number(
+                "Tokens per conversation",
+                config.max_tokens_per_conversation,
+                "1000",
+                "2000000",
+            )
+            .weight(3),
+        )
+        .child(
+            "max_history_exchanges",
+            number(
+                "History exchanges per request",
+                config.max_history_exchanges,
+                "1",
+                "100",
+            )
+            .description("Older exchanges are dropped from the request; the transcript keeps them.")
+            .weight(4),
+        )
+        .child(
+            "snapshot_max_bytes",
+            number(
+                "Snapshot size (bytes)",
+                config.snapshot_max_bytes,
+                "1024",
+                "32768",
+            )
+            .weight(5),
+        )
+        .child(
+            "tool_result_max_bytes",
+            number(
+                "Tool result size (bytes)",
+                config.tool_result_max_bytes,
+                "1024",
+                "32768",
+            )
+            .weight(6),
+        )
+        .child(
+            "rate_limit_per_hour",
+            number(
+                "Messages per person per hour",
+                config.rate_limit_per_hour,
+                "0",
+                "1000",
+            )
+            .description("0 is unlimited.")
+            .weight(7),
+        )
+        .child(
+            "conversation_ttl_hours",
+            number(
+                "Conversation lifetime (hours)",
+                config.conversation_ttl_hours,
+                "0",
+                "8760",
+            )
+            .description("After this a conversation is read-only. 0 never expires one.")
+            .weight(8),
+        )
+        .weight(2);
+
+    let core = FormElement::fieldset_collapsible(true)
+        .title("Core prompt")
+        .child(
+            "core_prompt",
+            FormElement::textarea(14)
+                .title("Sent before every scope's own prompt")
+                .description(
+                    "This is what tells the model it must propose rather than act. Change the \
+                     wording freely; changing the intent will let a model claim it made changes \
+                     it did not make.",
+                )
+                .default_value(config.core_prompt.clone()),
+        )
+        .weight(3);
+
+    crate::form::Form::new(ASSISTANT_FORM_ID)
+        .action(PATH)
+        .element(
+            "enabled",
+            FormElement::checkbox()
+                .title("Enable the assistant")
+                .description("Off by default. While off, every assistant page is a 404.")
+                .default_value(config.enabled)
+                .weight(0),
+        )
+        .element("model_settings", model)
+        .element("limits", limits)
+        .element("core", core)
+        .element("scopes", FormElement::markup(scopes).weight(4))
+        .element(
+            "effect",
+            super::admin_ai_chat::effect(
+                text,
+                "which model the assistant calls and how far one conversation may go, for every \
+                 conversation started or continued after you save. Each change the assistant \
+                 wants still waits as a proposal for someone to apply.",
+            )
+            .weight(9),
+        )
+        .element(
+            "op",
+            FormElement::submit("Save configuration")
+                .suffix(format!(
+                    r#"<button type="submit" name="reset_core_prompt" value="1" class="button button--secondary">{}</button>"#,
+                    text.html("Reset core prompt", &[])
+                ))
+                .weight(10),
+        )
+}
+
+// =============================================================================
+// Handlers
+// =============================================================================
+
+/// Render the page with the form for `config`, its temperature box holding
+/// `temperature`, and `errors`.
+async fn render_page(
+    state: &AppState,
+    session: &Session,
+    user: &User,
+    config: &AssistantConfig,
+    temperature: String,
+    errors: &[ValidationError],
+) -> Response {
+    let viewer = user_context_for(state, user).await;
+    let text = AdminText::for_page(state, &viewer, PATH).await;
+    let Some(scopes) = scopes_html(state, &text, config) else {
+        return render_server_error("The form could not be displayed.");
+    };
+    let form = assistant_form(state, &text, config, temperature, scopes).await;
+    let form_html = match admin_form::render(state, session, user, form, errors).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
     let flash: Option<String> = session.remove(FLASH_KEY).await.ok().flatten();
 
     let mut context = tera::Context::new();
-    context.insert("config", &config);
-    context.insert("providers", &providers);
-    context.insert("scopes", &scopes);
-    context.insert("rejections", &rejections);
-    context.insert("chat_operation", &AiOperationType::Chat.to_string());
-    context.insert("csrf_token", &csrf_token);
+    context.insert("form", &form_html);
     context.insert("path", PATH);
     if let Some(flash) = flash {
         context.insert("flash", &flash);
     }
 
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/ai-assistant.html",
-        context,
-    )
-    .await
+    render_admin_template(state, &viewer, "admin/ai-assistant.html", context).await
+}
+
+/// GET the page.
+async fn assistant_config_page(State(state): State<AppState>, session: Session) -> Response {
+    let user = match require_permission(&state, &session, "configure ai").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+
+    let config = match state.ai_assistant().load_config().await {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load the assistant configuration");
+            return render_server_error("Failed to load the assistant configuration.");
+        }
+    };
+    let temperature = config
+        .temperature
+        .map(|t| t.to_string())
+        .unwrap_or_default();
+    render_page(&state, &session, &user, &config, temperature, &[]).await
 }
 
 /// POST the page.
 async fn save_assistant_config(
     State(state): State<AppState>,
     session: Session,
-    body: axum::body::Bytes,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
-        return redirect;
-    }
-    let Ok(body) = std::str::from_utf8(&body) else {
-        return render_error("The form could not be read.");
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "configure ai").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
     };
-    let submitted = SubmittedConfig::parse(body);
-
-    if let Err(response) = require_csrf(&session, submitted.text("_token")).await {
-        return response;
-    }
+    let submitted = SubmittedConfig::from_pairs(&posted.0);
 
     let existing = state.ai_assistant().load_config().await.unwrap_or_default();
 
+    let mut errors = Vec::new();
     // Blank is unset, not "keep the old value": clearing the box is how a site
     // stops sending a temperature to a model that refuses one.
     let temperature = match parse_optional_temperature(submitted.text("temperature")) {
         Ok(temperature) => temperature,
-        Err(message) => return render_error(message),
+        Err(message) => {
+            errors.push(ValidationError::field("temperature", message));
+            None
+        }
     };
     let core_prompt = submitted.text("core_prompt").to_string();
     if core_prompt.len() > 20_000 {
-        return render_error("The core prompt is too long (max 20,000 characters).");
+        errors.push(ValidationError::field(
+            "core_prompt",
+            "The core prompt is too long (max 20,000 characters).",
+        ));
     }
 
     // Every registered scope gets an entry, because an unchecked checkbox sends
@@ -292,10 +564,29 @@ async fn save_assistant_config(
         scopes,
     };
 
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        ASSISTANT_FORM_ID,
+        errors,
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            let temperature = submitted.text("temperature").to_string();
+            return render_page(&state, &session, &user, &config, temperature, &errors).await;
+        }
+        Err(Err(response)) => return response,
+    };
+
     if let Err(e) = state.ai_assistant().save_config(&config).await {
         tracing::error!(error = %e, "failed to save the assistant configuration");
         return render_server_error("Failed to save the assistant configuration.");
     }
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
 
     let message = if resetting {
         "Core prompt reset to the stock text."

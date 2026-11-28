@@ -1,10 +1,9 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
 {#
   The account cancel confirmation (`routes::admin_user::cancel_form`).
-  Context: `account` (`id`, `name`), `methods` (`value`, `label`), `csrf_token`,
-  `error` (or none).
+  Context: `account` (`id`, `name`), `form`: the cancellation methods and
+  the button, with any error on them.
 #}
 
 {% block page_title %}{{ t(s="Are you sure you want to cancel the account {name}?", name=account.name) }}{% endblock page_title %}
@@ -12,17 +11,6 @@
 
 {% block content %}
 <div class="admin-card user-cancel">
-    {% if error %}
-    <div class="message message--error" role="alert">{{ error }}</div>
-    {% endif %}
-
-    <form method="post" action="/user/{{ account.id }}/cancel" novalidate>
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        {{ form::choices(name="method", id="cancel-method", legend=t(s="When cancelling the account"), options=methods, value=methods.0.value, translate_options=true) }}
-        <div class="form-actions">
-            <button type="submit" class="button button--danger">{{ t(s="Cancel account") }}</button>
-            <a href="/admin/people/{{ account.id }}/edit" class="button button--secondary">{{ t(s="Keep the account") }}</a>
-        </div>
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}

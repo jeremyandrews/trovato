@@ -1,103 +1,13 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
-{#- Each number field comes from the kernel's ranking table: `n.label` is a
-    fixed English label from Rust, translated here; min, max and step are
-    numbers from the same table. The field macros are called inline, not from
-    a local macro: Tera resolves the form macros' own self:: calls against the
-    calling template when a local macro calls them. -#}
+{#- The search settings (routes::admin_search): `form`, built and rendered by
+    the form pipeline. Each number field comes from the kernel's ranking
+    table, with its label, bounds and step. -#}
 
 {% block page_title %}{{ t(s="Search settings") }}{% endblock page_title %}
 
 {% block content %}
-{% set errs = errors | default(value=[]) %}
 <div class="admin-card">
-    <form method="post" action="/admin/config/search" novalidate>
-        {{ form::csrf(csrf_token=csrf_token) }}
-
-        {{ form::error_summary(errors=errs) }}
-
-        {{ form::fieldset_start(legend=t(s="Ranking signals"), id="search-ranking") }}
-                <p class="description">{{ t(s="Applied in the browser to Pagefind results. A result's score is its Pagefind position plus the recency, title and excerpt signals, multiplied by its type boost and any priority page boost.") }}</p>
-                {% set n = numbers.recency_boost_max %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="any"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-                {% set n = numbers.recency_half_life_days %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="any"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-                {% set n = numbers.recency_penalty_after_days %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="any"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-                {% set n = numbers.recency_max_penalty %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="any"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-                {% set n = numbers.title_match_boost %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="any"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-                {% set n = numbers.title_all_terms_multiplier %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="any"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-                {% set n = numbers.content_match_boost %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="any"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-                {% set n = numbers.excerpt_length %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="1"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-                {% set n = numbers.results_per_page %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="1"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-                {% set n = numbers.max_pagefind_results %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="1"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="Type boosts"), id="search-type-boosts") }}
-                <p class="description">{{ t(s="A multiplier on every result of the type, in the browser and in server search alike. Leave empty for 1 (no boost); from {min} to {max}. Which fields of a type are searched, and at what weight, is set on that type's own search screen.", min=type_boost_min, max=type_boost_max) }}</p>
-                <div class="table-scroll" role="region" aria-labelledby="type-boosts-caption" tabindex="0">
-                    <table class="table">
-                        <caption id="type-boosts-caption">{{ t(s="Boost per content type") }}</caption>
-                        <thead><tr><th scope="col">{{ t(s="Type") }}</th><th scope="col">{{ t(s="Boost") }}</th><th scope="col">{{ t(s="Field weights") }}</th></tr></thead>
-                        <tbody>
-                        {% for ty in types %}
-                        <tr>
-                            <th scope="row">{{ ty.label }} <code>{{ ty.machine_name }}</code></th>
-                            <td><label class="visually-hidden" for="type_boost_{{ ty.machine_name }}">{{ t(s="Boost for {type}", type=ty.label) }}</label><input type="number" id="type_boost_{{ ty.machine_name }}" name="type_boost[{{ ty.machine_name }}]" class="form-text" value="{{ ty.value }}" min="{{ type_boost_min }}" max="{{ type_boost_max }}" step="any" placeholder="1"></td>
-                            <td><a href="/admin/structure/types/{{ ty.machine_name }}/search">{{ t(s="Field weights for {type}", type=ty.label) }}</a></td>
-                        </tr>
-                        {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="Priority pages"), id="search-priority-pages") }}
-                <p class="description">{{ t(s="When a query contains the keyword as a whole word, the result at that path is boosted. Applied in the browser. Paths start with {slash}; at most 50 rows.", slash="/") }}</p>
-                {% set n = numbers.priority_boost %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="any"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-                <div class="table-scroll" role="region" aria-labelledby="priority-pages-caption" tabindex="0">
-                    <table class="table">
-                        <caption id="priority-pages-caption">{{ t(s="Keywords and the pages they boost") }}</caption>
-                        <thead><tr><th scope="col">{{ t(s="Keyword") }}</th><th scope="col">{{ t(s="Path") }}</th></tr></thead>
-                        <tbody>
-                        {% for row in priority_rows %}
-                        <tr>
-                            <td><input type="text" name="priority_keyword" class="form-text" value="{{ row.keyword }}" maxlength="100" aria-label="{{ t(s='Keyword {n}', n=loop.index) }}"></td>
-                            <td><input type="text" name="priority_path" class="form-text" value="{{ row.path }}" maxlength="255" placeholder="{{ t(s='/about') }}" aria-label="{{ t(s='Path {n}', n=loop.index) }}"></td>
-                        </tr>
-                        {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-                <p class="description">{{ t(s="Save to get more empty rows. Empty rows are ignored.") }}</p>
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="AI stages"), id="search-ai") }}
-                <p class="description">{{ t(s="Each stage calls the configured AI provider and costs tokens. A stage switched off here is refused by the server, not only hidden on the search page.") }}</p>
-                    {{ form::checkbox(name="expand", label=t(s="Query expansion: related terms searched alongside the query"), checked=switches.expand, value="on", errors=errs) }}
-                    {{ form::checkbox(name="summarize", label=t(s="Summary: an AI answer above the results"), checked=switches.summarize, value="on", errors=errs) }}
-                    {{ form::checkbox(name="followup", label=t(s="Follow-up questions after the summary"), checked=switches.followup, value="on", errors=errs) }}
-                {% set n = numbers.max_followups %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="1"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-                {% set n = numbers.ai_summary_top_n %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="1"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-                {% set n = numbers.ai_summary_max_chars %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="1"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="Analytics"), id="search-analytics") }}
-                <p class="description">{{ t(s="Counts queries per day for the search report: the query text with email addresses and long numbers removed, how often it was searched and how often it found nothing. Nothing that identifies a visitor is stored: no IP address, account, session, browser or time finer than the day.") }}</p>
-                    {{ form::checkbox(name="analytics_enabled", label=t(s="Record search analytics"), checked=switches.analytics_enabled, value="on", errors=errs) }}
-                {% set n = numbers.analytics_retention_days %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="1"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="Search index"), id="search-index") }}
-                <p class="description">{{ t(s="Each change to content rewrites only its own part of the search index. A deleted or unpublished item leaves a freed slot that the next new item reuses; while freed slots are left over they shift ranking slightly, so past this share of a language's slots the whole index is rebuilt densely at the next cron run.") }}</p>
-                {% set n = numbers.index_compaction_percent %}{% set a = 'min="' ~ n.min ~ '" max="' ~ n.max ~ '" step="0.5"' %}{{ form::field(name=n.field, type="number", label=t(s=n.label), value=n.value, hint=t(s="From {min} to {max}.", min=n.min, max=n.max), errors=errs, width="10", attrs=a) }}
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="Sentiment"), id="search-sentiment") }}
-                <p class="description"><strong>{{ t(s="Sends follow-up text to the configured AI provider and costs tokens.") }}</strong> {{ t(s="Each follow-up question is classified as satisfied, confused or unmet, after the answer has been sent, and only the count of each label is kept. Needs analytics switched on. Off by default.") }}</p>
-                    {{ form::checkbox(name="sentiment_enabled", label=t(s="Classify follow-up sentiment"), checked=switches.sentiment_enabled, value="on", errors=errs) }}
-        {{ form::fieldset_end() }}
-
-        {{ form::effect(text=t(s="how every search on the site ranks its results, which AI stages it may call, and what the search report records, from the next search on.")) }}
-        {{ form::actions(submit_label=t(s="Save settings")) }}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}

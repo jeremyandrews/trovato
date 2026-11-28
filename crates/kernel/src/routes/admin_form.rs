@@ -66,7 +66,20 @@ pub async fn render(
     // another") in the viewer's admin language: every form here is an
     // admin form.
     let text = super::admin_nav::AdminText::for_page(state, &viewer, "/admin/").await;
-    let form = build_for(state, session, &viewer, form).await?;
+    render_in(state, session, &viewer, &text, form, errors).await
+}
+
+/// [`render`] for a caller that already holds the viewer and the page's
+/// admin text, so several forms on one page look them up once.
+pub async fn render_in(
+    state: &AppState,
+    session: &Session,
+    viewer: &UserContext,
+    text: &super::admin_nav::AdminText,
+    form: Form,
+    errors: &[ValidationError],
+) -> Result<String, Response> {
+    let form = build_for(state, session, viewer, form).await?;
     text.scope(|| state.theme().render_form_with_errors(&form, errors))
         .map_err(display_failed)
 }

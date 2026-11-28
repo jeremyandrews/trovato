@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {#- The comment moderation listing. `list` is its filter, sort and page
@@ -10,14 +9,9 @@
 
 {% block content %}
 <div class="admin-card">
-    {{ list::filter_start(action="/admin/content/comments", label=t(s="Filter comments")) }}
-        {{ form::field(name="q", type="search", label=t(s="Comment or author contains"), value=list.q, width="20", wrapper="filter-item") }}
-        {#- Options come from CommentStatus, so the filter cannot drift from
-            the statuses the model actually stores. -#}
-        {{ form::select(name="status", label=t(s="Status"), options=status_options, value=status_filter, empty=t(s="- Any -"), translate_options=true, wrapper="filter-item") }}
-    {{ list::filter_end(list=list, action="/admin/content/comments") }}
+    {{ filter_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::admin_list::render_forms); every value is escaped by the form templates #}
 </div>
-{{ list::sort_form(list=list, action="/admin/content/comments") }}
+{{ sort_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
 {% if comments %}
 <div class="admin-card">

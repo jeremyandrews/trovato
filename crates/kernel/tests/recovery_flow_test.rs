@@ -673,15 +673,11 @@ fn the_recovery_settings_form_saves_both_switches() {
                 .await
                 .unwrap();
             let html = String::from_utf8_lossy(&html);
-            let at = html
-                .find("name=\"_token\" value=\"")
-                .expect("the form's token")
-                + 21;
-            let token = &html[at..at + html[at..].find('"').unwrap()];
+            let form = common::form_fields(&html, "admin_recovery_form");
             app.request_with_cookies(
                 Request::post("/admin/recovery")
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(Body::from(format!("_token={token}{fields}")))
+                    .body(Body::from(format!("{form}{fields}")))
                     .unwrap(),
                 cookies,
             )

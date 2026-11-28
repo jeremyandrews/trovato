@@ -1,25 +1,13 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
-{#- The timer throttles (routes::admin_timers): `throttles`, each with its
-    value, default and the environment variable that, when set, holds it
-    instead of this form. -#}
+{#- The timer throttles (routes::admin_timers): `form`, built and rendered by
+    the form pipeline, each throttle with its value and default, or read only
+    when the environment variable that overrides it is set. -#}
 
 {% block page_title %}{{ t(s="Timer throttles") }}{% endblock page_title %}
 
 {% block content %}
 <div class="admin-card">
-    <form method="post" action="/admin/reports/timers/settings" novalidate>
-        {{ form::error_summary(errors=errors) }}
-        {{ form::csrf(csrf_token=csrf_token) }}
-        {% for th in throttles %}
-        {% if th.from_environment %}
-        {{ form::field(name=th.name, type="number", label=t(s=th.label), value=th.value, hint=t(s="Set by the {variable} environment variable, which overrides this form. Change or unset it and restart to change this.", variable=th.variable), readonly=true, width="10") }}
-        {% else %}
-        {{ form::field(name=th.name, type="number", label=t(s=th.label), value=th.value, hint=t(s=th.hint) ~ " " ~ t(s="Default {n}.", n=th.default), required=true, errors=errors, width="10", attrs='min="1" step="1"') }}
-        {% endif %}
-        {% endfor %}
-        {{ form::actions(submit_label=t(s="Save throttles"), cancel_url="/admin/reports/timers") }}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}

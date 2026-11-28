@@ -2,54 +2,83 @@
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Form, Router};
-use serde::Deserialize;
 use tower_sessions::Session;
 
-use crate::form::csrf::generate_csrf_token;
-use crate::i18n::UiMessage;
+use crate::content::submission::PostedForm;
+use crate::form::{FormElement, ValidationError};
 use crate::models::role::KERNEL_PERMISSIONS;
 use crate::models::role::well_known::{ANONYMOUS_ROLE_ID, AUTHENTICATED_ROLE_ID};
 use crate::models::user::ANONYMOUS_USER_ID;
 use crate::models::{CreateUser, UpdateUser, User};
-use crate::routes::admin_form::FieldError;
 use crate::state::AppState;
 
+use super::admin_form;
 use super::admin_list::{ListQuery, PER_PAGE};
 use super::helpers::{
-    CsrfOnlyForm, admin_user_context, build_local_tasks, render_admin_template, render_error,
-    render_forbidden, render_not_found, render_server_error, require_csrf, require_permission,
-    validate_password,
+    admin_user_context, build_local_tasks, render_admin_template, render_error, render_forbidden,
+    render_not_found, render_server_error, require_permission, validate_password,
 };
 use super::user_delete::blocks_last_admin;
 
-/// User form data.
-#[derive(Debug, Deserialize)]
-struct UserFormData {
-    #[serde(rename = "_token")]
-    token: String,
-    #[serde(rename = "_form_build_id")]
-    form_build_id: String,
+/// The add and edit user form.
+const USER_FORM_ID: &str = "user_form";
+/// The confirmation that deletes a user.
+const USER_DELETE_FORM_ID: &str = "user_delete_form";
+/// The account cancellation form, with its cancellation methods.
+const USER_CANCEL_FORM_ID: &str = "user_cancel_form";
+/// The add and edit role form.
+const ROLE_FORM_ID: &str = "role_form";
+/// The confirmation that deletes a role.
+const ROLE_DELETE_FORM_ID: &str = "role_delete_form";
+/// The permission grid. Its checkboxes stay in the grid's table and join the
+/// form through their `form` attribute.
+const PERMISSIONS_FORM_ID: &str = "permissions_form";
+
+/// What the user form shows: the account's fields as stored, or as posted
+/// when the form comes back with errors. `roles` are the ids of the roles
+/// ticked.
+#[derive(Debug, Default)]
+struct UserValues {
     name: String,
     mail: String,
-    password: Option<String>,
-    is_admin: Option<String>,
-    status: Option<String>,
-    /// "Notify user of new account" on the add form: mail a welcome with a
-    /// one-time sign in link.
-    #[serde(default)]
-    notify: Option<String>,
-    /// Role membership, as `role_{role_id}` keys.
+    is_admin: bool,
+    status: bool,
+    notify: bool,
+    roles: Vec<String>,
+}
+
+impl UserValues {
+    /// The values a user form posted.
     ///
-    /// Flattened into a map rather than collected into a `Vec<Uuid>` because
-    /// `axum::Form` deserializes with `serde_urlencoded`, which cannot gather
-    /// repeated same-name keys into a sequence. Every multi-checkbox group in
-    /// this codebase encodes identity in the key for that reason, and reads it
-    /// back by reconstructing the key from the server's own list rather than by
-    /// trusting what the browser sent.
-    #[serde(flatten)]
-    roles: std::collections::HashMap<String, String>,
+    /// Role membership comes as `role_{role_id}` keys. These values only show
+    /// the form again: its checkboxes are the site's own roles, so a key naming
+    /// no role checks nothing, and a save reads membership against the role
+    /// list ([`plan_role_membership`]).
+    fn posted(posted: &PostedForm) -> Self {
+        Self {
+            name: posted.get("name").unwrap_or_default().to_string(),
+            mail: posted.get("mail").unwrap_or_default().to_string(),
+            is_admin: posted.contains("is_admin"),
+            status: posted.contains("status"),
+            notify: posted.contains("notify"),
+            roles: posted
+                .0
+                .iter()
+                .filter_map(|(key, _)| key.strip_prefix("role_"))
+                .filter_map(|id| id.parse::<uuid::Uuid>().ok())
+                .map(|id| id.to_string())
+                .collect(),
+        }
+    }
+}
+
+/// The posted fields as a map, for the role checkboxes
+/// ([`plan_role_membership`]) and the permission grid, which look keys up by
+/// name.
+fn posted_map(posted: &PostedForm) -> std::collections::HashMap<String, String> {
+    posted.0.iter().cloned().collect()
 }
 
 /// One role in the listing.
@@ -66,27 +95,6 @@ struct RoleRow {
     permissions: usize,
     /// Whether this is one of the two roles the kernel depends on by id.
     built_in: bool,
-}
-
-/// Role form data.
-#[derive(Debug, Deserialize)]
-struct RoleFormData {
-    #[serde(rename = "_token")]
-    token: String,
-    #[serde(rename = "_form_build_id")]
-    form_build_id: String,
-    name: String,
-}
-
-/// Permission form data (for permission matrix).
-#[derive(Debug, Deserialize)]
-struct PermissionFormData {
-    #[serde(rename = "_token")]
-    token: String,
-    #[serde(rename = "_form_build_id")]
-    form_build_id: String,
-    #[serde(flatten)]
-    permissions: std::collections::HashMap<String, String>,
 }
 
 // =============================================================================
@@ -219,9 +227,10 @@ async fn list_users(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let query = ListQuery::from_params(&params);
     let sort = query.sort(USER_SORTS, ("name", false));
@@ -239,14 +248,29 @@ async fn list_users(
         }
     };
 
-    let csrf_token = generate_csrf_token(&session).await;
+    let list = query.view(total, users.len(), Some(&sort));
+    let forms = match super::admin_list::render_forms(
+        &state,
+        &session,
+        &user,
+        &list,
+        "/admin/people",
+        "Filter users",
+        "Name or email contains",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
     let warning: Option<String> = session.remove(ACCESS_RULE_WARNING_KEY).await.ok().flatten();
 
     let mut context = tera::Context::new();
     context.insert("warning", &warning);
     context.insert("users", &users);
-    context.insert("list", &query.view(total, users.len(), Some(&sort)));
-    context.insert("csrf_token", &csrf_token);
+    context.insert("list", &list);
+    forms.insert_into(&mut context);
     context.insert("path", "/admin/people");
 
     render_admin_template(
@@ -258,33 +282,225 @@ async fn list_users(
     .await
 }
 
+/// A Cancel link back to `href`, styled as the secondary button beside a
+/// form's own, in `user`'s admin language.
+async fn cancel_link(state: &AppState, user: &User, href: &str, label: &str) -> String {
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let text = super::admin_nav::AdminText::for_page(state, &viewer, href).await;
+    format!(
+        r#"<a href="{}" class="button button--secondary">{}</a>"#,
+        tera::escape_html(href),
+        text.html(label, &[])
+    )
+}
+
+/// The add and edit user form, showing `values`. `editing` is the account
+/// being edited, `None` on the add form; `roles` are every role, each a
+/// checkbox. `links` are the translated links the form carries: the Cancel
+/// link beside the button, the link to the permissions above the roles, and
+/// on the edit form the link to the cancellation page under the button.
+fn user_form(
+    editing: Option<uuid::Uuid>,
+    values: &UserValues,
+    roles: &[crate::models::Role],
+    links: UserFormLinks,
+) -> crate::form::Form {
+    let action = match editing {
+        Some(id) => format!("/admin/people/{id}/edit"),
+        None => "/admin/people/add".to_string(),
+    };
+    let mut password = FormElement::password()
+        .title("Password")
+        .description(if editing.is_some() {
+            "Leave blank to keep the current password. Minimum 12 characters."
+        } else {
+            "Minimum 12 characters."
+        })
+        .attribute("autocomplete", "new-password")
+        .attribute("minlength", "12")
+        .weight(2);
+    if editing.is_none() {
+        password = password.required();
+    }
+    let mut status = FormElement::fieldset()
+        .title("Status and permissions")
+        .weight(3)
+        .child(
+            "status",
+            FormElement::checkbox()
+                .title("Active")
+                .description("Blocked users cannot log in.")
+                .default_value(values.status)
+                .weight(0),
+        )
+        .child(
+            "is_admin",
+            FormElement::checkbox()
+                .title("Administrator")
+                .description(
+                    "Administrators have full access to the site. Only an administrator can \
+                     grant or remove this.",
+                )
+                .default_value(values.is_admin)
+                .weight(1),
+        );
+    if editing.is_none() {
+        status = status.child(
+            "notify",
+            FormElement::checkbox()
+                .title("Notify user of new account")
+                .description(
+                    "Mails the new user a welcome message with a one-time link to sign in and \
+                     choose their own password.",
+                )
+                .default_value(values.notify)
+                .weight(2),
+        );
+    }
+    let mut form = crate::form::Form::new(USER_FORM_ID)
+        .action(action)
+        .element(
+            "name",
+            FormElement::textfield()
+                .title("Username")
+                .description("The unique username for this account.")
+                .default_value(values.name.clone())
+                .required()
+                .attribute("autocomplete", "username")
+                .attribute("spellcheck", "false")
+                .attribute("autocapitalize", "none")
+                .weight(0),
+        )
+        .element(
+            "mail",
+            FormElement::input("email")
+                .title("Email")
+                .description("A valid email address for this user.")
+                .default_value(values.mail.clone())
+                .required()
+                .attribute("autocomplete", "email")
+                .attribute("spellcheck", "false")
+                .weight(1),
+        )
+        .element("password", password)
+        .element("status_and_permissions", status);
+    // Role membership. The checkbox key carries the role id; the server
+    // iterates its own role list and reads each key back, so an unknown key
+    // names nothing.
+    if !roles.is_empty() {
+        let mut fieldset = FormElement::fieldset()
+            .title("Roles")
+            .description("A role grants its permissions to every user who holds it.")
+            .weight(4)
+            .child(
+                "see_permissions",
+                FormElement::markup(links.see_permissions).weight(0),
+            );
+        for (weight, role) in (1..).zip(roles) {
+            let id = role.id.to_string();
+            fieldset = fieldset.child(
+                format!("role_{id}"),
+                FormElement::checkbox()
+                    .title(role.name.clone())
+                    .default_value(values.roles.contains(&id))
+                    .weight(weight),
+            );
+        }
+        form = form.element("roles", fieldset);
+    }
+    form = form.element(
+        "op",
+        FormElement::submit(if editing.is_some() {
+            "Save changes"
+        } else {
+            "Create user"
+        })
+        .suffix(links.cancel)
+        .weight(10),
+    );
+    if editing.is_some() {
+        form = form.element(
+            "cancel_account",
+            FormElement::markup(links.cancel_account).weight(11),
+        );
+    }
+    form
+}
+
+/// The links the user form carries, already translated: see [`user_form`].
+struct UserFormLinks {
+    cancel: String,
+    see_permissions: String,
+    cancel_account: String,
+}
+
+/// The add or edit user page (`editing` the account edited), its form showing
+/// `values` and `errors`.
+async fn render_user_form(
+    state: &AppState,
+    session: &Session,
+    actor: &User,
+    editing: Option<uuid::Uuid>,
+    values: &UserValues,
+    errors: &[ValidationError],
+) -> Response {
+    let roles = state.roles().list().await.unwrap_or_default();
+    let viewer = super::helpers::user_context_for(state, actor).await;
+    let path = match editing {
+        Some(id) => format!("/admin/people/{id}/edit"),
+        None => "/admin/people/add".to_string(),
+    };
+    let text = super::admin_nav::AdminText::for_page(state, &viewer, &path).await;
+    let links = UserFormLinks {
+        cancel: cancel_link(state, actor, "/admin/people", "Cancel").await,
+        see_permissions: format!(
+            r#"<p><a href="/admin/people/permissions">{}</a></p>"#,
+            text.html("See the permissions", &[])
+        ),
+        cancel_account: match editing {
+            Some(id) => format!(
+                r#"<p class="user-form__cancel-account"><a href="/admin/people/{id}/cancel">{}</a></p>"#,
+                text.html("Cancel account", &[])
+            ),
+            None => String::new(),
+        },
+    };
+    let form = user_form(editing, values, &roles, links);
+    let form_html = match admin_form::render(state, session, actor, form, errors).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+
+    let mut context = tera::Context::new();
+    context.insert("form", &form_html);
+    context.insert("editing", &editing.is_some());
+    context.insert("user_name", &values.name);
+    context.insert("path", &path);
+    if let Some(id) = editing {
+        // Local task tabs for user edit pages (hardcoded + plugin-registered)
+        context.insert(
+            "local_tasks",
+            &build_local_tasks(
+                state,
+                "/admin/people/:id",
+                &path,
+                Some(&id.to_string()),
+                vec![serde_json::json!({"title": "Edit", "path": &path, "active": true})],
+            ),
+        );
+    }
+    render_admin_template(state, &viewer, "admin/user-form.html", context).await
+}
+
 /// Show add user form.
 ///
 /// GET /admin/people/add
 async fn add_user_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
-        return redirect;
-    }
-
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
-    let mut context = tera::Context::new();
-    context.insert("action", "/admin/people/add");
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert("editing", &false);
-    context.insert("values", &serde_json::json!({"roles": []}));
-    context.insert("roles", &state.roles().list().await.unwrap_or_default());
-    context.insert("path", "/admin/people/add");
-
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/user-form.html",
-        context,
-    )
-    .await
+    let user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    render_user_form(&state, &session, &user, None, &UserValues::default(), &[]).await
 }
 
 /// Everything wrong with a new account, in the words the "Add user" form uses:
@@ -300,21 +516,21 @@ pub(crate) async fn new_account_problems(
     name: &str,
     mail: &str,
     password: Option<&str>,
-) -> Vec<FieldError> {
+) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
     if name.trim().is_empty() {
-        errors.push(FieldError::on("name", "Username is required."));
+        errors.push(ValidationError::field("name", "Username is required."));
     }
 
     if mail.trim().is_empty() {
-        errors.push(FieldError::on("mail", "Email is required."));
+        errors.push(ValidationError::field("mail", "Email is required."));
     }
 
     if let Some(password) = password
         && let Err(msg) = validate_password(password)
     {
-        errors.push(FieldError::on("password", msg));
+        errors.push(ValidationError::field("password", msg));
     }
 
     // Check if username already exists. An empty value is already refused
@@ -322,9 +538,9 @@ pub(crate) async fn new_account_problems(
     if !name.trim().is_empty()
         && let Ok(Some(_)) = state.users().find_by_name(name).await
     {
-        errors.push(FieldError::on(
+        errors.push(ValidationError::field(
             "name",
-            UiMessage::new("Username '{name}' is already taken.").arg("name", name),
+            format!("Username '{name}' is already taken."),
         ));
     }
 
@@ -332,9 +548,9 @@ pub(crate) async fn new_account_problems(
     if !mail.trim().is_empty()
         && let Ok(Some(_)) = state.users().find_by_mail(mail).await
     {
-        errors.push(FieldError::on(
+        errors.push(ValidationError::field(
             "mail",
-            UiMessage::new("Email '{mail}' is already in use.").arg("mail", mail),
+            format!("Email '{mail}' is already in use."),
         ));
     }
 
@@ -382,67 +598,48 @@ pub(crate) async fn access_rule_warning(
 async fn add_user_submit(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<UserFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = PostedForm(pairs);
     let current_user = match require_permission(&state, &session, "administer users").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
 
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    let password = form.password.as_deref().unwrap_or("");
-    let errors = new_account_problems(&state, &form.name, &form.mail, Some(password)).await;
-
-    if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
-
-        let mut context = tera::Context::new();
-        context.insert("action", "/admin/people/add");
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("editing", &false);
-        context.insert("errors", &errors);
-        let all_roles = state.roles().list().await.unwrap_or_default();
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "name": form.name,
-                "mail": form.mail,
-                "is_admin": form.is_admin.is_some(),
-                "status": form.status.is_some(),
-                "notify": form.notify.is_some(),
-                "roles": submitted_role_ids(&all_roles, &form.roles),
-            }),
-        );
-        context.insert("roles", &all_roles);
-        context.insert("path", "/admin/people/add");
-
-        return render_admin_template(
-            &state,
-            &crate::routes::helpers::get_user_context(&session, &state).await,
-            "admin/user-form.html",
-            context,
-        )
-        .await;
-    }
+    let values = UserValues::posted(&posted);
+    let submitted_roles = posted_map(&posted);
+    let password = posted.get("password").unwrap_or_default().to_string();
+    let errors =
+        new_account_problems(&state, &values.name, &values.mail, Some(password.as_str())).await;
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &current_user,
+        &posted,
+        USER_FORM_ID,
+        errors,
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            return render_user_form(&state, &session, &current_user, None, &values, &errors).await;
+        }
+        Err(Err(response)) => return response,
+    };
 
     // Create the user
     let input = CreateUser {
-        name: form.name.clone(),
-        password: password.to_string(),
-        mail: form.mail.clone(),
+        name: values.name.clone(),
+        password: password.clone(),
+        mail: values.mail.clone(),
         // Only a superuser may create another superuser. The route gate is
         // `administer users`, which is a grantable permission; the superuser
         // flag is what that permission is granted *by*, so letting it be set
         // from here would make `administer users` a self-escalation to
         // superuser. Checked on the field rather than the route so that
         // managing ordinary users stays delegable.
-        is_admin: form.is_admin.is_some() && current_user.is_admin,
+        is_admin: values.is_admin && current_user.is_admin,
     };
 
     let user_ctx = admin_user_context(&state, &current_user).await;
@@ -452,9 +649,14 @@ async fn add_user_submit(
         // Hashed before BEGIN: Argon2 takes a while, and a pooled connection
         // must not sit idle in a transaction meanwhile.
         let pass = crate::models::user::stored_password(&input.password)?;
-        let plan =
-            plan_role_membership(&state, &current_user, uuid::Uuid::nil(), true, &form.roles)
-                .await?;
+        let plan = plan_role_membership(
+            &state,
+            &current_user,
+            uuid::Uuid::nil(),
+            true,
+            &submitted_roles,
+        )
+        .await?;
         let mut tx = state.db().begin().await?;
         let user = state
             .users()
@@ -469,13 +671,14 @@ async fn add_user_submit(
         Ok((user, changed)) => {
             state.users().created_with_status(&user, 1, &user_ctx).await;
             membership_committed(&state, user.id, &changed).await;
-            tracing::info!(name = %form.name, "user created");
-            if form.notify.is_some() {
+            admin_form::submitted(&state, &current_user, &form_state, &posted).await;
+            tracing::info!(name = %values.name, "user created");
+            if values.notify {
                 // After the answer, as every kernel mail is: the request does
                 // not wait on the mail server.
                 tokio::spawn(send_welcome_mail(state.clone(), user.clone()));
             }
-            if let Some(message) = access_rule_warning(&state, &form.name, &form.mail).await {
+            if let Some(message) = access_rule_warning(&state, &values.name, &values.mail).await {
                 let _ = session.insert(ACCESS_RULE_WARNING_KEY, message).await;
             }
             Redirect::to("/admin/people").into_response()
@@ -576,15 +779,6 @@ async fn edit_user_form(
         return render_forbidden("You may not edit an account holding permissions you do not.");
     }
 
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
-    let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/people/{user_id}/edit"));
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert("editing", &true);
-    context.insert("user_id", &user_id.to_string());
     let held: Vec<String> = state
         .roles()
         .get_user_roles(user_id)
@@ -593,39 +787,15 @@ async fn edit_user_form(
         .into_iter()
         .map(|r| r.id.to_string())
         .collect();
-    context.insert(
-        "values",
-        &serde_json::json!({
-            "name": target_user.name,
-            "mail": target_user.mail,
-            "is_admin": target_user.is_admin,
-            "status": target_user.status == 1,
-            "roles": held,
-        }),
-    );
-    context.insert("roles", &state.roles().list().await.unwrap_or_default());
-    context.insert("path", &format!("/admin/people/{user_id}/edit"));
-
-    // Local task tabs for user edit pages (hardcoded + plugin-registered)
-    let current_path = format!("/admin/people/{user_id}/edit");
-    context.insert(
-        "local_tasks",
-        &build_local_tasks(
-            &state,
-            "/admin/people/:id",
-            &current_path,
-            Some(&user_id.to_string()),
-            vec![serde_json::json!({"title": "Edit", "path": &current_path, "active": true})],
-        ),
-    );
-
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/user-form.html",
-        context,
-    )
-    .await
+    let values = UserValues {
+        name: target_user.name.clone(),
+        mail: target_user.mail.clone(),
+        is_admin: target_user.is_admin,
+        status: target_user.status == 1,
+        notify: false,
+        roles: held,
+    };
+    render_user_form(&state, &session, &current_user, Some(user_id), &values, &[]).await
 }
 
 /// Handle edit user form submission.
@@ -635,19 +805,74 @@ async fn edit_user_submit(
     State(state): State<AppState>,
     session: Session,
     Path(user_id): Path<uuid::Uuid>,
-    Form(form): Form<UserFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = PostedForm(pairs);
     let current_user = match require_permission(&state, &session, "administer users").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
 
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
+    let values = UserValues::posted(&posted);
+    let submitted_roles = posted_map(&posted);
+    let password = posted.get("password").unwrap_or_default().to_string();
+    let existing_user = state.users().find_by_id(user_id).await.ok().flatten();
+
+    // Validate
+    let mut errors = Vec::new();
+    if let Some(existing_user) = &existing_user {
+        if values.name.trim().is_empty() {
+            errors.push(ValidationError::field("name", "Username is required."));
+        }
+
+        if values.mail.trim().is_empty() {
+            errors.push(ValidationError::field("mail", "Email is required."));
+        }
+
+        // Check if new username is taken by someone else
+        if values.name != existing_user.name
+            && let Ok(Some(_)) = state.users().find_by_name(&values.name).await
+        {
+            errors.push(ValidationError::field(
+                "name",
+                format!("Username '{}' is already taken.", values.name),
+            ));
+        }
+
+        // Check if new email is taken by someone else
+        if values.mail != existing_user.mail
+            && let Ok(Some(_)) = state.users().find_by_mail(&values.mail).await
+        {
+            errors.push(ValidationError::field(
+                "mail",
+                format!("Email '{}' is already in use.", values.mail),
+            ));
+        }
+
+        // Validate password if provided
+        if !password.is_empty()
+            && let Err(msg) = validate_password(&password)
+        {
+            errors.push(ValidationError::field("password", msg));
+        }
     }
 
-    let Some(existing_user) = state.users().find_by_id(user_id).await.ok().flatten() else {
+    // The token is checked first, as it always was; the problems with the
+    // values are shown only once the refusals below have had their say.
+    let checked = admin_form::check(
+        &state,
+        &session,
+        &current_user,
+        &posted,
+        USER_FORM_ID,
+        errors,
+    )
+    .await;
+    if let Err(Err(response)) = checked {
+        return response;
+    }
+
+    let Some(existing_user) = existing_user else {
         return render_not_found();
     };
 
@@ -668,11 +893,11 @@ async fn edit_user_submit(
     // superusers out. For anyone else the stored value is preserved
     // regardless of what the form submitted.
     let is_admin_after = if current_user.is_admin {
-        form.is_admin.is_some()
+        values.is_admin
     } else {
         existing_user.is_admin
     };
-    let status_after: i16 = if form.status.is_some() { 1 } else { 0 };
+    let status_after: i16 = if values.status { 1 } else { 0 };
 
     // A superuser may demote or block another, or themselves, but not the last
     // one: a site with no active superuser cannot be administered back into
@@ -687,94 +912,26 @@ async fn edit_user_submit(
         return render_forbidden("Cannot demote or block the last active superuser.");
     }
 
-    // Validate
-    let mut errors = Vec::new();
-
-    if form.name.trim().is_empty() {
-        errors.push(FieldError::on("name", "Username is required."));
-    }
-
-    if form.mail.trim().is_empty() {
-        errors.push(FieldError::on("mail", "Email is required."));
-    }
-
-    // Check if new username is taken by someone else
-    if form.name != existing_user.name
-        && let Ok(Some(_)) = state.users().find_by_name(&form.name).await
-    {
-        errors.push(FieldError::on(
-            "name",
-            UiMessage::new("Username '{name}' is already taken.").arg("name", &form.name),
-        ));
-    }
-
-    // Check if new email is taken by someone else
-    if form.mail != existing_user.mail
-        && let Ok(Some(_)) = state.users().find_by_mail(&form.mail).await
-    {
-        errors.push(FieldError::on(
-            "mail",
-            UiMessage::new("Email '{mail}' is already in use.").arg("mail", &form.mail),
-        ));
-    }
-
-    // Validate password if provided
-    if let Some(ref password) = form.password
-        && !password.is_empty()
-        && let Err(msg) = validate_password(password)
-    {
-        errors.push(FieldError::on("password", msg));
-    }
-
-    if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
-
-        let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/people/{user_id}/edit"));
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("editing", &true);
-        context.insert("user_id", &user_id.to_string());
-        context.insert("errors", &errors);
-        let all_roles = state.roles().list().await.unwrap_or_default();
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "name": form.name,
-                "mail": form.mail,
-                "is_admin": form.is_admin.is_some(),
-                "status": form.status.is_some(),
-                "roles": submitted_role_ids(&all_roles, &form.roles),
-            }),
-        );
-        context.insert("roles", &all_roles);
-        let current_path = format!("/admin/people/{user_id}/edit");
-        context.insert("path", &current_path);
-        context.insert(
-            "local_tasks",
-            &build_local_tasks(
+    let form_state = match checked {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            return render_user_form(
                 &state,
-                "/admin/people/:id",
-                &current_path,
-                Some(&user_id.to_string()),
-                vec![serde_json::json!({"title": "Edit", "path": &current_path, "active": true})],
-            ),
-        );
-
-        return render_admin_template(
-            &state,
-            &crate::routes::helpers::get_user_context(&session, &state).await,
-            "admin/user-form.html",
-            context,
-        )
-        .await;
-    }
+                &session,
+                &current_user,
+                Some(user_id),
+                &values,
+                &errors,
+            )
+            .await;
+        }
+        Err(Err(response)) => return response,
+    };
 
     // Update the user
     let input = UpdateUser {
-        name: Some(form.name.clone()),
-        mail: Some(form.mail.clone()),
+        name: Some(values.name.clone()),
+        mail: Some(values.mail.clone()),
         is_admin: Some(is_admin_after),
         status: Some(status_after),
         timezone: None,
@@ -785,7 +942,7 @@ async fn edit_user_submit(
     let user_ctx = admin_user_context(&state, &current_user).await;
     let admin_user_id = current_user.id;
     let blocking = existing_user.is_active() && status_after == 0;
-    let new_password = form.password.as_deref().filter(|p| !p.is_empty());
+    let new_password = Some(password.as_str()).filter(|p| !p.is_empty());
 
     // Everything the form changes, and every event recording it, commits in
     // one transaction: the account's fields, its roles, its password and, for
@@ -797,7 +954,8 @@ async fn edit_user_submit(
         let hashed = new_password
             .map(crate::models::user::hash_password)
             .transpose()?;
-        let plan = plan_role_membership(&state, &current_user, user_id, false, &form.roles).await?;
+        let plan =
+            plan_role_membership(&state, &current_user, user_id, false, &submitted_roles).await?;
         let mut tx = state.db().begin().await?;
         let Some(updated) = state
             .users()
@@ -849,6 +1007,7 @@ async fn edit_user_submit(
     // Committed: now what cannot roll back.
     state.users().updated(&updated, &user_ctx).await;
     membership_committed(&state, user_id, &changed).await;
+    admin_form::submitted(&state, &current_user, &form_state, &posted).await;
     if password_set {
         state
             .users()
@@ -910,6 +1069,92 @@ async fn edit_user_submit(
     Redirect::to("/admin/people").into_response()
 }
 
+/// The account `user_id` the actor may delete, or the refusal: the anonymous
+/// account, the actor's own, and one holding permissions the actor does not
+/// are never deleted here.
+async fn deletable_user(
+    state: &AppState,
+    actor: &User,
+    user_id: uuid::Uuid,
+) -> Result<User, Response> {
+    // Prevent deleting anonymous user
+    if user_id == ANONYMOUS_USER_ID {
+        return Err(render_error("Cannot delete the anonymous user."));
+    }
+
+    // Prevent deleting yourself
+    if user_id == actor.id {
+        return Err(render_error("Cannot delete your own account."));
+    }
+
+    let Some(target_user) = state.users().find_by_id(user_id).await.ok().flatten() else {
+        return Err(render_not_found());
+    };
+
+    if !may_act_on(state, actor, &target_user).await {
+        tracing::warn!(
+            actor = %actor.id,
+            target = %user_id,
+            "refused an account deletion beyond the actor's own permissions"
+        );
+        return Err(render_forbidden(
+            "You may not delete an account holding permissions you do not.",
+        ));
+    }
+    Ok(target_user)
+}
+
+/// The form that deletes the account `user_id`, with a Cancel link back to
+/// the list.
+fn user_delete_form(user_id: uuid::Uuid, cancel: String) -> crate::form::Form {
+    crate::form::Form::new(USER_DELETE_FORM_ID)
+        .action(format!("/admin/people/{user_id}/delete"))
+        .element(
+            "op",
+            FormElement::submit("Delete")
+                .attribute("class", "button--danger")
+                .suffix(cancel)
+                .weight(10),
+        )
+}
+
+/// Confirm deleting a user.
+///
+/// GET /admin/people/{id}/delete
+async fn delete_user_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path(user_id): Path<uuid::Uuid>,
+) -> Response {
+    let current_user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let target_user = match deletable_user(&state, &current_user, user_id).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let cancel = cancel_link(&state, &current_user, "/admin/people", "Cancel").await;
+    let form_html = match admin_form::render(
+        &state,
+        &session,
+        &current_user,
+        user_delete_form(user_id, cancel),
+        &[],
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let viewer = super::helpers::user_context_for(&state, &current_user).await;
+    let mut context = tera::Context::new();
+    context.insert("account", &serde_json::json!({ "name": target_user.name }));
+    context.insert("form", &form_html);
+    context.insert("path", "/admin/people");
+    render_admin_template(&state, &viewer, "admin/user-delete.html", context).await
+}
+
 /// Delete a user.
 ///
 /// POST /admin/people/{id}/delete
@@ -917,39 +1162,35 @@ async fn delete_user(
     State(state): State<AppState>,
     session: Session,
     Path(user_id): Path<uuid::Uuid>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = PostedForm(pairs);
     let current_user = match require_permission(&state, &session, "administer users").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
 
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    // Prevent deleting anonymous user
-    if user_id == ANONYMOUS_USER_ID {
-        return render_error("Cannot delete the anonymous user.");
-    }
-
-    // Prevent deleting yourself
-    if user_id == current_user.id {
-        return render_error("Cannot delete your own account.");
-    }
-
-    let Some(target_user) = state.users().find_by_id(user_id).await.ok().flatten() else {
-        return render_not_found();
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &current_user,
+        &posted,
+        USER_DELETE_FORM_ID,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(_)) => {
+            return render_error("The form has expired. Reload the page and try again.");
+        }
+        Err(Err(response)) => return response,
     };
 
-    if !may_act_on(&state, &current_user, &target_user).await {
-        tracing::warn!(
-            actor = %current_user.id,
-            target = %user_id,
-            "refused an account deletion beyond the actor's own permissions"
-        );
-        return render_forbidden("You may not delete an account holding permissions you do not.");
-    }
+    let target_user = match deletable_user(&state, &current_user, user_id).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
 
     // Unreachable today: only a superuser gets this far with a superuser
     // target, and it cannot be themselves, so at least two exist. Checked
@@ -969,6 +1210,7 @@ async fn delete_user(
         .await
     {
         Ok(true) => {
+            admin_form::submitted(&state, &current_user, &form_state, &posted).await;
             tracing::info!(user_id = %user_id, "user deleted");
             Redirect::to("/admin/people").into_response()
         }
@@ -1035,14 +1277,6 @@ impl CancelMethod {
     }
 }
 
-/// The posted cancel form.
-#[derive(Debug, Deserialize)]
-struct CancelForm {
-    #[serde(rename = "_token")]
-    token: String,
-    method: String,
-}
-
 /// Who may cancel `target`, answered as the refusal when they may not: the
 /// same rule the edit and delete routes apply.
 async fn cancel_refusal(
@@ -1065,7 +1299,8 @@ async fn cancel_refusal(
     Ok((actor, target))
 }
 
-/// GET /user/{id}/cancel: the confirmation, with the cancellation methods.
+/// GET /admin/people/{id}/cancel (and `/user/{id}/cancel`, its older
+/// address): the confirmation, with the cancellation methods.
 ///
 /// One's own account is cancelled through `/user/delete`, which asks for the
 /// password again; this page sends its own owner there.
@@ -1083,7 +1318,7 @@ async fn cancel_form(
         Ok(pair) => pair,
         Err(refusal) => return refusal,
     };
-    render_cancel_form(&state, &session, &actor, &target, None).await
+    render_cancel_form(&state, &session, &actor, &target, &[]).await
 }
 
 async fn render_cancel_form(
@@ -1091,20 +1326,41 @@ async fn render_cancel_form(
     session: &Session,
     actor: &User,
     target: &User,
-    error: Option<&str>,
+    errors: &[ValidationError],
 ) -> Response {
-    let methods: Vec<serde_json::Value> = CancelMethod::ALL
+    let methods: Vec<(String, String)> = CancelMethod::ALL
         .iter()
-        .map(|m| serde_json::json!({ "value": m.as_str(), "label": m.label() }))
+        .map(|m| (m.as_str().to_string(), m.label().to_string()))
         .collect();
+    let keep = format!("/admin/people/{}/edit", target.id);
+    let form = crate::form::Form::new(USER_CANCEL_FORM_ID)
+        // An admin address, so the form is drawn with the admin form
+        // templates (the theme engine chooses them by the action).
+        .action(format!("/admin/people/{}/cancel", target.id))
+        .element(
+            "method",
+            FormElement::radio(methods)
+                .title("When cancelling the account")
+                .default_value(CancelMethod::Block.as_str())
+                .weight(0),
+        )
+        .element(
+            "op",
+            FormElement::submit("Cancel account")
+                .attribute("class", "button--danger")
+                .suffix(cancel_link(state, actor, &keep, "Keep the account").await)
+                .weight(10),
+        );
+    let form_html = match admin_form::render(state, session, actor, form, errors).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
     context.insert(
         "account",
         &serde_json::json!({ "id": target.id, "name": target.name }),
     );
-    context.insert("methods", &methods);
-    context.insert("csrf_token", &generate_csrf_token(session).await);
-    context.insert("error", &error);
+    context.insert("form", &form_html);
     // Placed under People, where the user edit form that links here lives.
     context.insert("path", "/admin/people");
     render_admin_template(
@@ -1116,32 +1372,52 @@ async fn render_cancel_form(
     .await
 }
 
-/// POST /user/{id}/cancel: cancel the account by the chosen method.
+/// POST /admin/people/{id}/cancel (or `/user/{id}/cancel`): cancel the
+/// account by the chosen method.
 async fn cancel_submit(
     State(state): State<AppState>,
     session: Session,
     Path(user_id): Path<uuid::Uuid>,
-    Form(form): Form<CancelForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = PostedForm(pairs);
     let (actor, target) = match cancel_refusal(&state, &session, user_id).await {
         Ok(pair) => pair,
         Err(refusal) => return refusal,
     };
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
+    let method = CancelMethod::parse(posted.get("method").unwrap_or_default().trim());
+    let errors = if method.is_none() {
+        vec![ValidationError::field(
+            "method",
+            "Choose how to cancel the account.",
+        )]
+    } else {
+        Vec::new()
+    };
+    let checked = admin_form::check(
+        &state,
+        &session,
+        &actor,
+        &posted,
+        USER_CANCEL_FORM_ID,
+        errors,
+    )
+    .await;
+    if let Err(Err(response)) = checked {
+        return response;
     }
     if actor.id == target.id {
         return render_error("Cancel your own account from your account page.");
     }
-    let Some(method) = CancelMethod::parse(form.method.trim()) else {
-        return render_cancel_form(
-            &state,
-            &session,
-            &actor,
-            &target,
-            Some("Choose how to cancel the account."),
-        )
-        .await;
+    let form_state = match checked {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            return render_cancel_form(&state, &session, &actor, &target, &errors).await;
+        }
+        Err(Err(response)) => return response,
+    };
+    let Some(method) = method else {
+        return render_not_found();
     };
     if demotes_active_superuser(target.is_admin, target.status, false, 0)
         && !may_lose_a_superuser(&state).await
@@ -1152,6 +1428,7 @@ async fn cancel_submit(
     let acting = admin_user_context(&state, &actor).await;
     match cancel_account(&state, &target, method, &acting).await {
         Ok(()) => {
+            admin_form::submitted(&state, &actor, &form_state, &posted).await;
             let message = match method {
                 CancelMethod::Block | CancelMethod::BlockUnpublish => {
                     format!("{} has been disabled.", target.name)
@@ -1297,13 +1574,10 @@ async fn list_roles(State(state): State<AppState>, session: Session) -> Response
         });
     }
 
-    let csrf_token = generate_csrf_token(&session).await;
-
     let mut context = tera::Context::new();
     context.insert("roles", &rows);
     context.insert("anonymous_role_id", &ANONYMOUS_ROLE_ID.to_string());
     context.insert("authenticated_role_id", &AUTHENTICATED_ROLE_ID.to_string());
-    context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/people/roles");
 
     render_admin_template(
@@ -1315,32 +1589,91 @@ async fn list_roles(State(state): State<AppState>, session: Session) -> Response
     .await
 }
 
-/// Show add role form.
-///
-/// GET /admin/people/roles/add
-async fn add_role_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
-        return redirect;
-    }
+/// The add and edit role form, showing `name`. `editing` is the role being
+/// edited, `None` on the add form; `cancel` is the Cancel link beside the
+/// button.
+fn role_form(editing: Option<uuid::Uuid>, name: &str, cancel: String) -> crate::form::Form {
+    let action = match editing {
+        Some(id) => format!("/admin/people/roles/{id}/edit"),
+        None => "/admin/people/roles/add".to_string(),
+    };
+    crate::form::Form::new(ROLE_FORM_ID)
+        .action(action)
+        .element(
+            "name",
+            FormElement::textfield()
+                .title("Role name")
+                .description("The human-readable name of this role.")
+                .default_value(name.to_string())
+                .required()
+                .weight(0),
+        )
+        .element(
+            "op",
+            FormElement::submit(if editing.is_some() {
+                "Save changes"
+            } else {
+                "Create role"
+            })
+            .suffix(cancel)
+            .weight(10),
+        )
+}
 
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
+/// The add or edit role page (`editing` the role edited), its form showing
+/// `name` and `errors`. The edit page lists the role's permissions under it.
+async fn render_role_form(
+    state: &AppState,
+    session: &Session,
+    actor: &User,
+    editing: Option<uuid::Uuid>,
+    name: &str,
+    errors: &[ValidationError],
+) -> Response {
+    let path = match editing {
+        Some(id) => format!("/admin/people/roles/{id}/edit"),
+        None => "/admin/people/roles/add".to_string(),
+    };
+    let cancel = cancel_link(state, actor, "/admin/people/roles", "Cancel").await;
+    let form_html = match admin_form::render(
+        state,
+        session,
+        actor,
+        role_form(editing, name, cancel),
+        errors,
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
-    context.insert("action", "/admin/people/roles/add");
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert("editing", &false);
-    context.insert("values", &serde_json::json!({}));
-    context.insert("path", "/admin/people/roles/add");
-
+    context.insert("form", &form_html);
+    context.insert("editing", &editing.is_some());
+    context.insert("role_name", name);
+    if let Some(id) = editing {
+        let permissions = state.roles().get_permissions(id).await.unwrap_or_default();
+        context.insert("role_permissions", &permissions);
+    }
+    context.insert("path", &path);
     render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
+        state,
+        &super::helpers::user_context_for(state, actor).await,
         "admin/role-form.html",
         context,
     )
     .await
+}
+
+/// Show add role form.
+///
+/// GET /admin/people/roles/add
+async fn add_role_form(State(state): State<AppState>, session: Session) -> Response {
+    let user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    render_role_form(&state, &session, &user, None, "", &[]).await
 }
 
 /// Handle add role form submission.
@@ -1349,62 +1682,43 @@ async fn add_role_form(State(state): State<AppState>, session: Session) -> Respo
 async fn add_role_submit(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<RoleFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
-        return redirect;
-    }
-
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let name = posted.get("name").unwrap_or_default().to_string();
 
     // Validate
     let mut errors = Vec::new();
 
-    if form.name.trim().is_empty() {
-        errors.push(FieldError::on("name", "Role name is required."));
+    if name.trim().is_empty() {
+        errors.push(ValidationError::field("name", "Role name is required."));
     }
 
     // Check if role name already exists
-    if let Ok(Some(_)) = state.roles().find_by_name(&form.name).await {
-        errors.push(FieldError::on(
+    if let Ok(Some(_)) = state.roles().find_by_name(&name).await {
+        errors.push(ValidationError::field(
             "name",
-            UiMessage::new("A role named '{name}' already exists.").arg("name", &form.name),
+            format!("A role named '{name}' already exists."),
         ));
     }
 
-    if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, ROLE_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                return render_role_form(&state, &session, &user, None, &name, &errors).await;
+            }
+            Err(Err(response)) => return response,
+        };
 
-        let mut context = tera::Context::new();
-        context.insert("action", "/admin/people/roles/add");
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("editing", &false);
-        context.insert("errors", &errors);
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "name": form.name,
-            }),
-        );
-        context.insert("path", "/admin/people/roles/add");
-
-        return render_admin_template(
-            &state,
-            &crate::routes::helpers::get_user_context(&session, &state).await,
-            "admin/role-form.html",
-            context,
-        )
-        .await;
-    }
-
-    match state.roles().create(&form.name).await {
+    match state.roles().create(&name).await {
         Ok(_) => {
-            tracing::info!(name = %form.name, "role created");
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
+            tracing::info!(name = %name, "role created");
             Redirect::to("/admin/people/roles").into_response()
         }
         Err(e) => {
@@ -1422,45 +1736,16 @@ async fn edit_role_form(
     session: Session,
     Path(role_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let Some(role) = state.roles().find_by_id(role_id).await.ok().flatten() else {
         return render_not_found();
     };
 
-    let permissions = state
-        .roles()
-        .get_permissions(role_id)
-        .await
-        .unwrap_or_default();
-
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
-    let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/people/roles/{role_id}/edit"));
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert("editing", &true);
-    context.insert("role_id", &role_id.to_string());
-    context.insert("role_permissions", &permissions);
-    context.insert(
-        "values",
-        &serde_json::json!({
-            "name": role.name,
-        }),
-    );
-    context.insert("path", &format!("/admin/people/roles/{role_id}/edit"));
-
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/role-form.html",
-        context,
-    )
-    .await
+    render_role_form(&state, &session, &user, Some(role_id), &role.name, &[]).await
 }
 
 /// Handle edit role form submission.
@@ -1470,74 +1755,52 @@ async fn edit_role_submit(
     State(state): State<AppState>,
     session: Session,
     Path(role_id): Path<uuid::Uuid>,
-    Form(form): Form<RoleFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
-        return redirect;
-    }
-
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    let Some(existing_role) = state.roles().find_by_id(role_id).await.ok().flatten() else {
-        return render_not_found();
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
     };
+    let name = posted.get("name").unwrap_or_default().to_string();
+    let existing_role = state.roles().find_by_id(role_id).await.ok().flatten();
 
     // Validate
     let mut errors = Vec::new();
+    if let Some(existing_role) = &existing_role {
+        if name.trim().is_empty() {
+            errors.push(ValidationError::field("name", "Role name is required."));
+        }
 
-    if form.name.trim().is_empty() {
-        errors.push(FieldError::on("name", "Role name is required."));
+        // Check if new name is taken by someone else
+        if name != existing_role.name
+            && let Ok(Some(_)) = state.roles().find_by_name(&name).await
+        {
+            errors.push(ValidationError::field(
+                "name",
+                format!("A role named '{name}' already exists."),
+            ));
+        }
     }
 
-    // Check if new name is taken by someone else
-    if form.name != existing_role.name
-        && let Ok(Some(_)) = state.roles().find_by_name(&form.name).await
-    {
-        errors.push(FieldError::on(
-            "name",
-            UiMessage::new("A role named '{name}' already exists.").arg("name", &form.name),
-        ));
+    let checked = admin_form::check(&state, &session, &user, &posted, ROLE_FORM_ID, errors).await;
+    if let Err(Err(response)) = checked {
+        return response;
     }
-
-    if !errors.is_empty() {
-        let permissions = state
-            .roles()
-            .get_permissions(role_id)
-            .await
-            .unwrap_or_default();
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
-
-        let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/people/roles/{role_id}/edit"));
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("editing", &true);
-        context.insert("role_id", &role_id.to_string());
-        context.insert("role_permissions", &permissions);
-        context.insert("errors", &errors);
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "name": form.name,
-            }),
-        );
-        context.insert("path", &format!("/admin/people/roles/{role_id}/edit"));
-
-        return render_admin_template(
-            &state,
-            &crate::routes::helpers::get_user_context(&session, &state).await,
-            "admin/role-form.html",
-            context,
-        )
-        .await;
+    if existing_role.is_none() {
+        return render_not_found();
     }
+    let form_state = match checked {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            return render_role_form(&state, &session, &user, Some(role_id), &name, &errors).await;
+        }
+        Err(Err(response)) => return response,
+    };
 
-    match state.roles().update(role_id, &form.name).await {
+    match state.roles().update(role_id, &name).await {
         Ok(_) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(role_id = %role_id, "role updated");
             Redirect::to("/admin/people/roles").into_response()
         }
@@ -1548,34 +1811,24 @@ async fn edit_role_submit(
     }
 }
 
-/// Delete a role.
-///
-/// POST /admin/people/roles/{id}/delete
-async fn delete_role(
-    State(state): State<AppState>,
-    session: Session,
-    Path(role_id): Path<uuid::Uuid>,
-    Form(form): Form<CsrfOnlyForm>,
-) -> Response {
-    let current_user = match require_permission(&state, &session, "administer users").await {
-        Ok(user) => user,
-        Err(redirect) => return redirect,
-    };
-
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
+/// Whether the actor may delete the role `role_id`, answered as the refusal
+/// when they may not: a built-in role is never deleted, and a non-superuser
+/// may delete only a role whose permissions they hold.
+async fn role_delete_refusal(
+    state: &AppState,
+    actor: &User,
+    role_id: uuid::Uuid,
+) -> Result<(), Response> {
     // Prevent deleting built-in roles
     if role_id == ANONYMOUS_ROLE_ID || role_id == AUTHENTICATED_ROLE_ID {
-        return render_error("Cannot delete built-in roles.");
+        return Err(render_error("Cannot delete built-in roles."));
     }
 
     // Deleting a role takes its permissions from every member, which is a
     // revocation, so it is held to the rule every other revocation is.
-    if !current_user.is_admin {
+    if !actor.is_admin {
         let covered = match (
-            Authority::of(&state, &current_user).await,
+            Authority::of(state, actor).await,
             state.roles().get_permissions(role_id).await,
         ) {
             (Ok(authority), Ok(role_permissions)) => authority.covers(&role_permissions),
@@ -1586,14 +1839,114 @@ async fn delete_role(
         };
         if !covered {
             tracing::warn!(
-                actor = %current_user.id,
+                actor = %actor.id,
                 role_id = %role_id,
                 "refused a role deletion carrying permissions the actor does not hold"
             );
-            return render_forbidden(
+            return Err(render_forbidden(
                 "You may not delete a role carrying permissions you do not hold.",
-            );
+            ));
         }
+    }
+    Ok(())
+}
+
+/// The form that deletes the role `role_id`, with a Cancel link back to the
+/// roles.
+fn role_delete_form(role_id: uuid::Uuid, cancel: String) -> crate::form::Form {
+    crate::form::Form::new(ROLE_DELETE_FORM_ID)
+        .action(format!("/admin/people/roles/{role_id}/delete"))
+        .element(
+            "op",
+            FormElement::submit("Delete")
+                .attribute("class", "button--danger")
+                .suffix(cancel)
+                .weight(10),
+        )
+}
+
+/// Confirm deleting a role, naming how many users hold it.
+///
+/// GET /admin/people/roles/{id}/delete
+async fn delete_role_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path(role_id): Path<uuid::Uuid>,
+) -> Response {
+    let current_user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    if let Err(refusal) = role_delete_refusal(&state, &current_user, role_id).await {
+        return refusal;
+    }
+    let Some(role) = state.roles().find_by_id(role_id).await.ok().flatten() else {
+        return render_not_found();
+    };
+    let members = state.roles().member_count(role_id).await.unwrap_or(0);
+    let cancel = cancel_link(&state, &current_user, "/admin/people/roles", "Cancel").await;
+    let form_html = match admin_form::render(
+        &state,
+        &session,
+        &current_user,
+        role_delete_form(role_id, cancel),
+        &[],
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let mut context = tera::Context::new();
+    context.insert(
+        "role",
+        &serde_json::json!({ "name": role.name, "members": members }),
+    );
+    context.insert("form", &form_html);
+    context.insert("path", "/admin/people/roles");
+    render_admin_template(
+        &state,
+        &super::helpers::user_context_for(&state, &current_user).await,
+        "admin/role-delete.html",
+        context,
+    )
+    .await
+}
+
+/// Delete a role.
+///
+/// POST /admin/people/roles/{id}/delete
+async fn delete_role(
+    State(state): State<AppState>,
+    session: Session,
+    Path(role_id): Path<uuid::Uuid>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let posted = PostedForm(pairs);
+    let current_user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &current_user,
+        &posted,
+        ROLE_DELETE_FORM_ID,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(_)) => {
+            return render_error("The form has expired. Reload the page and try again.");
+        }
+        Err(Err(response)) => return response,
+    };
+
+    if let Err(refusal) = role_delete_refusal(&state, &current_user, role_id).await {
+        return refusal;
     }
 
     // Recorded before the delete, because the cascade takes the rows with it and
@@ -1602,6 +1955,7 @@ async fn delete_role(
 
     match state.roles().delete(role_id).await {
         Ok(true) => {
+            admin_form::submitted(&state, &current_user, &form_state, &posted).await;
             tracing::info!(
                 role_id = %role_id,
                 members_unassigned = members,
@@ -1615,19 +1969,6 @@ async fn delete_role(
             render_server_error("Failed to delete role.")
         }
     }
-}
-
-/// The role ids a submitted form ticked, for re-rendering after a validation
-/// error so the operator does not lose their selection.
-fn submitted_role_ids(
-    roles: &[crate::models::Role],
-    submitted: &std::collections::HashMap<String, String>,
-) -> Vec<String> {
-    roles
-        .iter()
-        .filter(|role| submitted.contains_key(&format!("role_{}", role.id)))
-        .map(|role| role.id.to_string())
-        .collect()
 }
 
 /// Apply the role checkboxes a user form submitted.
@@ -1815,9 +2156,10 @@ fn grid_permissions(state: &AppState) -> Vec<GridPermission> {
 ///
 /// GET /admin/people/permissions
 async fn permissions_matrix(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer users").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let roles = match state.roles().list().await {
         Ok(roles) => roles,
@@ -1839,15 +2181,23 @@ async fn permissions_matrix(State(state): State<AppState>, session: Session) -> 
         role_permissions.insert(role.id.to_string(), perms);
     }
 
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
+    // The grid itself stays in the page's table: its checkboxes and the
+    // hidden permission names join this form through their `form`
+    // attribute, so the form holds only the button.
+    let form = crate::form::Form::new(PERMISSIONS_FORM_ID)
+        .action("/admin/people/permissions")
+        .element("op", FormElement::submit("Save permissions").weight(10));
+    let form_html = match admin_form::render(&state, &session, &user, form, &[]).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
 
     let mut context = tera::Context::new();
     context.insert("roles", &roles);
     context.insert("role_permissions", &role_permissions);
     context.insert("available_permissions", &grid_permissions(&state));
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
+    context.insert("form", &form_html);
+    context.insert("form_id", PERMISSIONS_FORM_ID);
     context.insert("path", "/admin/people/permissions");
 
     render_admin_template(
@@ -1865,17 +2215,31 @@ async fn permissions_matrix(State(state): State<AppState>, session: Session) -> 
 async fn save_permissions(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<PermissionFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = PostedForm(pairs);
     let current_user = match require_permission(&state, &session, "administer users").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
 
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &current_user,
+        &posted,
+        PERMISSIONS_FORM_ID,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(_)) => {
+            return render_error("The form has expired. Reload the page and try again.");
+        }
+        Err(Err(response)) => return response,
+    };
+    let submitted = posted_map(&posted);
 
     let roles = match state.roles().list().await {
         Ok(roles) => roles,
@@ -1903,7 +2267,7 @@ async fn save_permissions(
     // the save.
     let mut rendered: Vec<(usize, String)> = Vec::new();
     for index in 0usize.. {
-        let Some(name) = form.permissions.get(&format!("permname_{index}")) else {
+        let Some(name) = submitted.get(&format!("permname_{index}")) else {
             break;
         };
         rendered.push((index, name.clone()));
@@ -1967,10 +2331,7 @@ async fn save_permissions(
         .map(|role| {
             let wanted = rendered
                 .iter()
-                .filter(|(index, _)| {
-                    form.permissions
-                        .contains_key(&format!("perm_{index}_{}", role.id))
-                })
+                .filter(|(index, _)| submitted.contains_key(&format!("perm_{index}_{}", role.id)))
                 .map(|(_, name)| name.clone())
                 .collect();
             (role.id, wanted)
@@ -1989,6 +2350,7 @@ async fn save_permissions(
         return render_server_error("Failed to save permissions.");
     }
 
+    admin_form::submitted(&state, &current_user, &form_state, &posted).await;
     tracing::info!(rendered = rendered_names.len(), "permissions updated");
     Redirect::to("/admin/people/permissions").into_response()
 }
@@ -2005,8 +2367,15 @@ pub fn router() -> Router<AppState> {
             "/admin/people/{id}/edit",
             get(edit_user_form).post(edit_user_submit),
         )
-        .route("/admin/people/{id}/delete", post(delete_user))
+        .route(
+            "/admin/people/{id}/delete",
+            get(delete_user_form).post(delete_user),
+        )
         .route("/user/{id}/cancel", get(cancel_form).post(cancel_submit))
+        .route(
+            "/admin/people/{id}/cancel",
+            get(cancel_form).post(cancel_submit),
+        )
         .route("/admin/people/roles", get(list_roles))
         .route(
             "/admin/people/roles/add",
@@ -2016,7 +2385,10 @@ pub fn router() -> Router<AppState> {
             "/admin/people/roles/{id}/edit",
             get(edit_role_form).post(edit_role_submit),
         )
-        .route("/admin/people/roles/{id}/delete", post(delete_role))
+        .route(
+            "/admin/people/roles/{id}/delete",
+            get(delete_role_form).post(delete_role),
+        )
         .route(
             "/admin/people/permissions",
             get(permissions_matrix).post(save_permissions),

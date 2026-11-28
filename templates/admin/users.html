@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {#- The people listing. `list` is its filter, sort and page
@@ -14,11 +13,9 @@
 {% endif %}
 
 <div class="admin-card">
-    {{ list::filter_start(action="/admin/people", label=t(s="Filter users")) }}
-        {{ form::field(name="q", type="search", label=t(s="Name or email contains"), value=list.q, width="20", wrapper="filter-item") }}
-    {{ list::filter_end(list=list, action="/admin/people") }}
+    {{ filter_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::admin_list::render_forms); every value is escaped by the form templates #}
 </div>
-{{ list::sort_form(list=list, action="/admin/people") }}
+{{ sort_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
 {% if users %}
 <div class="admin-card">
@@ -53,7 +50,7 @@
                     <td class="operations">
                         <a href="/admin/people/{{ user.id }}/edit">{{ t(s="Edit {name}", name=user.name) }}</a>
                         {% if user.id != "00000000-0000-0000-0000-000000000000" %}
-                        {{ list::delete_button(action="/admin/people/" ~ user.id ~ "/delete", label=t(s="Delete {name}", name=user.name), confirm_text=t(s="Delete the user {name}?", name=user.name), csrf_token=csrf_token) }}
+                        <a class="link-button link-button--danger" href="/admin/people/{{ user.id }}/delete">{{ t(s="Delete {name}", name=user.name) }}</a>
                         {% endif %}
                     </td>
                 </tr>

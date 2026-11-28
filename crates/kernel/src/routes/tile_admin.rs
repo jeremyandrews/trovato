@@ -571,9 +571,10 @@ async fn list_tiles(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     // Tiles keep their render order (region, then weight), so the listing
     // is filtered and paged but has no sort.
@@ -594,8 +595,25 @@ async fn list_tiles(
         by_region.entry(tile.region.clone()).or_default().push(tile);
     }
 
+    let list = query.view(total, tiles.len(), None);
+    let forms = match super::admin_list::render_forms(
+        &state,
+        &session,
+        &user,
+        &list,
+        BASE,
+        "Filter tiles",
+        "Label, machine name, type or region contains",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
-    context.insert("list", &query.view(total, tiles.len(), None));
+    forms.insert_into(&mut context);
+    context.insert("list", &list);
     context.insert("tiles", &tiles);
     context.insert("by_region", &by_region);
     context.insert("path", BASE);

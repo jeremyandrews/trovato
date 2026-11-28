@@ -2041,22 +2041,25 @@ async fn previous_release_serves_on_this_schema() {
 }
 
 /// Run the web installer: an administrator, then the site name, each form
-/// fetched first for its CSRF token and the session cookie that holds it.
+/// fetched first for its CSRF token, its build id and the session cookie that
+/// holds the token.
 async fn install(base: &str, admin: &str, password: &str) {
     let client = http();
     let mut cookies = String::new();
-    let (token, jar) = installer_form(&client, base, "/install/admin", &cookies).await;
+    let (mut body, jar) = installer_form(&client, base, "/install/admin", &cookies).await;
     cookies = jar;
+    for (name, value) in [
+        ("username", admin),
+        ("email", "admin@rollback.test"),
+        ("password", password),
+        ("password_confirm", password),
+    ] {
+        body.push((name.to_string(), value.to_string()));
+    }
     let response = client
         .post(format!("{base}/install/admin"))
         .header("cookie", &cookies)
-        .form(&[
-            ("_token", token.as_str()),
-            ("username", admin),
-            ("email", "admin@rollback.test"),
-            ("password", password),
-            ("password_confirm", password),
-        ])
+        .form(&body)
         .send()
         .await
         .unwrap();
@@ -2065,11 +2068,12 @@ async fn install(base: &str, admin: &str, password: &str) {
         "install admin: {}",
         response.status()
     );
-    let (token, _) = installer_form(&client, base, "/install/site", &cookies).await;
+    let (mut body, _) = installer_form(&client, base, "/install/site", &cookies).await;
+    body.push(("site_name".to_string(), "Rollback".to_string()));
     let response = client
         .post(format!("{base}/install/site"))
         .header("cookie", &cookies)
-        .form(&[("_token", token.as_str()), ("site_name", "Rollback")])
+        .form(&body)
         .send()
         .await
         .unwrap();
@@ -2080,16 +2084,17 @@ async fn install(base: &str, admin: &str, password: &str) {
     );
 }
 
-/// GET an installer form: its `_token` (empty if it has none) and the cookies
-/// to send with it, `cookies` updated by any the answer set. The session
-/// cookie is `Secure`, so a reqwest cookie store would not send it back over
-/// plain HTTP; it is carried by hand.
+/// GET an installer form: its hidden `_token` and `_form_build_id`, as the
+/// pairs a browser posts back (those it has), and the cookies to send with
+/// it, `cookies` updated by any the answer set. The session cookie is
+/// `Secure`, so a reqwest cookie store would not send it back over plain
+/// HTTP; it is carried by hand.
 async fn installer_form(
     client: &reqwest::Client,
     base: &str,
     path: &str,
     cookies: &str,
-) -> (String, String) {
+) -> (Vec<(String, String)>, String) {
     let response = client
         .get(format!("{base}{path}"))
         .header("cookie", cookies)
@@ -2110,12 +2115,16 @@ async fn installer_form(
         set.join("; ")
     };
     let html = response.text().await.unwrap();
-    let marker = "name=\"_token\" value=\"";
-    let token = html
-        .find(marker)
-        .map(|at| &html[at + marker.len()..])
-        .and_then(|rest| rest.split('"').next())
-        .unwrap_or_default()
-        .to_string();
-    (token, jar)
+    let hidden = ["_token", "_form_build_id"]
+        .into_iter()
+        .filter_map(|name| {
+            let marker = format!("name=\"{name}\" value=\"");
+            let value = html
+                .find(&marker)
+                .map(|at| &html[at + marker.len()..])
+                .and_then(|rest| rest.split('"').next())?;
+            Some((name.to_string(), value.to_string()))
+        })
+        .collect();
+    (hidden, jar)
 }

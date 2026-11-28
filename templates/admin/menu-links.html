@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {#- A menu's links, in tree order. `list` is the filter and page
@@ -17,9 +16,7 @@
 {% set action = "/admin/structure/menus/" ~ menu_name %}
 {% if rows or list.filtered %}
 <div class="admin-card">
-    {{ list::filter_start(action=action, label=t(s="Filter links")) }}
-        {{ form::field(name="q", type="search", label=t(s="Title or path contains"), value=list.q, width="20", wrapper="filter-item") }}
-    {{ list::filter_end(list=list, action=action) }}
+    {{ filter_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::admin_list::render_forms); every value is escaped by the form templates #}
 </div>
 {% endif %}
 {% if rows %}

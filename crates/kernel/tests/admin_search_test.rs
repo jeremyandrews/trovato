@@ -67,12 +67,6 @@ async fn post_form(app: &TestApp, cookies: &str, uri: &str, form: String) -> Sta
     .status()
 }
 
-fn token(html: &str) -> String {
-    let needle = r#"name="_token" value=""#;
-    let at = html.find(needle).expect("a form token") + needle.len();
-    html[at..at + html[at..].find('"').unwrap()].to_string()
-}
-
 /// An administrator's session; the account goes when the test ends.
 async fn admin(app: &TestApp) -> String {
     let name = common::username("asadmin");
@@ -445,8 +439,8 @@ fn the_search_shortcuts_are_saved_and_reach_the_palette_button() {
             &cookies,
             "/admin/preferences",
             format!(
-                "_token={}&theme=system&language=&search_key=ctrl-k",
-                urlencoding::encode(&token(&form))
+                "{}&theme=system&language=&search_key=ctrl-k",
+                common::form_fields(&form, "admin_preferences_form")
             ),
         )
         .await;
@@ -462,8 +456,8 @@ fn the_search_shortcuts_are_saved_and_reach_the_palette_button() {
             &cookies,
             "/admin/preferences",
             format!(
-                "_token={}&theme=system&language=&search_slash=1&search_key=nonsense",
-                urlencoding::encode(&token(&form))
+                "{}&theme=system&language=&search_slash=1&search_key=nonsense",
+                common::form_fields(&form, "admin_preferences_form")
             ),
         )
         .await;

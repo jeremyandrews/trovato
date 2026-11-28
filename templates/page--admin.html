@@ -51,11 +51,9 @@
         <span>{{ t(s="Menu") }}</span>
     </button>
 
-    <form class="admin-search" role="search" action="/admin/search" method="get">
-        <label class="visually-hidden" for="admin-search-q">{{ t(s="Search the administration") }}</label>
-        <input class="admin-search__input" id="admin-search-q" type="search" name="q" value="{{ q | default(value='') }}" autocomplete="off" spellcheck="false">
-        <button class="button admin-search__button" type="submit">{{ t(s="Search") }}</button>
-    </form>
+    {#- The banner's search form, built through the form pipeline
+        (admin_nav::insert_context). -#}
+    {{ admin_search_form | default(value="") | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
     {#- The command palette's button: shown by admin-palette.js. Without
         JavaScript the search form above does the same job. The shortcuts
@@ -183,19 +181,7 @@
     combobox and its listbox of grouped results. It stays closed without
     JavaScript, where the banner's search form leads to the same results. -#}
 <dialog class="admin-palette" id="admin-palette" aria-labelledby="admin-palette-title">
-    <form class="admin-palette__form" role="search" method="get" action="/admin/search">
-        <h2 class="admin-palette__title" id="admin-palette-title">{{ t(s="Quick search") }}</h2>
-        <label class="admin-palette__label" for="admin-palette-q">{{ t(s="Search the administration") }}</label>
-        <input class="admin-palette__input" id="admin-palette-q" type="text" name="q" autocomplete="off" spellcheck="false"
-            role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="admin-palette-results" aria-describedby="admin-palette-help">
-        <p class="admin-palette__help hint" id="admin-palette-help">{{ t(s="Up and Down move through the results, Enter opens one, Escape closes.") }}</p>
-        <div class="admin-palette__results" id="admin-palette-results" role="listbox" aria-label="{{ t(s="Results") }}" hidden></div>
-        <p class="admin-palette__count" id="admin-palette-count" role="status"></p>
-        <div class="admin-palette__actions">
-            <button class="button" type="submit">{{ t(s="All results") }}</button>
-            <button class="button button--secondary" type="button" data-palette-close>{{ t(s="Close") }}</button>
-        </div>
-    </form>
+    {{ admin_palette_form | default(value="") | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </dialog>
 
 {#- The words the admin's scripts show, translated: admin-shell.js reads

@@ -34,7 +34,7 @@ const PAGE_TYPES = {
   'form-settings': '/admin/config/site',
   'form-errors': async (page) => {
     await page.goto('/admin/people/roles/add');
-    await Promise.all([page.waitForLoadState('load'), page.locator('form#role-form [type=submit]').click()]);
+    await Promise.all([page.waitForLoadState('load'), page.locator('form#role_form [type=submit]').click()]);
   },
   // The listing pattern: filtered and sorted, and the confirmation page a
   // Delete leads to.

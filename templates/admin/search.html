@@ -1,7 +1,7 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {#- Admin search results, grouped under headings: Pages, Settings, Content,
-    People, Plugins, Log messages (routes::admin_search_index). Context: q,
+    People, Plugins, Log messages (routes::admin_search_index). Context: form
+    (the search form, built by routes::admin_shell), q,
     count, groups (key, title, hits, more); each hit has label, translate,
     context (a message) and href. The command palette shows the same results
     (GET /admin/search/suggest). -#}
@@ -10,10 +10,7 @@
 {% block page_intro %}<p class="page-intro">{{ t(s="Find pages, settings, content, people, plugins and log messages. Only what you may open is listed.") }}</p>{% endblock page_intro %}
 
 {% block content %}
-<form class="search-page-form" role="search" action="/admin/search" method="get" aria-label="{{ t(s='Search again') }}">
-    {{ form::field(name="q", id="admin-search-page-q", type="search", label=t(s="Search for"), value=q, width="30", autocomplete="off") }}
-    <button class="button button--primary" type="submit">{{ t(s="Search") }}</button>
-</form>
+{{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
 {% if q %}
 <p class="result-count" role="status">{{ t(s="{count} result", plural="{count} results", count=count) }}</p>

@@ -292,29 +292,28 @@ default language; `lang` and `dir` on `<html>` follow it.
 
 ## 8. Form pattern
 
-**One presentation layer: the macros.** Every admin field is drawn by
-`templates/admin/macros/form.html`. Hand-written admin forms call its macros
+**One pipeline, one presentation layer.** Every admin form is a `Form` built
+by `FormService::build` (its CSRF token, `tap_form_alter`), drawn by the form
+renderer and checked by `FormService::process` (B83c): the helpers are
+`routes::admin_form::render` and `check`, and a listing's filter and sort
+forms come from `routes::admin_list::render_forms`. A form with an `/admin`
+action renders through `templates/admin/form/*.html`, which do nothing but map
+the element onto the field macros in `templates/admin/macros/form.html`
 (`field`, `textarea`, `select`, `checkbox`, `choices`, `fieldset_start` and
-`fieldset_end`, `details_start` and `details_end`, `effect`, `actions`,
-`error_summary`).
+`fieldset_end`, `error_summary`). A group of fields whose names come from data
+(the gather builder, an AI provider's model rows, the assistant's scopes) is a
+partial that calls the same macros, rendered into its pipeline form as one
+markup element. No template writes a `<form>`: the renderer marks every form it
+draws with `data-form-pipeline`, and `form_marker_test` opens every page and
+fails on a form without the mark.
 
-A form built in Rust with an `/admin` action renders through
-`templates/admin/form/*.html`. Those templates do nothing but map the element
-onto the same macros. So the two kinds of form produce identical markup, and
-a test (`admin_forms_test::hand_written_and_builder_fields_are_the_same_markup`)
-compares them.
+Before B83c, about forty admin forms were written by hand in Tera and called
+the macros directly, checking a token and nothing else; no plugin could alter,
+validate or hear of them. A row's delete, which was a small form posting to
+the generic confirmation page, is now a link to a confirmation page of its own.
 
-The alternative was moving every hand-written form onto the Rust builder. It
-was rejected for three reasons:
-- About forty forms with their own handlers would have been rewritten,
-  validation and all, for no difference a person can see or hear.
-- Several of those forms are grids or listings with inline controls, which
-  the builder does not model.
-- The macros keep each form's markup readable where it is.
-
-The front end's form templates (`templates/form/*.html`) are not changed. A
-form whose action is not under `/admin` renders exactly as before, and a
-golden test proves it. No admin template may draw a field by hand:
+A form whose action is not under `/admin` renders through the front end's form
+templates (`templates/form/*.html`), and a golden test pins their markup. No admin template may draw a field by hand:
 `admin_forms_test::no_admin_form_is_left_outside_the_pattern` fails on a
 hand-written `<label>` (other than a visually hidden one in a grid cell),
 `<select>`, `<textarea>`, `<legend>` or `form-item` block, an inline `on…=`

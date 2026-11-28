@@ -251,10 +251,17 @@ impl Client {
         })
     }
 
-    /// A form post carrying a fresh `_token` (minted on the same node).
-    async fn submit(&self, on: On, path: &str, fields: &[(&str, String)]) -> Resp {
-        let token = self.csrf(on).await;
-        let mut all = vec![("_token", token), ("_form_build_id", "x".to_string())];
+    /// The pipeline form `form_id` the page at `path` serves on `on`, posted
+    /// back to `path` with its own `_token` and `_form_build_id` and `fields`.
+    async fn submit_form(
+        &self,
+        on: On,
+        path: &str,
+        form_id: &str,
+        fields: &[(&str, String)],
+    ) -> Resp {
+        let page = self.get(on, path).await;
+        let mut all: Vec<(&str, String)> = pipeline_fields(&page.body, form_id);
         all.extend(fields.iter().cloned());
         self.post_form(on, path, &all).await
     }
@@ -365,7 +372,8 @@ async fn install(client: &Client) {
             On::Any,
             "/install/admin",
             &[
-                ("_token", form_token(&form.body)),
+                ("_token", hidden_value(&form.body, "_token")),
+                ("_form_build_id", hidden_value(&form.body, "_form_build_id")),
                 ("username", ADMIN_NAME.to_string()),
                 ("email", "admin@cluster.test".to_string()),
                 ("password", ADMIN_PASSWORD.to_string()),
@@ -384,7 +392,8 @@ async fn install(client: &Client) {
             On::Any,
             "/install/site",
             &[
-                ("_token", form_token(&form.body)),
+                ("_token", hidden_value(&form.body, "_token")),
+                ("_form_build_id", hidden_value(&form.body, "_form_build_id")),
                 ("site_name", "Cluster".to_string()),
             ],
         )
@@ -392,10 +401,12 @@ async fn install(client: &Client) {
     assert!(site.status.is_redirection(), "install site: {}", site.body);
 }
 
-/// The `_token` an installer form carries, or nothing if it carries none.
-fn form_token(html: &str) -> String {
-    let marker = "name=\"_token\" value=\"";
-    html.find(marker)
+/// The value of the hidden field `name` an installer form carries (its
+/// `_token`, its `_form_build_id`), or nothing if it carries none. The form
+/// may be posted to either server: its saved state is in the shared database.
+fn hidden_value(html: &str, name: &str) -> String {
+    let marker = format!("name=\"{name}\" value=\"");
+    html.find(&marker)
         .map(|at| &html[at + marker.len()..])
         .and_then(|rest| rest.split('"').next())
         .unwrap_or_default()
@@ -532,7 +543,10 @@ async fn create_user(
         ("password", password.to_string()),
     ];
     fields.extend(extra.iter().cloned());
-    let created = c.admin.submit(On::A, "/admin/people/add", &fields).await;
+    let created = c
+        .admin
+        .submit_form(On::A, "/admin/people/add", "user_form", &fields)
+        .await;
     assert!(
         created.status.is_redirection(),
         "create user: {}",
@@ -545,9 +559,10 @@ async fn create_user(
 async fn create_role_with(c: &Cluster, name: &str, permission: &str) -> uuid::Uuid {
     let created = c
         .admin
-        .submit(
+        .submit_form(
             On::A,
             "/admin/people/roles/add",
+            "role_form",
             &[("name", name.to_string())],
         )
         .await;
@@ -581,7 +596,12 @@ async fn create_role_with(c: &Cluster, name: &str, permission: &str) -> uuid::Uu
     }
     let saved = c
         .admin
-        .submit(On::A, "/admin/people/permissions", &fields)
+        .submit_form(
+            On::A,
+            "/admin/people/permissions",
+            "permissions_form",
+            &fields,
+        )
         .await;
     assert!(saved.status.is_redirection(), "grant: {}", saved.body);
     role
@@ -694,9 +714,10 @@ async fn s01_role_revoked_on_a_refuses_on_b() {
     // Every field resent except the role: the role is revoked.
     let revoked = c
         .admin
-        .submit(
+        .submit_form(
             On::A,
             &format!("/admin/people/{uid}/edit"),
+            "user_form",
             &[
                 ("name", name.clone()),
                 ("mail", format!("{name}@cluster.test")),
@@ -735,9 +756,10 @@ async fn s02_user_blocked_on_a_is_refused_on_b() {
     // No `status` field: the account is blocked.
     let blocked = c
         .admin
-        .submit(
+        .submit_form(
             On::A,
             &format!("/admin/people/{uid}/edit"),
+            "user_form",
             &[
                 ("name", name.clone()),
                 ("mail", format!("{name}@cluster.test")),
@@ -783,18 +805,11 @@ async fn s03_session_form_and_passkey_cross_nodes() {
     assert_eq!(page.served_by(), "b");
 
     let form = user.get(On::A, "/admin/people/roles/add").await;
-    let token = csrf_in(&form.body).expect("form token");
+    let mut fields: Vec<(&str, String)> = pipeline_fields(&form.body, "role_form");
     let role = format!("cross node {}", unique());
+    fields.push(("name", role.clone()));
     let posted = user
-        .post_form(
-            On::B,
-            "/admin/people/roles/add",
-            &[
-                ("_token", token),
-                ("_form_build_id", "x".to_string()),
-                ("name", role.clone()),
-            ],
-        )
+        .post_form(On::B, "/admin/people/roles/add", &fields)
         .await;
     assert!(
         posted.status.is_redirection(),
@@ -1076,19 +1091,19 @@ async fn s05_cache_invalidated_on_a_misses_on_b() {
     let before = followups(&c, On::B).await;
     let _ = followups(&c, On::B).await;
     let next = if before == json!(4) { 5 } else { 4 };
+    // The settings form is a pipeline form: post what its page built.
+    let settings = c.admin.get_html(On::A, "/admin/config/search").await;
+    let mut fields = pipeline_fields(&settings.body, "search_settings_form");
+    fields.extend([
+        ("expand", "on".to_string()),
+        ("summarize", "on".to_string()),
+        ("followup", "on".to_string()),
+        ("analytics_enabled", "on".to_string()),
+        ("max_followups", next.to_string()),
+    ]);
     let saved = c
         .admin
-        .submit(
-            On::A,
-            "/admin/config/search",
-            &[
-                ("expand", "on".to_string()),
-                ("summarize", "on".to_string()),
-                ("followup", "on".to_string()),
-                ("analytics_enabled", "on".to_string()),
-                ("max_followups", next.to_string()),
-            ],
-        )
+        .post_form(On::A, "/admin/config/search", &fields)
         .await;
     assert!(
         saved.status.is_redirection(),
@@ -1277,20 +1292,20 @@ async fn s09_chat_limit_is_shared() {
     let _serial = SERIAL.lock().await;
     let Some(c) = cluster().await else { return };
     let limit = 3;
+    // The chat settings are a pipeline form: post what its page built.
+    let page = c.admin.get_html(On::A, "/admin/system/ai-chat").await;
+    let mut fields = pipeline_fields(&page.body, "ai_chat_config_form");
+    fields.extend([
+        ("system_prompt", "You are a test.".to_string()),
+        ("rag_max_results", "5".to_string()),
+        ("rag_min_score", "0.3".to_string()),
+        ("max_history_turns", "5".to_string()),
+        ("rate_limit_per_hour", limit.to_string()),
+        ("max_tokens", "256".to_string()),
+    ]);
     let saved = c
         .admin
-        .submit(
-            On::A,
-            "/admin/system/ai-chat",
-            &[
-                ("system_prompt", "You are a test.".to_string()),
-                ("rag_max_results", "5".to_string()),
-                ("rag_min_score", "0.3".to_string()),
-                ("max_history_turns", "5".to_string()),
-                ("rate_limit_per_hour", limit.to_string()),
-                ("max_tokens", "256".to_string()),
-            ],
-        )
+        .post_form(On::A, "/admin/system/ai-chat", &fields)
         .await;
     assert!(
         saved.status.is_redirection(),
@@ -1533,18 +1548,11 @@ async fn s13_plugin_disable_waits_for_restart() {
     }
 
     let page = c.admin.get(On::A, "/admin/plugins").await;
-    let token = csrf_in(&page.body).expect("plugin page token");
+    let mut fields = pipeline_fields(&page.body, "plugin_toggle_form");
+    fields.push(("disable", "trovato_categories".to_string()));
     let toggled = c
         .admin
-        .post_form(
-            On::A,
-            "/admin/plugins/toggle",
-            &[
-                ("_token", token),
-                ("plugin_name", "trovato_categories".to_string()),
-                ("action", "disable".to_string()),
-            ],
-        )
+        .post_form(On::A, "/admin/plugins/toggle", &fields)
         .await;
     assert!(toggled.status.is_redirection(), "disable: {}", toggled.body);
 

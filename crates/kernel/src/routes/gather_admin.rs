@@ -486,8 +486,25 @@ async fn list_queries(
         }
     };
 
+    let list = query.view(total, queries.len(), Some(&sort));
+    let forms = match super::admin_list::render_forms(
+        &state,
+        &session,
+        &user,
+        &list,
+        BASE,
+        "Filter gather queries",
+        "Label, ID, table or plugin contains",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
-    context.insert("list", &query.view(total, queries.len(), Some(&sort)));
+    forms.insert_into(&mut context);
+    context.insert("list", &list);
     context.insert("queries", &queries);
     context.insert("clone_form", &clone_form);
     context.insert("clone_form_id", CLONE_FORM_ID);

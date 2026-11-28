@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {#- The menu listing. `list` is its filter, sort and page
@@ -11,11 +10,9 @@
 <p>{{ t(s="A menu is a set of links. {main} and {footer} are the two this theme renders; a menu under any other name is stored and listed here, but nothing displays it until a template asks for it.", main="main", footer="footer") }}</p>
 
 <div class="admin-card">
-    {{ list::filter_start(action="/admin/structure/menus", label=t(s="Filter menus")) }}
-        {{ form::field(name="q", type="search", label=t(s="Menu name contains"), value=list.q, width="20", wrapper="filter-item") }}
-    {{ list::filter_end(list=list, action="/admin/structure/menus") }}
+    {{ filter_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::admin_list::render_forms); every value is escaped by the form templates #}
 </div>
-{{ list::sort_form(list=list, action="/admin/structure/menus") }}
+{{ sort_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
 {% if menus %}
 <div class="admin-card">

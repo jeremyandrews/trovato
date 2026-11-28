@@ -122,7 +122,7 @@ pub const SETTINGS: &[Setting] = &[
     ),
     setting(
         SITE,
-        "reg_open",
+        "registration_mode",
         "User registration",
         "",
         "sign up signup register accounts",
@@ -185,14 +185,14 @@ pub const SETTINGS: &[Setting] = &[
     ),
     setting(
         RECOVERY,
-        "email-enabled",
+        "email_enabled",
         "Emailed recovery code",
         "Sends a one-time code to the address on the account. Phishable.",
         "password reset lost account",
     ),
     setting(
         RECOVERY,
-        "codes-enabled",
+        "codes_enabled",
         "Saved recovery codes",
         "Users generate codes and keep them. No email, no second device.",
         "backup codes lost account",
@@ -206,7 +206,7 @@ pub const SETTINGS: &[Setting] = &[
     ),
     setting(
         PREFERENCES,
-        "admin-language",
+        "language",
         "Administration language",
         "The language these pages are shown in. It does not change the language of your content.",
         "locale translation",

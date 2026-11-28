@@ -66,16 +66,6 @@ async fn post_form(app: &TestApp, path: &str, cookies: &str, body: String, ip: &
     answer(app.request_with_cookies(request, cookies).await).await
 }
 
-fn hidden(page: &str, name: &str) -> String {
-    let marker = format!(r#"name="{name}" value=""#);
-    let start = page
-        .find(&marker)
-        .unwrap_or_else(|| panic!("no {name}: {page}"))
-        + marker.len();
-    let end = page[start..].find('"').unwrap();
-    page[start..start + end].to_string()
-}
-
 fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -317,12 +307,12 @@ fn notify_user_of_new_account_makes_a_one_time_sign_in_link() {
             "{}",
             form.body
         );
-        let token = hidden(&form.body, "_token");
+        let fields = common::form_fields(&form.body, "user_form");
 
         let name = common::username("b156-welcomed");
         delete_user_named_on_exit(app, &name);
         let body = format!(
-            "_token={token}&_form_build_id=x&name={}&mail={}&password=long-enough-pass-1&status=1&notify=1",
+            "{fields}&name={}&mail={}&password=long-enough-pass-1&status=1&notify=1",
             enc(&name),
             enc(&format!("{name}@example.com"))
         );
@@ -390,12 +380,12 @@ async fn item_by(app: &TestApp, author: Uuid, status: i16) -> Uuid {
 async fn cancel(app: &TestApp, cookies: &str, target: Uuid, method: &str) -> Answer {
     let form = get(app, &format!("/user/{target}/cancel"), cookies).await;
     assert_eq!(form.status, StatusCode::OK, "{}", form.body);
-    let token = hidden(&form.body, "_token");
+    let fields = common::form_fields(&form.body, "user_cancel_form");
     post_form(
         app,
         &format!("/user/{target}/cancel"),
         cookies,
-        format!("_token={token}&method={method}"),
+        format!("{fields}&method={method}"),
         &test_ip_for("b156-cancel"),
     )
     .await

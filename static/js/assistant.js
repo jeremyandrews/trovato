@@ -1,7 +1,8 @@
 /* AI Assistant conversation page: progressive enhancement.
  *
- * The page works without this file. Proposal cards and Start over are plain
- * forms with a `_token` field, and the server redirects back to the page. What
+ * The page works without this file. Proposal cards' buttons and Start over
+ * submit plain forms with a `_token` field, and the server redirects back to
+ * the page. What
  * this adds is the one thing a form cannot do: consume the SSE stream a turn
  * produces, so a tool call and a proposal appear as they happen rather than
  * after a reload.
@@ -20,7 +21,9 @@
     var csrfToken = root.getAttribute('data-csrf-token');
     var transcript = document.getElementById('assistant-transcript');
     var composer = document.getElementById('assistant-composer');
-    var textarea = document.getElementById('assistant-message');
+    var textarea = composer ? composer.querySelector('textarea[name="message"]') : null;
+    /* The one form every proposal card's buttons belong to (form=). */
+    var proposalFormId = 'assistant_proposal_form';
 
     /* CSRF tokens are single use. Every response to a post carries the next
      * one in an X-CSRF-Token header; take it, and give it to the plain forms
@@ -99,37 +102,33 @@
         appendEntry(item);
     }
 
+    /* A card's button, joined to the page's proposal form (form=) and posting
+     * to its own proposal's address (formaction), as the server renders it. */
     function proposalButton(proposalId, action, label, className) {
-        var form = document.createElement('form');
-        form.method = 'post';
-        form.action = '/api/v1/assistant/' + conversationId + '/proposals/' + proposalId + '/' + action;
-        var token = document.createElement('input');
-        token.type = 'hidden';
-        token.name = '_token';
-        token.value = csrfToken;
-        form.appendChild(token);
         var button = el('button', className, label);
         button.type = 'submit';
-        form.appendChild(button);
-        enhanceProposalForm(form);
-        return form;
+        button.setAttribute('form', proposalFormId);
+        button.setAttribute('formaction',
+            '/api/v1/assistant/' + conversationId + '/proposals/' + proposalId + '/' + action);
+        enhanceProposalButton(button);
+        return button;
     }
 
-    /* Turn a proposal form into a fetch that updates the card in place.
-     * On any failure it falls back to submitting the form for real, which is
-     * the server path the page ships with. */
-    function enhanceProposalForm(form) {
-        form.addEventListener('submit', function (submitEvent) {
-            /* Once the fetch path has failed, this flag lets the next submit
-             * through to the browser, which posts the form the server way. */
-            if (form.dataset.fallback === 'yes') {
+    /* Turn a proposal button into a fetch that updates the card in place.
+     * On any failure it falls back to submitting the proposal form for real
+     * to the button's address, which is the server path the page ships with. */
+    function enhanceProposalButton(button) {
+        button.addEventListener('click', function (clickEvent) {
+            var form = button.form;
+            if (!form) {
                 return;
             }
-            submitEvent.preventDefault();
-            var card = form.closest('.assistant-proposal');
-            setBusy(form, true);
+            clickEvent.preventDefault();
+            var card = button.closest('.assistant-proposal');
+            var actions = button.closest('.assistant-proposal__actions');
+            setBusy(actions, true);
 
-            fetch(form.action, {
+            fetch(button.formAction, {
                 method: 'POST',
                 headers: { 'X-CSRF-Token': csrfToken },
                 credentials: 'same-origin'
@@ -143,12 +142,13 @@
                 })
                 .then(function (body) {
                     updateCard(card, body);
-                    setBusy(form, false);
+                    setBusy(actions, false);
                 })
                 .catch(function () {
-                    /* Let the browser do it the plain way. */
-                    form.dataset.fallback = 'yes';
-                    setBusy(form, false);
+                    /* Let the browser do it the plain way: submit() posts the
+                     * form without a submit event, to this button's address. */
+                    setBusy(actions, false);
+                    form.action = button.formAction;
                     form.submit();
                 });
         });
@@ -179,8 +179,11 @@
         }
     }
 
-    function setBusy(form, busy) {
-        var buttons = form.querySelectorAll('button');
+    function setBusy(container, busy) {
+        if (!container) {
+            return;
+        }
+        var buttons = container.querySelectorAll('button');
         for (var i = 0; i < buttons.length; i += 1) {
             buttons[i].disabled = busy;
         }
@@ -299,9 +302,9 @@
         });
     }
 
-    var existing = document.querySelectorAll('.assistant-proposal__actions form');
+    var existing = document.querySelectorAll('.assistant-proposal__actions button');
     for (var i = 0; i < existing.length; i += 1) {
-        enhanceProposalForm(existing[i]);
+        enhanceProposalButton(existing[i]);
     }
 
     var suggestions = document.querySelectorAll('.assistant__suggestion');

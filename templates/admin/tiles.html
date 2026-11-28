@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {#- The tile listing, by region in render order. `list` is the filter and
@@ -11,9 +10,7 @@
 
 {% block content %}
 <div class="admin-card">
-    {{ list::filter_start(action="/admin/structure/tiles", label=t(s="Filter tiles")) }}
-        {{ form::field(name="q", type="search", label=t(s="Label, machine name, type or region contains"), value=list.q, width="20", wrapper="filter-item") }}
-    {{ list::filter_end(list=list, action="/admin/structure/tiles") }}
+    {{ filter_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::admin_list::render_forms); every value is escaped by the form templates #}
 </div>
 
 {% if tiles | length == 0 %}

@@ -221,8 +221,25 @@ async fn list_categories(
     let total = i64::try_from(categories.len()).unwrap_or(i64::MAX);
     let categories = page_of(&categories, &query);
 
+    let list = query.view(total, categories.len(), Some(&sort));
+    let forms = match super::admin_list::render_forms(
+        &state,
+        &session,
+        &user,
+        &list,
+        CATEGORIES,
+        "Filter categories",
+        "Name or machine name contains",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
-    context.insert("list", &query.view(total, categories.len(), Some(&sort)));
+    forms.insert_into(&mut context);
+    context.insert("list", &list);
     context.insert("categories", &categories);
     context.insert("tag_counts", &tag_counts);
     // Adding, editing and deleting a category are offered to whoever
@@ -781,6 +798,7 @@ async fn list_tags(
     term_list(
         &state,
         &session,
+        &user,
         &category,
         &site_urls(&state, &user, &category_id).await,
         &params,
@@ -920,6 +938,7 @@ async fn delete_tag(
 pub(crate) async fn term_list(
     state: &AppState,
     session: &Session,
+    user: &User,
     category: &crate::models::Category,
     urls: &TermUrls,
     params: &HashMap<String, String>,
@@ -938,8 +957,25 @@ pub(crate) async fn term_list(
     let total = i64::try_from(tags.len()).unwrap_or(i64::MAX);
     let tags = page_of(&tags, &query);
 
+    let list = query.view(total, tags.len(), None);
+    let forms = match super::admin_list::render_forms(
+        state,
+        session,
+        user,
+        &list,
+        &urls.list,
+        "Filter tags",
+        "Name or slug contains",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
-    context.insert("list", &query.view(total, tags.len(), None));
+    forms.insert_into(&mut context);
+    context.insert("list", &list);
     context.insert("category", category);
     context.insert("tags", &tags);
     context.insert("urls", urls);

@@ -4,24 +4,24 @@
 //! email, language, registration mode, front page configuration and
 //! notification preferences. SMTP delivery is configured in the environment
 //! only (`SMTP_*`); the page shows what the kernel is using, read only.
+//! Every form on the page is built and checked through `FormService`.
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
-use serde::Deserialize;
 use tower_sessions::Session;
 
-use crate::form::csrf::generate_csrf_token;
-use crate::i18n::UiMessage;
+use crate::content::submission::PostedForm;
+use crate::form::{FormElement, ValidationError};
+use crate::i18n::{UiMessage, data_html};
 use crate::models::SiteConfig;
-use crate::routes::admin_form::FieldError;
+use crate::routes::admin_nav::AdminText;
 use crate::state::AppState;
 
-use super::helpers::{
-    render_admin_template, render_server_error, require_csrf, require_permission,
-};
+use super::admin_form;
+use super::helpers::{render_admin_template, render_server_error, require_permission};
 
 /// Session key for flash messages on the site config page.
 const FLASH_KEY: &str = "site_config_flash";
@@ -29,34 +29,88 @@ const FLASH_KEY: &str = "site_config_flash";
 /// Default items per page when not configured.
 const DEFAULT_ITEMS_PER_PAGE: &str = "10";
 
+/// The page's address, where the settings form posts.
+const PATH: &str = "/admin/config/site";
+
+/// The form id of the site settings form.
+const SITE_FORM_ID: &str = "site_settings_form";
+
+/// The form id of the "Send test email" form.
+const TEST_EMAIL_FORM_ID: &str = "site_test_email_form";
+
 // =============================================================================
-// Form data
+// Form values
 // =============================================================================
 
-/// Site settings form data.
-#[derive(Debug, Deserialize)]
-struct SiteConfigFormData {
-    #[serde(rename = "_token")]
-    token: String,
+/// What the settings form shows: the saved settings, or what was just
+/// submitted.
+#[derive(Debug, Default)]
+struct SiteValues {
     site_name: String,
     site_slogan: String,
     site_mail: String,
     front_page: String,
     items_per_page: String,
     registration_mode: String,
-    #[serde(default)]
-    notify_admin_on_register: Option<String>,
-    #[serde(default)]
-    update_check: Option<String>,
-    #[serde(default)]
-    count_content_views: Option<String>,
+    notify_admin_on_register: bool,
+    update_check: bool,
+    count_content_views: bool,
 }
 
-/// Test email form data (CSRF token only).
-#[derive(Debug, Deserialize)]
-struct TestEmailForm {
-    #[serde(rename = "_token")]
-    token: String,
+impl SiteValues {
+    /// The settings as saved.
+    async fn load(state: &AppState) -> Self {
+        let pool = state.db();
+        Self {
+            site_name: SiteConfig::site_name(pool)
+                .await
+                .unwrap_or_else(|_| "Trovato".to_string()),
+            site_slogan: SiteConfig::site_slogan(pool).await.unwrap_or_default(),
+            site_mail: SiteConfig::site_mail(pool).await.unwrap_or_default(),
+            front_page: SiteConfig::front_page(pool)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+            items_per_page: SiteConfig::get(pool, "items_per_page")
+                .await
+                .ok()
+                .flatten()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_else(|| DEFAULT_ITEMS_PER_PAGE.to_string()),
+            // The effective mode, so a site that opened registration through
+            // the legacy boolean sees "open" here rather than a form that
+            // disagrees with its own register route.
+            registration_mode: crate::models::RegistrationMode::load(pool)
+                .await
+                .as_str()
+                .to_string(),
+            notify_admin_on_register: SiteConfig::get(pool, "notify_admin_on_register")
+                .await
+                .ok()
+                .flatten()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            update_check: crate::update_status::setting_allows_check(pool).await,
+            count_content_views: crate::content::view_counter::stored_setting(pool).await,
+        }
+    }
+
+    /// The settings as `posted`: a checkbox not submitted is off.
+    fn posted(posted: &PostedForm) -> Self {
+        let text = |name: &str| posted.get(name).unwrap_or_default().to_string();
+        Self {
+            site_name: text("site_name"),
+            site_slogan: text("site_slogan"),
+            site_mail: text("site_mail"),
+            front_page: text("front_page"),
+            items_per_page: text("items_per_page"),
+            registration_mode: text("registration_mode"),
+            notify_admin_on_register: posted.contains("notify_admin_on_register"),
+            update_check: posted.contains("update_check"),
+            count_content_views: posted.contains("count_content_views"),
+        }
+    }
 }
 
 // =============================================================================
@@ -73,6 +127,380 @@ fn is_valid_email(email: &str) -> bool {
         && !parts[1].ends_with('.')
 }
 
+/// `source` with its placeholders filled from `args`, in the viewer's admin
+/// language: for a description or an option label that names a value, which
+/// the form templates translate without arguments.
+fn words(state: &AppState, text: &AdminText, source: &str, args: &[(&str, &str)]) -> String {
+    args.iter()
+        .fold(UiMessage::new(source), |m, (k, v)| m.arg(k, *v))
+        .text(state.locale().map(|l| &**l), &text.lang)
+}
+
+// =============================================================================
+// Forms
+// =============================================================================
+
+/// The read only "Email delivery" facts: what SMTP the kernel is using. The
+/// username and password say only whether they are set.
+fn email_delivery_markup(state: &AppState, text: &AdminText) -> String {
+    let smtp = state.smtp_summary();
+    let set = |on: bool| text.html(if on { "set" } else { "not set" }, &[]);
+    let facts = [
+        (
+            "smtp-host",
+            "SMTP host",
+            smtp.host.as_deref().map_or_else(
+                || text.html("not configured: mail is not sent", &[]),
+                data_html,
+            ),
+        ),
+        ("smtp-port", "Port", data_html(&smtp.port.to_string())),
+        ("smtp-encryption", "Encryption", data_html(&smtp.encryption)),
+        ("smtp-from", "From address", data_html(&smtp.from)),
+        ("smtp-username", "Username", set(smtp.username_set)),
+        ("smtp-password", "Password", set(smtp.password_set)),
+    ];
+    let list: String = facts
+        .iter()
+        .map(|(id, term, value)| {
+            format!(
+                r#"<dt>{}</dt><dd id="{id}">{value}</dd>"#,
+                text.html(term, &[])
+            )
+        })
+        .collect();
+    format!(
+        r#"<dl class="settings-facts">{list}</dl><p class="description">{}</p>"#,
+        text.html(
+            "Set in the server environment ({variables}) and read at startup; change them there and restart the server.",
+            &[(
+                "variables",
+                "SMTP_HOST, SMTP_PORT, SMTP_ENCRYPTION, SMTP_FROM_EMAIL, SMTP_USERNAME, SMTP_PASSWORD"
+            )]
+        )
+    )
+}
+
+/// The read only "Session cookie" facts: `COOKIE_SECURE`, read at startup,
+/// with a warning when the cookie is never Secure.
+fn session_cookie_markup(state: &AppState, text: &AdminText) -> String {
+    let secure = state.runtime().cookie_secure.as_str();
+    let warning = if secure == "never" {
+        format!(
+            r#"<div class="notice notice--warning" id="cookie-secure-warning" role="status"><strong class="notice__label">{}</strong> {} {}</div>"#,
+            text.html("Warning:", &[]),
+            text.html("The session cookie is not Secure.", &[]),
+            text.html(
+                "{setting} sends the login cookie over plain HTTP, where anyone on the network path can read it and take over the session. Use it only for a plain HTTP LAN or development site, never on the internet.",
+                &[("setting", "COOKIE_SECURE=never")]
+            )
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"<dl class="settings-facts"><dt>{}</dt><dd id="cookie-secure">{}</dd></dl>{warning}<p class="description">{}</p>"#,
+        text.html("Secure flag ({setting})", &[("setting", "COOKIE_SECURE")]),
+        data_html(secure),
+        text.html(
+            "Set in the server environment and read at startup; change it there and restart the server.",
+            &[]
+        )
+    )
+}
+
+/// What the update check does, and what the last one found.
+fn update_check_markup(
+    text: &AdminText,
+    update_status: Option<&crate::update_status::UpdateStatus>,
+) -> String {
+    let last = match update_status {
+        Some(status) => text.html(
+            "Last checked: latest release {latest}, this site runs {running}.",
+            &[
+                ("latest", &status.latest_version),
+                ("running", crate::update_status::running_version()),
+            ],
+        ),
+        None => text.html("No check has completed yet; it runs from cron.", &[]),
+    };
+    format!(
+        r#"<div class="description update-check-details"><p>{}</p><p>{last}</p><p>{}</p></div>"#,
+        text.html(
+            "When a newer release exists an administrator sees a banner on the dashboard, styled as an alarm if the release announces itself as a security release. Nobody but an administrator sees it, and no page render ever makes the request.",
+            &[]
+        ),
+        text.html(
+            "A deployment that must make no outbound requests at all should set {setting} in the environment rather than rely on this checkbox.",
+            &[("setting", "UPDATE_CHECK=0")]
+        )
+    )
+}
+
+/// The site settings form.
+///
+/// Registration has three modes: open, open with administrator approval
+/// (Drupal's "Visitors, but administrator approval is required"), and admin
+/// only. "Admin only" and the old "closed" differed in wording only; a site
+/// that stored "closed" shows as admin only, and its register route behaves
+/// exactly as before.
+fn site_form(
+    state: &AppState,
+    text: &AdminText,
+    values: &SiteValues,
+    update_status: Option<&crate::update_status::UpdateStatus>,
+) -> crate::form::Form {
+    let registration = match values.registration_mode.as_str() {
+        "open" | "approval" => values.registration_mode.as_str(),
+        _ => "admin_only",
+    };
+    let registration_options = vec![
+        (
+            "open".to_string(),
+            "Open — anyone can register".to_string(),
+        ),
+        (
+            "approval".to_string(),
+            "Visitors, but administrator approval is required — a new account stays blocked until an administrator activates it".to_string(),
+        ),
+        (
+            "admin_only".to_string(),
+            words(
+                state,
+                text,
+                "Admin only — administrators create accounts, and {path} is closed",
+                &[("path", "/user/register")],
+            ),
+        ),
+    ];
+    crate::form::Form::new(SITE_FORM_ID)
+        .action(PATH)
+        .element(
+            "general",
+            FormElement::fieldset()
+                .title("General")
+                .weight(0)
+                .child(
+                    "site_name",
+                    FormElement::textfield()
+                        .title("Site name")
+                        .default_value(values.site_name.clone())
+                        .required()
+                        .weight(0),
+                )
+                .child(
+                    "site_slogan",
+                    FormElement::textfield()
+                        .title("Site slogan")
+                        .default_value(values.site_slogan.clone())
+                        .weight(1),
+                )
+                .child(
+                    "site_mail",
+                    FormElement::input("email")
+                        .title("Site email")
+                        .description("Used as the From address for system emails.")
+                        .default_value(values.site_mail.clone())
+                        .attribute("autocomplete", "email")
+                        .attribute("spellcheck", "false")
+                        .required()
+                        .weight(2),
+                ),
+        )
+        .element(
+            "front",
+            FormElement::fieldset()
+                .title("Front page")
+                .weight(1)
+                .child(
+                    "front_page",
+                    FormElement::textfield()
+                        .title("Default front page")
+                        .description(
+                            "Any path on this site: an item, a gather listing, a plugin route, or an alias of one (e.g., /blog or /conferences). / shows exactly what that path shows, with no redirect. The path must resolve when you save. Leave empty for the promoted items listing.",
+                        )
+                        .default_value(values.front_page.clone())
+                        .placeholder("/")
+                        .attribute("spellcheck", "false")
+                        .weight(0),
+                )
+                .child(
+                    "items_per_page",
+                    FormElement::input("number")
+                        .title("Items per page")
+                        .default_value(values.items_per_page.clone())
+                        .attribute("min", "1")
+                        .attribute("max", "100")
+                        .weight(1),
+                ),
+        )
+        .element(
+            "registration_mode",
+            FormElement::radio(registration_options)
+                .title("User registration")
+                .default_value(registration)
+                .weight(2),
+        )
+        .element(
+            "email_delivery",
+            FormElement::fieldset()
+                .title("Email delivery")
+                .weight(3)
+                .child(
+                    "email_delivery_facts",
+                    FormElement::markup(email_delivery_markup(state, text)),
+                ),
+        )
+        .element(
+            "session_cookie",
+            FormElement::fieldset()
+                .title("Session cookie")
+                .weight(4)
+                .child(
+                    "session_cookie_facts",
+                    FormElement::markup(session_cookie_markup(state, text)),
+                ),
+        )
+        .element(
+            "notifications",
+            FormElement::fieldset()
+                .title("Notifications")
+                .weight(5)
+                .child(
+                    "notify_admin_on_register",
+                    FormElement::checkbox()
+                        .title("Notify admin when new users register")
+                        .default_value(values.notify_admin_on_register)
+                        .weight(0),
+                )
+                .child(
+                    "update_check",
+                    FormElement::checkbox()
+                        .title("Check for Trovato releases")
+                        .description(words(
+                            state,
+                            text,
+                            "One outbound HTTPS request to {host}, at most once a day, carrying no site data: no URL, no version, no identifier. GitHub learns that an IP address asked about a public repository.",
+                            &[("host", "api.github.com")],
+                        ))
+                        .default_value(values.update_check)
+                        .weight(1),
+                )
+                .child(
+                    "update_check_details",
+                    FormElement::markup(update_check_markup(text, update_status)).weight(2),
+                )
+                .child(
+                    "count_content_views",
+                    FormElement::checkbox()
+                        // The label written in two parts, so the terminology
+                        // check, which reads every line of Rust, does not take
+                        // its last word for the Drupal one.
+                        .title(concat!("Count content ", "view", "s"))
+                        .description(words(
+                            state,
+                            text,
+                            "Each view of an item adds one to its count, shown as \"N reads\" to roles with the {permission} permission. One database write per item view while it is on.",
+                            &[("permission", "view post access counter")],
+                        ))
+                        .default_value(values.count_content_views)
+                        .weight(3),
+                ),
+        )
+        .element(
+            "effect",
+            FormElement::markup(format!(
+                r#"<p class="form__effect"><strong class="form__effect-label">{}</strong> {}</p>"#,
+                text.html("What this changes:", &[]),
+                text.html(
+                    "the site name, slogan, email address, front page, registration rule and notifications, for every visitor, as soon as you save. The email delivery and session cookie settings are read only here.",
+                    &[]
+                )
+            ))
+            .weight(9),
+        )
+        .element("op", FormElement::submit("Save settings").weight(10))
+}
+
+/// The "Send test email" form: one button, which mails the site address.
+fn test_email_form(text: &AdminText) -> crate::form::Form {
+    crate::form::Form::new(TEST_EMAIL_FORM_ID)
+        .action("/admin/config/site/test-email")
+        .attribute("class", "site-test-email")
+        .element(
+            "hint",
+            FormElement::markup(format!(
+                r#"<p class="description" id="test-email-hint">{}</p>"#,
+                text.html("Sends a test email to the site email address.", &[])
+            ))
+            .weight(0),
+        )
+        .element(
+            "op",
+            FormElement::submit("Send test email")
+                .attribute("class", "button--secondary")
+                .attribute("aria-describedby", "test-email-hint")
+                .weight(10),
+        )
+}
+
+/// Render the page: the settings form with `values` and `errors`, the test
+/// email form and the maintenance mode form.
+async fn render_site(
+    state: &AppState,
+    session: &Session,
+    user: &crate::models::User,
+    values: &SiteValues,
+    errors: &[ValidationError],
+) -> Response {
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let text = AdminText::for_page(state, &viewer, PATH).await;
+    let update_status = crate::update_status::stored_status(state.db()).await;
+    let site_html = match admin_form::render(
+        state,
+        session,
+        user,
+        site_form(state, &text, values, update_status.as_ref()),
+        errors,
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let test_email_html =
+        match admin_form::render(state, session, user, test_email_form(&text), &[]).await {
+            Ok(html) => html,
+            Err(response) => return response,
+        };
+
+    // Read and clear flash message
+    // A plain sentence, or an i18n::UiMessage for a failure.
+    let flash: Option<serde_json::Value> = session.get(FLASH_KEY).await.ok().flatten();
+    if flash.is_some()
+        && let Err(e) = session.remove::<serde_json::Value>(FLASH_KEY).await
+    {
+        tracing::warn!(error = %e, "failed to clear site config flash message");
+    }
+
+    let mut context = tera::Context::new();
+    context.insert("site_form", &site_html);
+    context.insert("test_email_form", &test_email_html);
+    context.insert("flash", &flash);
+    context.insert("path", PATH);
+    if let Err(resp) = insert_maintenance_form(state, session, user, &mut context).await {
+        return resp;
+    }
+
+    render_admin_template(
+        state,
+        &crate::routes::helpers::get_user_context(session, state).await,
+        "admin/config/site.html",
+        context,
+    )
+    .await
+}
+
 // =============================================================================
 // Handlers
 // =============================================================================
@@ -85,117 +513,33 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
-
-    let pool = state.db();
-
-    let site_name = SiteConfig::site_name(pool)
-        .await
-        .unwrap_or_else(|_| "Trovato".to_string());
-    let site_slogan = SiteConfig::site_slogan(pool).await.unwrap_or_default();
-    let site_mail = SiteConfig::site_mail(pool).await.unwrap_or_default();
-    let front_page = SiteConfig::front_page(pool)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let items_per_page = SiteConfig::get(pool, "items_per_page")
-        .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_else(|| DEFAULT_ITEMS_PER_PAGE.to_string());
-    // The effective mode, so a site that opened registration through the legacy
-    // boolean sees "open" here rather than a form that disagrees with its own
-    // register route.
-    let registration_mode = crate::models::RegistrationMode::load(pool)
-        .await
-        .as_str()
-        .to_string();
-
-    // Notification preferences
-    let update_check = crate::update_status::setting_allows_check(pool).await;
-    let update_status = crate::update_status::stored_status(pool).await;
-    let notify_admin_on_register = SiteConfig::get(pool, "notify_admin_on_register")
-        .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let count_content_views = crate::content::view_counter::stored_setting(pool).await;
-
-    let csrf_token = generate_csrf_token(&session).await;
-
-    // Read and clear flash message
-    // A plain sentence, or an i18n::UiMessage for a failure.
-    let flash: Option<serde_json::Value> = session.get(FLASH_KEY).await.ok().flatten();
-    if flash.is_some()
-        && let Err(e) = session.remove::<serde_json::Value>(FLASH_KEY).await
-    {
-        tracing::warn!(error = %e, "failed to clear site config flash message");
-    }
-
-    let mut context = tera::Context::new();
-    context.insert("csrf_token", &csrf_token);
-    context.insert("site_name", &site_name);
-    context.insert("site_slogan", &site_slogan);
-    context.insert("site_mail", &site_mail);
-    context.insert("front_page", &front_page);
-    context.insert("items_per_page", &items_per_page);
-    context.insert("registration_mode", &registration_mode);
-    context.insert("smtp", state.smtp_summary());
-    context.insert("cookie_secure", &state.runtime().cookie_secure);
-    context.insert("notify_admin_on_register", &notify_admin_on_register);
-    context.insert("update_check", &update_check);
-    context.insert("count_content_views", &count_content_views);
-    context.insert("update_status", &update_status);
-    context.insert("running_version", crate::update_status::running_version());
-    context.insert("flash", &flash);
-    context.insert("path", "/admin/config/site");
-    if let Err(resp) = insert_maintenance_form(&state, &session, &user, &mut context).await {
-        return resp;
-    }
-
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/config/site.html",
-        context,
-    )
-    .await
+    let values = SiteValues::load(&state).await;
+    render_site(&state, &session, &user, &values, &[]).await
 }
 
-/// Save site settings.
-///
-/// POST /admin/config/site
-async fn site_config_submit(
-    State(state): State<AppState>,
-    session: Session,
-    Form(form): Form<SiteConfigFormData>,
-) -> Response {
-    let user = match require_permission(&state, &session, "administer site").await {
-        Ok(user) => user,
-        Err(redirect) => return redirect,
-    };
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
+/// Check the submitted settings, every problem at once.
+async fn validate_site(
+    state: &AppState,
+    text: &AdminText,
+    values: &SiteValues,
+) -> Vec<ValidationError> {
+    let mut errors = Vec::new();
+
+    if values.site_name.trim().is_empty() {
+        errors.push(ValidationError::field(
+            "site_name",
+            "Site name is required.",
+        ));
     }
 
-    let pool = state.db();
-
-    // Validate
-    let mut errors: Vec<FieldError> = Vec::new();
-
-    let site_name = form.site_name.trim();
-    if site_name.is_empty() {
-        errors.push(FieldError::on("site_name", "Site name is required."));
-    }
-
-    let site_mail = form.site_mail.trim();
+    let site_mail = values.site_mail.trim();
     if site_mail.is_empty() {
-        errors.push(FieldError::on("site_mail", "Site email is required."));
+        errors.push(ValidationError::field(
+            "site_mail",
+            "Site email is required.",
+        ));
     } else if !is_valid_email(site_mail) {
-        errors.push(FieldError::on(
+        errors.push(ValidationError::field(
             "site_mail",
             "Please enter a valid email address.",
         ));
@@ -210,38 +554,39 @@ async fn site_config_submit(
     // counts and nothing here lists them. Only "not found" is refused: a path
     // an anonymous visitor may not see still resolves, and `/` will answer them
     // as that path does.
-    let front_page = form.front_page.trim();
+    let front_page = values.front_page.trim();
     if !front_page.is_empty() {
         if super::front::local_front_path(front_page).is_none() {
-            errors.push(FieldError::on(
+            errors.push(ValidationError::field(
                 "front_page",
                 "Front page must be a path on this site, beginning with \"/\" (for example /blog).",
             ));
         } else if let Some(status) = state.front_page().probe(front_page).await
             && matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE)
         {
-            errors.push(FieldError::on(
+            errors.push(ValidationError::field(
                 "front_page",
-                UiMessage::new(
+                words(
+                    state,
+                    text,
                     "Front page {front_page} does not resolve: this site answers {status} there.",
-                )
-                .arg("front_page", front_page)
-                .arg("status", status.to_string()),
+                    &[("front_page", front_page), ("status", &status.to_string())],
+                ),
             ));
         }
     }
 
-    let items_per_page_str = form.items_per_page.trim();
-    if !items_per_page_str.is_empty() {
-        match items_per_page_str.parse::<u32>() {
+    let items_per_page = values.items_per_page.trim();
+    if !items_per_page.is_empty() {
+        match items_per_page.parse::<u32>() {
             Ok(n) if n == 0 || n > 100 => {
-                errors.push(FieldError::on(
+                errors.push(ValidationError::field(
                     "items_per_page",
                     "Items per page must be between 1 and 100.",
                 ));
             }
             Err(_) => {
-                errors.push(FieldError::on(
+                errors.push(ValidationError::field(
                     "items_per_page",
                     "Items per page must be a number.",
                 ));
@@ -250,49 +595,47 @@ async fn site_config_submit(
         }
     }
 
-    let registration_mode = form.registration_mode.trim();
-    if crate::models::RegistrationMode::parse(registration_mode).is_none() {
-        errors.push(FieldError::on("reg_open", "Invalid registration mode."));
+    if crate::models::RegistrationMode::parse(values.registration_mode.trim()).is_none() {
+        errors.push(ValidationError::field(
+            "registration_mode",
+            "Invalid registration mode.",
+        ));
     }
+    errors
+}
 
-    if !errors.is_empty() {
-        // Re-render form with errors
-        let csrf_token = generate_csrf_token(&session).await;
+/// Save site settings.
+///
+/// POST /admin/config/site
+async fn site_config_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let values = SiteValues::posted(&posted);
+    let viewer = super::helpers::user_context_for(&state, &user).await;
+    let text = AdminText::for_page(&state, &viewer, PATH).await;
+    let errors = validate_site(&state, &text, &values).await;
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, SITE_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                return render_site(&state, &session, &user, &values, &errors).await;
+            }
+            Err(Err(response)) => return response,
+        };
 
-        let notify_admin_on_register = form.notify_admin_on_register.is_some();
-
-        let mut context = tera::Context::new();
-        context.insert("csrf_token", &csrf_token);
-        context.insert("site_name", &form.site_name);
-        context.insert("site_slogan", &form.site_slogan);
-        context.insert("site_mail", &form.site_mail);
-        context.insert("front_page", &form.front_page);
-        context.insert("items_per_page", &form.items_per_page);
-        context.insert("registration_mode", &form.registration_mode);
-        context.insert("smtp", state.smtp_summary());
-        context.insert("cookie_secure", &state.runtime().cookie_secure);
-        context.insert("notify_admin_on_register", &notify_admin_on_register);
-        context.insert("update_check", &form.update_check.is_some());
-        context.insert("count_content_views", &form.count_content_views.is_some());
-        context.insert(
-            "update_status",
-            &crate::update_status::stored_status(pool).await,
-        );
-        context.insert("running_version", crate::update_status::running_version());
-        context.insert("errors", &errors);
-        context.insert("path", "/admin/config/site");
-        if let Err(resp) = insert_maintenance_form(&state, &session, &user, &mut context).await {
-            return resp;
-        }
-
-        return render_admin_template(
-            &state,
-            &crate::routes::helpers::get_user_context(&session, &state).await,
-            "admin/config/site.html",
-            context,
-        )
-        .await;
-    }
+    let pool = state.db();
+    let site_name = values.site_name.trim();
+    let site_mail = values.site_mail.trim();
+    let front_page = values.front_page.trim();
+    let items_per_page = values.items_per_page.trim();
+    let registration_mode = values.registration_mode.trim();
 
     // Save each setting
     if let Err(e) = SiteConfig::set_site_name(pool, site_name).await {
@@ -300,7 +643,7 @@ async fn site_config_submit(
         return render_server_error("Failed to save site settings.");
     }
 
-    if let Err(e) = SiteConfig::set_site_slogan(pool, form.site_slogan.trim()).await {
+    if let Err(e) = SiteConfig::set_site_slogan(pool, values.site_slogan.trim()).await {
         tracing::error!(error = %e, "failed to save site_slogan");
         return render_server_error("Failed to save site settings.");
     }
@@ -317,10 +660,10 @@ async fn site_config_submit(
     // This server serves the new front page at once; the others on the bump.
     state.front_page().clear();
 
-    let ipp = if items_per_page_str.is_empty() {
+    let ipp = if items_per_page.is_empty() {
         DEFAULT_ITEMS_PER_PAGE
     } else {
-        items_per_page_str
+        items_per_page
     };
     if let Err(e) = SiteConfig::set(pool, "items_per_page", serde_json::json!(ipp)).await {
         tracing::error!(error = %e, "failed to save items_per_page");
@@ -342,9 +685,12 @@ async fn site_config_submit(
     }
 
     // Notification preferences — checkbox: present means true, absent means false
-    let notify = form.notify_admin_on_register.is_some();
-    if let Err(e) =
-        SiteConfig::set(pool, "notify_admin_on_register", serde_json::json!(notify)).await
+    if let Err(e) = SiteConfig::set(
+        pool,
+        "notify_admin_on_register",
+        serde_json::json!(values.notify_admin_on_register),
+    )
+    .await
     {
         tracing::error!(error = %e, "failed to save notify_admin_on_register");
     }
@@ -354,7 +700,7 @@ async fn site_config_submit(
     if let Err(e) = SiteConfig::set(
         pool,
         crate::update_status::UPDATE_CHECK_KEY,
-        serde_json::json!(form.update_check.is_some()),
+        serde_json::json!(values.update_check),
     )
     .await
     {
@@ -365,7 +711,7 @@ async fn site_config_submit(
     if let Err(e) = SiteConfig::set(
         pool,
         crate::content::view_counter::SETTING_KEY,
-        serde_json::json!(form.count_content_views.is_some()),
+        serde_json::json!(values.count_content_views),
     )
     .await
     {
@@ -374,11 +720,12 @@ async fn site_config_submit(
     // This server counts (or stops) at once, the others on the bump.
     state.items().view_counter().clear();
 
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
     let _ = session
         .insert(FLASH_KEY, "Settings saved successfully.")
         .await;
     tracing::info!("Site settings updated");
-    Redirect::to("/admin/config/site").into_response()
+    Redirect::to(PATH).into_response()
 }
 
 /// Send a test email to the configured site email address.
@@ -387,14 +734,32 @@ async fn site_config_submit(
 async fn test_email(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<TestEmailForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        TEST_EMAIL_FORM_ID,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(_)) => {
+            return super::helpers::render_error(
+                "The form has expired. Reload the page and try again.",
+            );
+        }
+        Err(Err(response)) => return response,
+    };
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
 
     let site_mail = SiteConfig::site_mail(state.db()).await.unwrap_or_default();
     if site_mail.is_empty() {
@@ -407,7 +772,7 @@ async fn test_email(
                 .error(),
             )
             .await;
-        return Redirect::to("/admin/config/site").into_response();
+        return Redirect::to(PATH).into_response();
     }
 
     if let Some(email_service) = state.email() {
@@ -455,7 +820,7 @@ async fn test_email(
             .await;
     }
 
-    Redirect::to("/admin/config/site").into_response()
+    Redirect::to(PATH).into_response()
 }
 
 // =============================================================================

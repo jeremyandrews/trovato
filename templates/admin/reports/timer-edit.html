@@ -1,21 +1,12 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
-{#- Edit one timer's next run and repeat (routes::admin_timers): `timer`,
-    `values` as typed, `errors`, `zone` (the time zone the field is in) and
-    `min_repeat_secs`. -#}
+{#- Edit one timer's next run and repeat (routes::admin_timers): `timer`, and
+    `form`, built and rendered by the form pipeline. -#}
 
 {% block page_title %}{{ t(s="Edit timer {name}", name=timer.name) }}{% endblock page_title %}
 
 {% block content %}
 <div class="admin-card">
-    <form method="post" action="{{ action }}" novalidate>
-        {{ form::error_summary(errors=errors) }}
-        {{ form::csrf(csrf_token=csrf_token) }}
-        <p>{{ t(s="Owner: {owner}", owner=timer.owner) }}</p>
-        {{ form::field(name="run_at", type="datetime-local", label=t(s="Next run"), value=values.run_at, hint=t(s="In {zone}. The timer fires at this second.", zone=zone), required=true, errors=errors, attrs='step="1"') }}
-        {{ form::field(name="repeat_secs", type="number", label=t(s="Repeat every (seconds)"), value=values.repeat_secs, hint=t(s="Leave empty to run once. At least {min} seconds.", min=min_repeat_secs), optional=true, errors=errors, width="10", attrs='min="1" step="1"') }}
-        {{ form::actions(submit_label=t(s="Save"), cancel_url="/admin/reports/timers") }}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}

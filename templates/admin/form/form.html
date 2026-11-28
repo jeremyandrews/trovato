@@ -1,9 +1,13 @@
 {%- import "admin/macros/form.html" as f -%}
 {#- The form builder's admin form: validated on the server (novalidate), the
-    error summary first, then the fields drawn by admin/macros/form.html. -#}
-<form id="{{ form.form_id }}" action="{{ form.action }}" method="{{ form.method }}" class="form" novalidate{% if form.attributes %}{% for key, value in form.attributes %}{% if key != "class" and key != "novalidate" %} {{ key }}="{{ value }}"{% endif %}{% endfor %}{% endif %}>
+    error summary first, then the fields drawn by admin/macros/form.html.
+    `data-form-pipeline` marks a form FormService built; a GET form (a
+    listing's filter, a search) carries no token and no build id. -#}
+<form id="{{ form.form_id }}" action="{{ form.action }}" method="{{ form.method }}" class="form{% if form.attributes and form.attributes.class %} {{ form.attributes.class }}{% endif %}" data-form-pipeline novalidate{% if form.attributes %}{% for key, value in form.attributes %}{% if key != "class" and key != "novalidate" %} {{ key }}="{{ value }}"{% endif %}{% endfor %}{% endif %}>
+    {%- if form.method | lower != "get" %}
     <input type="hidden" name="_token" value="{{ form.token }}">
     <input type="hidden" name="_form_build_id" value="{{ form.form_build_id }}">
+    {%- endif %}
     {% if form.ajax_token %}<input type="hidden" name="_ajax_token" value="{{ form.ajax_token }}">{% endif %}
 
     {{ f::error_summary(errors=errors) }}

@@ -627,11 +627,6 @@ fn meta_csrf(html: &str) -> String {
         .to_string()
 }
 
-/// The value of the first `_token` input on the page.
-fn form_token(html: &str) -> String {
-    common::input_value_in(html, "_token").expect("a CSRF form field")
-}
-
 /// Self registration, as the registration form at `/user/register` posts it.
 fn register(html: &str, name: &str) -> axum::http::Request<axum::body::Body> {
     let fields = common::form_fields(html, "user_register");
@@ -666,8 +661,8 @@ fn admin_edit(
     axum::http::Request::post(format!("/admin/people/{id}/edit"))
         .header("content-type", "application/x-www-form-urlencoded")
         .body(axum::body::Body::from(format!(
-            "_token={}&_form_build_id=x&name={}&mail={}&status=1",
-            urlencoding::encode(&form_token(html)),
+            "{}&name={}&mail={}&status=1",
+            common::form_fields(html, "user_form"),
             urlencoding::encode(name),
             urlencoding::encode(mail),
         )))

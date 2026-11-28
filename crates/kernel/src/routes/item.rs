@@ -32,6 +32,10 @@ use super::helpers::html_escape;
 /// `formaction`, so the list builds one form however long the history is.
 const REVERT_FORM_ID: &str = "revision_revert_form";
 
+/// The revision list's compare form, a GET form. The rows' From and To radio
+/// buttons and the Compare button join it through their `form` attribute.
+const COMPARE_FORM_ID: &str = "revision-compare";
+
 /// The form on the page that confirms deleting one past revision.
 const REVISION_DELETE_FORM_ID: &str = "revision_delete_form";
 
@@ -1978,11 +1982,21 @@ async fn list_revisions(
     let revertible = revisions
         .iter()
         .any(|r| Some(r.id) != item.current_revision_id);
-    let revert_form = if may_revert && revertible {
-        let account = match super::helpers::require_login(&state, &session).await {
-            Ok(account) => account,
-            Err(refusal) => return refusal,
+    // Only a signed-in viewer reaches the list; its forms are built for them.
+    let account = match super::helpers::require_login(&state, &session).await {
+        Ok(account) => account,
+        Err(refusal) => return refusal,
+    };
+    let compare = crate::form::Form::new(COMPARE_FORM_ID)
+        .method("get")
+        .action(format!("/item/{id}/revisions/compare"))
+        .attribute("hidden", "hidden");
+    let compare_form =
+        match super::admin_form::render(&state, &session, &account, compare, &[]).await {
+            Ok(html) => html,
+            Err(response) => return response,
         };
+    let revert_form = if may_revert && revertible {
         let form = crate::form::Form::new(REVERT_FORM_ID)
             .action(format!("/item/{id}/revisions"))
             .attribute("hidden", "hidden");
@@ -2003,6 +2017,8 @@ async fn list_revisions(
     context.insert("revisions", &rev_data);
     context.insert("revert_form", &revert_form);
     context.insert("revert_form_id", REVERT_FORM_ID);
+    context.insert("compare_form", &compare_form);
+    context.insert("compare_form_id", COMPARE_FORM_ID);
 
     super::helpers::render_admin_template(
         &state,

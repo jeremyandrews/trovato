@@ -212,12 +212,16 @@ async fn list(
     Path(params): Params,
     axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    match admit_vocabulary(&owner, &state, &session, &params).await {
-        Ok((category, urls)) => {
-            admin_taxonomy::term_list(&state, &session, &category, &urls, &query).await
-        }
-        Err(refusal) => refusal,
-    }
+    let (category, urls) = match admit_vocabulary(&owner, &state, &session, &params).await {
+        Ok(admitted) => admitted,
+        Err(refusal) => return refusal,
+    };
+    // Admitted, so someone is signed in; the filter form is built for them.
+    let user = match super::helpers::require_login(&state, &session).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    admin_taxonomy::term_list(&state, &session, &user, &category, &urls, &query).await
 }
 
 /// GET P/{vocabulary}/add

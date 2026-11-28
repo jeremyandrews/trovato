@@ -1,53 +1,156 @@
 //! Admin routes for AI token budget management.
+//!
+//! Both forms here, the budget configuration and a person's overrides, go
+//! through `FormService` (B83c). Their grids of limits are drawn by a
+//! template into a markup element of the form, so the table stays a table.
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
-use serde::Deserialize;
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::form::csrf::generate_csrf_token;
+use crate::content::submission::PostedForm;
+use crate::form::{FormElement, ValidationError};
+use crate::models::User;
 use crate::services::ai_token_budget::{BudgetAction, BudgetConfig, BudgetPeriod};
 use crate::state::AppState;
 
+use super::admin_form;
+use super::admin_nav::AdminText;
 use super::helpers::{
-    render_admin_template, render_error, render_not_found, render_server_error, require_csrf,
-    require_permission,
+    render_admin_template, render_error, render_not_found, render_server_error, require_permission,
+    user_context_for,
 };
 
 /// Session key for flash messages on the budget page.
 const FLASH_KEY: &str = "ai_budget_flash";
 
+/// The budget page: usage and the configuration form.
+const BASE: &str = "/admin/system/ai-budgets";
+
+/// The budget configuration form.
+const CONFIG_FORM_ID: &str = "ai_budget_config_form";
+
+/// A person's override form.
+const OVERRIDE_FORM_ID: &str = "ai_budget_override_form";
+
 // =============================================================================
-// Form data
+// Forms
 // =============================================================================
 
-/// Budget configuration form.
-#[derive(Debug, Deserialize)]
-struct BudgetConfigForm {
-    #[serde(rename = "_token")]
-    token: String,
-    #[serde(rename = "_form_build_id")]
-    form_build_id: String,
-    period: String,
-    action_on_limit: String,
-    /// Flat fields: `limit_{provider_id}_{role_name}` = token limit string.
-    #[serde(flatten)]
-    extra: std::collections::HashMap<String, String>,
+/// A template's HTML in the page's language, for a markup element of a
+/// form: the grid of limits on either page. `None` (logged) when the
+/// template fails to render.
+fn grid_html(
+    state: &AppState,
+    text: &AdminText,
+    template: &str,
+    context: &tera::Context,
+) -> Option<String> {
+    text.scope(|| state.theme().tera().render(template, context))
+        .map_err(|e| tracing::error!(error = %e, template, "failed to render a budget grid"))
+        .ok()
 }
 
-/// Per-user override form.
-#[derive(Debug, Deserialize)]
-struct UserOverrideForm {
-    #[serde(rename = "_token")]
-    token: String,
-    #[serde(rename = "_form_build_id")]
-    form_build_id: String,
-    /// Flat fields: `override_{provider_id}` = token limit string.
-    #[serde(flatten)]
-    extra: std::collections::HashMap<String, String>,
+/// A Cancel link back to the budget page, for beside a submit button.
+fn cancel_link(text: &AdminText) -> String {
+    format!(
+        r#"<a href="{BASE}" class="button button--secondary">{}</a>"#,
+        text.html("Cancel", &[])
+    )
+}
+
+/// The budget configuration form: the period, what happens at the limit, and
+/// the grid of per-provider, per-role limits (`limits`, already rendered).
+fn config_form(text: &AdminText, period: &str, action: &str, limits: String) -> crate::form::Form {
+    crate::form::Form::new(CONFIG_FORM_ID)
+        .action(BASE)
+        .element(
+            "period",
+            FormElement::select(vec![
+                ("daily".to_string(), "Daily".to_string()),
+                ("weekly".to_string(), "Weekly".to_string()),
+                ("monthly".to_string(), "Monthly".to_string()),
+            ])
+            .title("Budget Period")
+            .default_value(period)
+            .required()
+            .weight(0),
+        )
+        .element(
+            "action_on_limit",
+            FormElement::select(vec![
+                ("deny".to_string(), "Deny request".to_string()),
+                ("warn".to_string(), "Allow with warning".to_string()),
+            ])
+            .title("Action When Limit Exceeded")
+            .default_value(action)
+            .required()
+            .weight(1),
+        )
+        .element("limits", FormElement::markup(limits).weight(2))
+        .element(
+            "effect",
+            super::admin_ai_chat::effect(
+                text,
+                "how much each role may spend on each AI provider in a period, and whether a \
+                 request over the limit is refused or allowed with a warning, from the next \
+                 request on.",
+            )
+            .weight(9),
+        )
+        .element(
+            "op",
+            FormElement::submit("Save configuration")
+                .suffix(cancel_link(text))
+                .weight(10),
+        )
+}
+
+/// A person's override form: the grid of per-provider limits (`grid`,
+/// already rendered).
+fn override_form(text: &AdminText, user_id: Uuid, grid: String) -> crate::form::Form {
+    crate::form::Form::new(OVERRIDE_FORM_ID)
+        .action(format!("{BASE}/user/{user_id}"))
+        .element("overrides", FormElement::markup(grid).weight(0))
+        .element(
+            "op",
+            FormElement::submit("Save overrides")
+                .suffix(cancel_link(text))
+                .weight(10),
+        )
+}
+
+/// The period and the action at the limit a configuration form posted, or
+/// the problems with them.
+fn read_config(posted: &PostedForm) -> Result<(BudgetPeriod, BudgetAction), Vec<ValidationError>> {
+    let mut errors = Vec::new();
+    let period = match posted.get("period").unwrap_or_default() {
+        "daily" => Some(BudgetPeriod::Daily),
+        "weekly" => Some(BudgetPeriod::Weekly),
+        "monthly" => Some(BudgetPeriod::Monthly),
+        _ => {
+            errors.push(ValidationError::field("period", "Invalid budget period."));
+            None
+        }
+    };
+    let action = match posted.get("action_on_limit").unwrap_or_default() {
+        "deny" => Some(BudgetAction::Deny),
+        "warn" => Some(BudgetAction::Warn),
+        _ => {
+            errors.push(ValidationError::field(
+                "action_on_limit",
+                "Invalid action on limit.",
+            ));
+            None
+        }
+    };
+    match (period, action) {
+        (Some(period), Some(action)) => Ok((period, action)),
+        _ => Err(errors),
+    }
 }
 
 // =============================================================================
@@ -57,8 +160,8 @@ struct UserOverrideForm {
 /// Build the budget admin routes.
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/admin/system/ai-budgets", get(budget_dashboard))
-        .route("/admin/system/ai-budgets", post(save_budget_config))
+        .route(BASE, get(budget_dashboard))
+        .route(BASE, post(save_budget_config))
         .route(
             "/admin/system/ai-budgets/user/{id}",
             get(user_budget_detail),
@@ -77,10 +180,22 @@ pub fn router() -> Router<AppState> {
 ///
 /// GET /admin/system/ai-budgets
 async fn budget_dashboard(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "view ai usage").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "view ai usage").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    render_dashboard(&state, &session, &user, None, &[]).await
+}
 
+/// Render the budget dashboard. `posted` is a configuration submission to
+/// show again with its `errors`; `None` shows the stored configuration.
+async fn render_dashboard(
+    state: &AppState,
+    session: &Session,
+    user: &User,
+    posted: Option<&PostedForm>,
+    errors: &[ValidationError],
+) -> Response {
     let budget_svc = state.ai_budgets();
     let config = match budget_svc.get_config().await {
         Ok(Some(c)) => c,
@@ -126,9 +241,6 @@ async fn budget_dashboard(State(state): State<AppState>, session: Session) -> Re
         }
     };
 
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
     // Read and clear flash
     let flash: Option<String> = session.get(FLASH_KEY).await.ok().flatten();
     if flash.is_some() {
@@ -161,9 +273,28 @@ async fn budget_dashboard(State(state): State<AppState>, session: Session) -> Re
         rv
     };
 
-    // Build the defaults grid for the template: provider_id -> role_name -> limit
-    let defaults_grid: serde_json::Value =
-        serde_json::to_value(&config.defaults).unwrap_or_else(|_| serde_json::json!({}));
+    // The defaults grid for the template: provider_id -> role_name -> limit,
+    // or what was posted when the form is shown again.
+    let defaults_grid: serde_json::Value = match posted {
+        Some(posted) => {
+            let mut grid = serde_json::Map::new();
+            for provider in &providers {
+                let mut row = serde_json::Map::new();
+                for role in &role_entries {
+                    let role = role["name"].as_str().unwrap_or_default();
+                    let value = posted
+                        .get(&format!("limit_{}_{role}", provider.id))
+                        .unwrap_or_default();
+                    if !value.is_empty() {
+                        row.insert(role.to_string(), value.into());
+                    }
+                }
+                grid.insert(provider.id.clone(), row.into());
+            }
+            grid.into()
+        }
+        None => serde_json::to_value(&config.defaults).unwrap_or_else(|_| serde_json::json!({})),
+    };
 
     // Usage by provider with labels
     let provider_usage: Vec<serde_json::Value> = usage_by_provider
@@ -203,33 +334,46 @@ async fn budget_dashboard(State(state): State<AppState>, session: Session) -> Re
         })
         .collect();
 
+    let stored_period = config.period.to_string();
+    let stored_action = serde_json::to_value(config.action_on_limit)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "deny".to_string());
+    let (period, action) = match posted {
+        Some(posted) => (
+            posted.get("period").unwrap_or_default().to_string(),
+            posted
+                .get("action_on_limit")
+                .unwrap_or_default()
+                .to_string(),
+        ),
+        None => (stored_period, stored_action),
+    };
+
+    let viewer = user_context_for(state, user).await;
+    let text = AdminText::for_page(state, &viewer, BASE).await;
+    let mut grid = tera::Context::new();
+    grid.insert("providers", &provider_entries);
+    grid.insert("roles", &role_entries);
+    grid.insert("defaults_grid", &defaults_grid);
+    let Some(limits) = grid_html(state, &text, "admin/ai-budget-limits.html", &grid) else {
+        return render_server_error("The form could not be displayed.");
+    };
+    let form = config_form(&text, &period, &action, limits);
+    let form_html = match admin_form::render(state, session, user, form, errors).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+
     let mut context = tera::Context::new();
-    context.insert("config_period", &config.period.to_string());
-    context.insert(
-        "config_action",
-        &serde_json::to_value(config.action_on_limit)
-            .ok()
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_else(|| "deny".to_string()),
-    );
     context.insert("period_label", config.period.label());
-    context.insert("providers", &provider_entries);
-    context.insert("roles", &role_entries);
-    context.insert("defaults_grid", &defaults_grid);
     context.insert("provider_usage", &provider_usage);
     context.insert("user_usage", &user_usage);
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
+    context.insert("form", &form_html);
     context.insert("flash", &flash);
-    context.insert("path", "/admin/system/ai-budgets");
+    context.insert("path", BASE);
 
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/ai-budgets.html",
-        context,
-    )
-    .await
+    render_admin_template(state, &viewer, "admin/ai-budgets.html", context).await
 }
 
 /// Save budget configuration.
@@ -238,26 +382,26 @@ async fn budget_dashboard(State(state): State<AppState>, session: Session) -> Re
 async fn save_budget_config(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<BudgetConfigForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
-        return redirect;
-    }
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    let period = match form.period.as_str() {
-        "daily" => BudgetPeriod::Daily,
-        "weekly" => BudgetPeriod::Weekly,
-        "monthly" => BudgetPeriod::Monthly,
-        _ => return render_error("Invalid budget period."),
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "configure ai").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
     };
 
-    let action_on_limit = match form.action_on_limit.as_str() {
-        "deny" => BudgetAction::Deny,
-        "warn" => BudgetAction::Warn,
-        _ => return render_error("Invalid action on limit."),
+    let parsed = read_config(&posted);
+    let errors = parsed.as_ref().err().cloned().unwrap_or_default();
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, CONFIG_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                return render_dashboard(&state, &session, &user, Some(&posted), &errors).await;
+            }
+            Err(Err(response)) => return response,
+        };
+    let Ok((period, action_on_limit)) = parsed else {
+        return render_not_found();
     };
 
     // Parse per-provider per-role limits from flat form fields
@@ -265,7 +409,7 @@ async fn save_budget_config(
     let mut defaults: std::collections::HashMap<String, std::collections::HashMap<String, u64>> =
         std::collections::HashMap::new();
 
-    for (key, value) in &form.extra {
+    for (key, value) in &posted.0 {
         if let Some(rest) = key.strip_prefix("limit_") {
             // Split on first underscore after provider_id
             // Provider IDs are UUIDs (36 chars), role names may contain underscores
@@ -306,11 +450,12 @@ async fn save_budget_config(
         tracing::error!(error = %e, "failed to save budget config");
         return render_server_error("Failed to save budget configuration.");
     }
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
 
     let _ = session
         .insert(FLASH_KEY, "Budget configuration saved.")
         .await;
-    Redirect::to("/admin/system/ai-budgets").into_response()
+    Redirect::to(BASE).into_response()
 }
 
 /// Per-user budget detail and override form.
@@ -321,9 +466,10 @@ async fn user_budget_detail(
     session: Session,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
-        return redirect;
-    }
+    let admin = match require_permission(&state, &session, "configure ai").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let Ok(user_id) = Uuid::parse_str(&id) else {
         return render_not_found();
@@ -382,31 +528,36 @@ async fn user_budget_detail(
         }));
     }
 
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
     let flash: Option<String> = session.get(FLASH_KEY).await.ok().flatten();
     if flash.is_some() {
         let _ = session.remove::<String>(FLASH_KEY).await;
     }
+
+    let path = format!("{BASE}/user/{user_id}");
+    let viewer = user_context_for(&state, &admin).await;
+    let text = AdminText::for_page(&state, &viewer, &path).await;
+    let mut grid = tera::Context::new();
+    grid.insert("user_name", &user.name);
+    grid.insert("provider_usage", &user_provider_usage);
+    let Some(grid) = grid_html(&state, &text, "admin/ai-budget-overrides.html", &grid) else {
+        return render_server_error("The form could not be displayed.");
+    };
+    let form = override_form(&text, user_id, grid);
+    let form_html = match admin_form::render(&state, &session, &admin, form, &[]).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
 
     let mut context = tera::Context::new();
     context.insert("user_id", &user_id.to_string());
     context.insert("user_name", &user.name);
     context.insert("period_label", config.period.label());
     context.insert("provider_usage", &user_provider_usage);
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
+    context.insert("form", &form_html);
     context.insert("flash", &flash);
-    context.insert("path", &format!("/admin/system/ai-budgets/user/{user_id}"));
+    context.insert("path", &path);
 
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/ai-budget-user.html",
-        context,
-    )
-    .await
+    render_admin_template(&state, &viewer, "admin/ai-budget-user.html", context).await
 }
 
 /// Save per-user budget overrides.
@@ -416,14 +567,29 @@ async fn save_user_override(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<String>,
-    Form(form): Form<UserOverrideForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "configure ai").await {
-        return redirect;
-    }
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let posted = PostedForm(pairs);
+    let admin = match require_permission(&state, &session, "configure ai").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &admin,
+        &posted,
+        OVERRIDE_FORM_ID,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(_)) => {
+            return render_error("The form has expired. Reload the page and try again.");
+        }
+        Err(Err(response)) => return response,
+    };
 
     let Ok(user_id) = Uuid::parse_str(&id) else {
         return render_not_found();
@@ -442,7 +608,7 @@ async fn save_user_override(
     let budget_svc = state.ai_budgets();
 
     // Parse overrides from form: override_{provider_id} = limit or empty
-    for (key, value) in &form.extra {
+    for (key, value) in &posted.0 {
         if let Some(provider_id) = key.strip_prefix("override_") {
             if provider_id.is_empty() {
                 continue;
@@ -467,9 +633,10 @@ async fn save_user_override(
             }
         }
     }
+    admin_form::submitted(&state, &admin, &form_state, &posted).await;
 
     let _ = session
         .insert(FLASH_KEY, "User budget overrides saved.")
         .await;
-    Redirect::to(&format!("/admin/system/ai-budgets/user/{user_id}")).into_response()
+    Redirect::to(&format!("{BASE}/user/{user_id}")).into_response()
 }

@@ -222,9 +222,10 @@ async fn list_aliases(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, PERMISSION).await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, PERMISSION).await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let query = ListQuery::from_params(&params);
     let sort = query.sort(ALIAS_SORTS, ("created", true));
@@ -260,11 +261,25 @@ async fn list_aliases(
         })
         .collect();
 
+    let list = query.view(total, aliases_display.len(), Some(&sort));
+    let forms = match super::admin_list::render_forms(
+        &state,
+        &session,
+        &user,
+        &list,
+        BASE,
+        "Filter URL aliases",
+        "Alias or source contains",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
-    context.insert(
-        "list",
-        &query.view(total, aliases_display.len(), Some(&sort)),
-    );
+    context.insert("list", &list);
+    forms.insert_into(&mut context);
     context.insert("aliases", &aliases_display);
     context.insert("path", BASE);
 

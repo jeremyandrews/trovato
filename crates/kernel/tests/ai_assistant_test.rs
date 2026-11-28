@@ -290,6 +290,16 @@ async fn csrf_token(app: &TestApp, cookies: &str) -> String {
     panic!("no CSRF token in the login page");
 }
 
+/// The `_token` and `_form_build_id` of the pipeline form `form_id` on the
+/// page at `path`, url-encoded: what a browser posts back with that form.
+async fn form_fields_on(app: &TestApp, cookies: &str, path: &str, form_id: &str) -> String {
+    let response = app
+        .request_with_cookies(Request::get(path).body(Body::empty()).unwrap(), cookies)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK, "GET {path}");
+    common::form_fields(&body_string(response).await, form_id)
+}
+
 async fn user_id_of(app: &TestApp, username: &str) -> Uuid {
     sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
         .bind(username)
@@ -1132,16 +1142,18 @@ fn the_no_javascript_paths_redirect_and_discard_executes_nothing() {
                 .await
                 .unwrap();
 
-        // The form path: a `_token` field, because a plain <form> cannot set a
-        // header. Discard, so nothing is executed.
-        let token = csrf_token(app, &admin).await;
+        // The form path: the page's proposal form, its `_token` field and saved
+        // state, because a plain <form> cannot set a header. Discard, so
+        // nothing is executed.
+        let page = format!("/ai/assistant/{SCOPE}/{}", widget_id("w-form"));
+        let fields = form_fields_on(app, &admin, &page, "assistant_proposal_form").await;
         let response = app
             .request_with_cookies(
                 Request::post(format!(
                     "/api/v1/assistant/{conversation}/proposals/{proposal}/discard"
                 ))
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(format!("_token={token}")))
+                .body(Body::from(fields))
                 .unwrap(),
                 &admin,
             )
@@ -1742,10 +1754,16 @@ fn the_admin_page_lists_scopes_and_saves_an_override() {
         // A dropped scope is visible here, not only in a startup log.
         assert!(html.contains("broken_widget"), "rejections must be shown");
 
-        // Save an override and switch the scope off.
-        let token = csrf_token(app, &admin).await;
+        // Save an override and switch the scope off, with the fields the
+        // page's pipeline form built.
+        let fields = form_fields_on(
+            app,
+            &admin,
+            "/admin/system/ai-assistant",
+            "ai_assistant_config_form",
+        )
+        .await;
         let form = [
-            ("_token", token.as_str()),
             ("enabled", "1"),
             ("provider_id", ""),
             ("model", ""),
@@ -1763,9 +1781,11 @@ fn the_admin_page_lists_scopes_and_saves_an_override() {
             ("core_prompt", "Custom core prompt."),
             ("scope_prompt[test_widget]", "Only say no."),
         ];
-        let body = form
-            .iter()
-            .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
+        let body = std::iter::once(fields)
+            .chain(
+                form.iter()
+                    .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v))),
+            )
             .collect::<Vec<_>>()
             .join("&");
         let response = app
@@ -1797,17 +1817,25 @@ fn the_admin_page_lists_scopes_and_saves_an_override() {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
         // Reset restores the stock text.
-        let token = csrf_token(app, &admin).await;
+        let fields = form_fields_on(
+            app,
+            &admin,
+            "/admin/system/ai-assistant",
+            "ai_assistant_config_form",
+        )
+        .await;
         let mut reset: Vec<(String, String)> = form
             .iter()
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
-        reset[0] = ("_token".to_string(), token);
         reset.push(("scope_enabled[test_widget]".to_string(), "1".to_string()));
         reset.push(("reset_core_prompt".to_string(), "1".to_string()));
-        let body = reset
-            .iter()
-            .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
+        let body = std::iter::once(fields)
+            .chain(
+                reset
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v))),
+            )
             .collect::<Vec<_>>()
             .join("&");
         app.request_with_cookies(
@@ -2096,9 +2124,14 @@ fn a_blank_temperature_on_the_admin_form_saves_as_unset() {
             )
             .await;
 
-        let token = csrf_token(app, &admin).await;
+        let fields = form_fields_on(
+            app,
+            &admin,
+            "/admin/system/ai-assistant",
+            "ai_assistant_config_form",
+        )
+        .await;
         let form = [
-            ("_token", token.as_str()),
             ("enabled", "1"),
             ("provider_id", ""),
             ("model", ""),
@@ -2116,9 +2149,11 @@ fn a_blank_temperature_on_the_admin_form_saves_as_unset() {
             ("core_prompt", ""),
             ("scope_enabled[test_widget]", "1"),
         ];
-        let body = form
-            .iter()
-            .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
+        let body = std::iter::once(fields)
+            .chain(
+                form.iter()
+                    .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v))),
+            )
             .collect::<Vec<_>>()
             .join("&");
         let response = app
@@ -2471,6 +2506,165 @@ fn the_tools_path_refuses_a_private_ip_literal_base_url() {
         assert!(
             event_types(&sse).iter().any(|t| t == "error"),
             "the person is told the call failed: {sse}"
+        );
+    });
+}
+
+// =============================================================================
+// B83c: the assistant's admin page and conversation page on the form pipeline
+// =============================================================================
+
+/// POST a url-encoded `body` to `path`: its status and text.
+async fn b83c_post(app: &TestApp, cookies: &str, path: &str, body: String) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::post(path)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, body_string(response).await)
+}
+
+/// GET `path`: its HTML.
+async fn b83c_page(app: &TestApp, cookies: &str, path: &str) -> String {
+    let response = app
+        .request_with_cookies(Request::get(path).body(Body::empty()).unwrap(), cookies)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK, "GET {path}");
+    body_string(response).await
+}
+
+#[test]
+fn b83c_the_assistant_admin_form_is_a_pipeline_form() {
+    common::run_test(async {
+        let app = app();
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
+        set_config(app, base_config()).await;
+        let admin = app
+            .create_and_login_admin(
+                "b83c_asst_admin",
+                "Password123!",
+                "b83c_asst_admin@test.local",
+            )
+            .await;
+        let path = "/admin/system/ai-assistant";
+        let form_id = "ai_assistant_config_form";
+
+        let html = b83c_page(app, &admin, path).await;
+        let form = common::form_in(&html, form_id).expect("the assistant form");
+        assert!(form.contains("data-form-pipeline"), "{form}");
+        assert!(
+            form.contains("scope_prompt[test_widget]"),
+            "the scopes are part of the form: {form}"
+        );
+
+        let fields = "enabled=1&temperature=0.2&core_prompt=Kept.";
+        let token_only = common::form_fields(&html, form_id)
+            .split("&_form_build_id=")
+            .next()
+            .unwrap()
+            .to_string();
+        let (status, text) = b83c_post(app, &admin, path, format!("{token_only}&{fields}")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("The form has expired"), "{text}");
+
+        let html = b83c_page(app, &admin, path).await;
+        let (status, text) = b83c_post(
+            app,
+            &admin,
+            path,
+            format!(
+                "{}&enabled=1&temperature=warm&core_prompt=Kept.",
+                common::form_fields(&html, form_id)
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let form = common::form_in(&text, form_id).expect("the form again");
+        assert!(form.contains(r#"aria-invalid="true""#), "{form}");
+        assert!(
+            form.contains("Temperature must be a number, or blank to leave it unset."),
+            "{form}"
+        );
+        assert_ne!(
+            app.state
+                .ai_assistant()
+                .load_config()
+                .await
+                .unwrap()
+                .core_prompt,
+            "Kept.",
+            "a refused submission saves nothing"
+        );
+
+        set_config(app, base_config()).await;
+    });
+}
+
+#[test]
+fn b83c_the_conversation_page_forms_are_pipeline_forms() {
+    common::run_test(async {
+        let app = app();
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
+        set_config(app, base_config()).await;
+        let admin = admin_who_may_configure(app, "b83c_asst_conv").await;
+        let conversation = open_conversation(app, &admin, "w-b83c").await;
+        let page = format!("/ai/assistant/{SCOPE}/{}", widget_id("w-b83c"));
+
+        let html = b83c_page(app, &admin, &page).await;
+        for form_id in [
+            "assistant_proposal_form",
+            "assistant_reset_form",
+            "assistant-composer",
+        ] {
+            let form = common::form_in(&html, form_id)
+                .unwrap_or_else(|| panic!("no form {form_id}: {html}"));
+            assert!(form.contains("data-form-pipeline"), "{form}");
+        }
+        let start = html
+            .find(r#"<div class="assistant""#)
+            .expect("the assistant");
+        let end = html.find("/static/js/assistant.js").expect("its script");
+        let assistant = &html[start..end];
+        assert_eq!(
+            assistant.matches("<form ").count(),
+            assistant.matches("data-form-pipeline").count(),
+            "every form of the assistant is a pipeline form: {assistant}"
+        );
+
+        // Start over without the form's build id is refused, and nothing is
+        // reset; with it, a fresh conversation starts.
+        let reset = format!("/api/v1/assistant/{conversation}/reset");
+        let token_only = common::form_fields(&html, "assistant_reset_form")
+            .split("&_form_build_id=")
+            .next()
+            .unwrap()
+            .to_string();
+        let (status, text) = b83c_post(app, &admin, &reset, token_only).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert_eq!(
+            open_conversation(app, &admin, "w-b83c").await,
+            conversation,
+            "a refused Start over keeps the conversation"
+        );
+
+        let html = b83c_page(app, &admin, &page).await;
+        let (status, text) = b83c_post(
+            app,
+            &admin,
+            &reset,
+            common::form_fields(&html, "assistant_reset_form"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{text}");
+        assert_ne!(
+            open_conversation(app, &admin, "w-b83c").await,
+            conversation,
+            "Start over opens a fresh conversation"
         );
     });
 }
