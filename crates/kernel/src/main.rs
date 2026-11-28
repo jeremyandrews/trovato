@@ -115,6 +115,11 @@ enum Commands {
         #[command(subcommand)]
         action: ItemAction,
     },
+    /// File storage commands.
+    Files {
+        #[command(subcommand)]
+        action: FilesAction,
+    },
     /// Import content from another site, keeping each record's id and dates.
     ///
     /// Reads newline delimited JSON, one record per line
@@ -177,6 +182,26 @@ enum Commands {
         /// on any generated site that can be reached.
         #[arg(long)]
         admin_password: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum FilesAction {
+    /// Copy every file from one storage backend to another (BL-109).
+    ///
+    /// Verifies size and a SHA-256 checksum after each copy, and rewrites
+    /// `file_managed.uri` only once that verification passes. Safe to
+    /// interrupt (Ctrl-C, a pod restart) and rerun: it picks up exactly
+    /// where it left off, with no separate progress file (see
+    /// `file::relocate` for why). Each file's public/private scheme is
+    /// unchanged; only its physical backend moves.
+    Migrate {
+        /// The backend every selected file is currently stored on.
+        #[arg(long, value_parser = ["local", "s3"])]
+        from: String,
+        /// The backend to copy it to.
+        #[arg(long, value_parser = ["local", "s3"])]
+        to: String,
     },
 }
 
@@ -349,6 +374,7 @@ async fn main() -> Result<()> {
         Some(Commands::Cache { action }) => run_cache_command(action).await,
         Some(Commands::Search { action }) => run_search_command(action).await,
         Some(Commands::Item { action }) => run_item_command(action).await,
+        Some(Commands::Files { action }) => run_files_command(action).await,
         Some(Commands::Import { file, dry_run }) => run_import_command(&file, dry_run).await,
         Some(Commands::Migrate {
             status,
@@ -1237,6 +1263,72 @@ async fn run_plugin_command(action: PluginAction) -> Result<()> {
     // Which plugins run still waits for a restart.
     println!("{}", bump_from_cli(&config, &CacheKind::ALL).await);
 
+    Ok(())
+}
+
+/// Run a `trovato files` CLI command.
+async fn run_files_command(action: FilesAction) -> Result<()> {
+    match action {
+        FilesAction::Migrate { from, to } => run_files_migrate(&from, &to).await,
+    }
+}
+
+/// `trovato files migrate --from X --to Y`: build both backends for both
+/// schemes (public and private may each be `local` or `s3` independently of
+/// which one is being migrated), then hand off to [`crate::file::migrate_files`].
+async fn run_files_migrate(from: &str, to: &str) -> Result<()> {
+    let config = Config::from_env().context("failed to load configuration")?;
+    let pool = db::create_pool(&config)
+        .await
+        .context("failed to create database pool")?;
+
+    let backends = crate::file::MigrationBackends {
+        public_from: crate::file::build_storage(
+            "public",
+            from,
+            &config.uploads_dir,
+            &config.files_url,
+            config.s3.as_ref(),
+        )?,
+        public_to: crate::file::build_storage(
+            "public",
+            to,
+            &config.uploads_dir,
+            &config.files_url,
+            config.s3.as_ref(),
+        )?,
+        private_from: crate::file::build_storage(
+            "private",
+            from,
+            &config.private_uploads_dir,
+            &config.files_url,
+            config.s3.as_ref(),
+        )?,
+        private_to: crate::file::build_storage(
+            "private",
+            to,
+            &config.private_uploads_dir,
+            &config.files_url,
+            config.s3.as_ref(),
+        )?,
+    };
+
+    let summary = crate::file::migrate_files(&pool, from, to, &backends, |line| println!("{line}"))
+        .await
+        .context("files migrate failed")?;
+
+    println!(
+        "Moved {} file(s) from {from} to {to}{}.",
+        summary.moved,
+        if summary.already_done_elsewhere > 0 {
+            format!(
+                " ({} already finished by a concurrent run)",
+                summary.already_done_elsewhere
+            )
+        } else {
+            String::new()
+        }
+    );
     Ok(())
 }
 

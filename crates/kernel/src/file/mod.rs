@@ -2,6 +2,7 @@
 //!
 //! Provides file upload, storage, and cleanup functionality.
 
+pub mod relocate;
 pub mod s3;
 pub mod service;
 pub mod sigv4;
@@ -17,6 +18,7 @@ pub use service::{
     MAX_FILE_SIZE, MAX_UPLOAD_BODY_SIZE, MediaScope, StoreFile, UploadRejected, UploadResult,
     mime_for_filename, resolve_mime_type,
 };
+pub use relocate::{MigrateSummary, MigrationBackends, migrate_files};
 pub use s3::{S3Settings, S3Storage};
 pub use storage::{FileStorage, LocalFileStorage, check_writable};
 

@@ -17,6 +17,7 @@
 
 #![allow(dead_code)]
 
+pub mod mock_s3;
 pub mod perf;
 pub mod plugin_copy;
 pub mod search_index;
