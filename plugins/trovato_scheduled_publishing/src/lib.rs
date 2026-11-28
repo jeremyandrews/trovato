@@ -823,8 +823,14 @@ fn schedule_fieldset(
             "type": "input",
             "input_type": "datetime-local",
             "title": format!("{label} ({zone})"),
+            // Unescaped, like `title` above: `element.description` renders
+            // through plain `{{ element.description }}`
+            // (`templates/form/input.html`), which Tera auto-escapes once on
+            // its own; pre-escaping with `escape_html` (as the raw markup
+            // `status` below still needs, since markup renders `| safe`)
+            // would double-escape it.
             "description": format!(
-                "Read and saved in your account's time zone, {zone_html}. Leave empty for none."
+                "Read and saved in your account's time zone, {zone}. Leave empty for none."
             ),
             "default_value": default.and_then(|s| utc_to_local(s, zone)).unwrap_or_default(),
             "attributes": {"step": "60"},
