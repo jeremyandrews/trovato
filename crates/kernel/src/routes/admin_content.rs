@@ -7,15 +7,16 @@ use axum::{Extension, Form, Router};
 use tower_sessions::Session;
 
 use crate::content::submission::PostedForm;
-use crate::form::csrf::generate_csrf_token;
+use crate::form::FormElement;
 use crate::models::CreateItem;
 use crate::state::AppState;
 
+use super::admin_form;
 use super::admin_list::{ListQuery, PER_PAGE};
 use super::helpers::{
-    CsrfOnlyForm, admin_user_context, build_local_tasks, render_admin_template, render_error,
-    render_forbidden, render_not_found, render_server_error, require_any_permission, require_csrf,
-    require_login, require_permission, single_form_field,
+    admin_user_context, build_local_tasks, render_admin_template, render_error, render_forbidden,
+    render_not_found, render_server_error, require_any_permission, require_login,
+    require_permission, single_form_field,
 };
 
 /// Drupal's permission for the content list, without the right to edit
@@ -28,6 +29,68 @@ pub const EDIT_ANY_CONTENT: &str = "edit any content";
 
 /// Session key for flash messages on the content list page.
 const CONTENT_FLASH_KEY: &str = "content_admin_flash";
+
+/// The content list's bulk form: the action select, the target stage and
+/// Apply. The row checkboxes join it through their `form` attribute.
+const BULK_FORM_ID: &str = "content_bulk_form";
+
+/// The form on the page that confirms deleting one item.
+const DELETE_FORM_ID: &str = "content_delete_form";
+
+/// The bulk form, offering `actions` and, when there are any, the stages a
+/// move can target. Both option lists are `(value, label)`; the action labels
+/// are English sources the form templates translate, the stage labels data.
+fn bulk_form(actions: &[(&str, &str)], stages: &[(String, &str)]) -> crate::form::Form {
+    let mut form = crate::form::Form::new(BULK_FORM_ID)
+        .action("/admin/content/bulk?confirm=delete")
+        .element(
+            "action",
+            FormElement::select(
+                actions
+                    .iter()
+                    .map(|(value, label)| ((*value).to_string(), (*label).to_string()))
+                    .collect(),
+            )
+            .title("Bulk action")
+            .weight(0),
+        );
+    if !stages.is_empty() {
+        // The target of "Move selected to stage"; the other actions ignore
+        // it. Each item's move is decided by the editorial workflow.
+        form = form.element(
+            "stage",
+            FormElement::select(
+                stages
+                    .iter()
+                    .map(|(value, label)| (value.clone(), (*label).to_string()))
+                    .collect(),
+            )
+            .title("Target stage")
+            .weight(1),
+        );
+    }
+    form.element(
+        "op",
+        FormElement::submit("Apply")
+            .attribute("class", "button--secondary button--small")
+            .weight(10),
+    )
+}
+
+/// The form that deletes item `id`, with a Cancel link back to the list.
+fn delete_form_for(id: uuid::Uuid, cancel: &str) -> crate::form::Form {
+    crate::form::Form::new(DELETE_FORM_ID)
+        .action(format!("/admin/content/{id}/delete"))
+        .element(
+            "op",
+            FormElement::submit("Delete")
+                .attribute("class", "button--danger")
+                .suffix(format!(
+                    r#"<a href="/admin/content" class="button button--secondary">{cancel}</a>"#
+                ))
+                .weight(10),
+        )
+}
 
 /// List all content.
 ///
@@ -139,8 +202,6 @@ async fn list_content(
         }
     };
 
-    let csrf_token = generate_csrf_token(&session).await;
-
     // Read and clear flash message
     let flash: Option<serde_json::Value> = session.get(CONTENT_FLASH_KEY).await.ok().flatten();
     if flash.is_some()
@@ -154,7 +215,6 @@ async fn list_content(
     context.insert("operations", &operations);
     context.insert("authors", &authors);
     context.insert("content_types", &content_types);
-    context.insert("stages", &stages);
     context.insert("type_filter", &type_filter.unwrap_or(""));
     // The filter and bulk selects' options, as [value, label] pairs for the
     // form macros. Type and stage labels are data; the others are English
@@ -183,17 +243,33 @@ async fn list_content(
     // Only the actions the viewer may take are offered; the bulk handler asks
     // the same question again.
     bulk_options.retain(|(action, _)| bulk_action_offered(&viewer, action));
-    context.insert("bulk_options", &bulk_options);
     let stage_options: Vec<(String, &str)> = stages
         .iter()
         .map(|s| (s.id.to_string(), s.label.as_str()))
         .collect();
-    context.insert("stage_options", &stage_options);
+    // The bulk form, when the list has rows and the viewer may take an action.
+    let bulk_form_html = if items.is_empty() || bulk_options.is_empty() {
+        None
+    } else {
+        match admin_form::render(
+            &state,
+            &session,
+            &user,
+            bulk_form(&bulk_options, &stage_options),
+            &[],
+        )
+        .await
+        {
+            Ok(html) => Some(html),
+            Err(response) => return response,
+        }
+    };
+    context.insert("bulk_form", &bulk_form_html);
+    context.insert("bulk_form_id", BULK_FORM_ID);
     context.insert(
         "status_filter",
         &status_filter.map(|s| s.to_string()).unwrap_or_default(),
     );
-    context.insert("csrf_token", &csrf_token);
     context.insert("flash", &flash);
     context.insert("list", &query.view(total, items.len(), Some(&sort)));
     context.insert("path", "/admin/content");
@@ -1030,42 +1106,93 @@ async fn edit_content_submit(
     }
 }
 
+/// Who may delete item `id`, and the item: `delete own content` is enough to
+/// come in, as on Drupal; whether this item may go is the item's own access
+/// check, asked before the delete so a refusal is a 403 and not a failed
+/// write. The confirm page and the delete itself both start here.
+async fn delete_gate(
+    state: &AppState,
+    session: &Session,
+    item_id: uuid::Uuid,
+) -> Result<
+    (
+        crate::models::User,
+        crate::tap::UserContext,
+        crate::models::Item,
+    ),
+    Response,
+> {
+    let user = require_any_permission(
+        state,
+        session,
+        &["delete any content", "delete own content"],
+    )
+    .await?;
+    let user_ctx = admin_user_context(state, &user).await;
+    let Some(item) = state.items().load(item_id).await.ok().flatten() else {
+        return Err(render_not_found());
+    };
+    if !allowed(state, &item, "delete", &user_ctx).await {
+        return Err(render_forbidden(
+            "You do not have permission to delete this content.",
+        ));
+    }
+    Ok((user, user_ctx, item))
+}
+
+/// Confirm deleting one item: what the content list's Delete link opens, so
+/// the delete is never one click away.
+///
+/// GET /admin/content/{id}/delete
+async fn delete_content_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path(item_id): Path<uuid::Uuid>,
+) -> Response {
+    let (user, viewer, item) = match delete_gate(&state, &session, item_id).await {
+        Ok(gated) => gated,
+        Err(refusal) => return refusal,
+    };
+    let path = format!("/admin/content/{item_id}/delete");
+    let text = super::admin_nav::AdminText::for_page(&state, &viewer, &path).await;
+    let form = delete_form_for(item_id, &text.html("Cancel", &[]));
+    let form_html = match admin_form::render(&state, &session, &user, form, &[]).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let mut context = tera::Context::new();
+    context.insert("item", &item);
+    context.insert("form", &form_html);
+    context.insert("path", &path);
+    render_admin_template(&state, &viewer, "admin/content-delete.html", context).await
+}
+
 /// Delete content.
 ///
-/// POST /admin/content/{id}/delete
+/// POST /admin/content/{id}/delete, from the confirm page's form.
 async fn delete_content(
     State(state): State<AppState>,
     session: Session,
     Path(item_id): Path<uuid::Uuid>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    // `delete own content` is enough to come in, as on Drupal; whether this
-    // item may go is the item's own access check, asked before the delete so
-    // a refusal is a 403 and not a failed write.
-    let user = match require_any_permission(
-        &state,
-        &session,
-        &["delete any content", "delete own content"],
-    )
-    .await
-    {
-        Ok(user) => user,
-        Err(redirect) => return redirect,
+    let posted = PostedForm(pairs);
+    let (user, user_ctx, _item) = match delete_gate(&state, &session, item_id).await {
+        Ok(gated) => gated,
+        Err(refusal) => return refusal,
     };
-
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    let user_ctx = admin_user_context(&state, &user).await;
-    let Some(item) = state.items().load(item_id).await.ok().flatten() else {
-        return render_not_found();
-    };
-    if !allowed(&state, &item, "delete", &user_ctx).await {
-        return render_forbidden("You do not have permission to delete this content.");
-    }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, DELETE_FORM_ID, Vec::new()).await
+        {
+            Ok(form_state) => form_state,
+            Err(Ok(_)) => {
+                return render_error("The form has expired. Reload the page and try again.");
+            }
+            Err(Err(response)) => return response,
+        };
     match state.items().delete(item_id, &user_ctx).await {
         Ok(true) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(item_id = %item_id, "content deleted");
             if let Err(e) = session
                 .insert(CONTENT_FLASH_KEY, "Content has been deleted.")
@@ -1092,7 +1219,6 @@ async fn delete_content(
 /// selected anything, with a 422, before the handler ran.
 #[derive(Debug, PartialEq)]
 struct BulkActionForm {
-    token: String,
     action: String,
     ids: Vec<uuid::Uuid>,
     /// The target of `move_to_stage`, as sent; read only by that action.
@@ -1105,25 +1231,23 @@ enum BulkFormError {
     /// `_token` or `action` is missing or appears more than once. Refused with
     /// a 400 before any permission lookup: there is no single action to gate.
     Malformed(&'static str),
-    /// An `ids[]` value is not a UUID. The token and action are carried so the
-    /// handler can still run its permission and CSRF checks before refusing
-    /// the whole selection.
-    InvalidId {
-        token: String,
-        action: String,
-        value: String,
-    },
+    /// An `ids[]` value is not a UUID. The action is carried so the handler
+    /// can still run its permission and form checks before refusing the
+    /// whole selection.
+    InvalidId { action: String, value: String },
 }
 
 impl BulkActionForm {
     /// Parse an `application/x-www-form-urlencoded` bulk action body.
     ///
     /// `_token` and `action` must each appear exactly once (the same rule
-    /// [`single_form_field`] applies to the CSRF token everywhere else). Every
+    /// [`single_form_field`] applies to the CSRF token everywhere else); the
+    /// token itself is checked by the form pipeline with the rest of the
+    /// submission. Every
     /// `ids[]` value must be a UUID; a repeated id is kept once, at the
     /// position it was first seen. No `ids[]` at all is an empty selection.
     fn parse(body: &str) -> Result<Self, BulkFormError> {
-        let token = single_form_field(body, "_token")
+        single_form_field(body, "_token")
             .ok_or(BulkFormError::Malformed("missing or repeated _token"))?;
         let action = single_form_field(body, "action")
             .ok_or(BulkFormError::Malformed("missing or repeated action"))?;
@@ -1135,7 +1259,6 @@ impl BulkActionForm {
             }
             let Ok(id) = uuid::Uuid::parse_str(&value) else {
                 return Err(BulkFormError::InvalidId {
-                    token,
                     action,
                     value: value.into_owned(),
                 });
@@ -1145,12 +1268,7 @@ impl BulkActionForm {
             }
         }
         let stage = single_form_field(body, "stage");
-        Ok(Self {
-            token,
-            action,
-            ids,
-            stage,
-        })
+        Ok(Self { action, ids, stage })
     }
 }
 
@@ -1169,17 +1287,12 @@ async fn bulk_content_action(
         return render_error("The form could not be read.");
     };
     // An unreadable id does not refuse the request here: the permission and
-    // CSRF checks still run first, and the selection is refused below them,
+    // form checks still run first, and the selection is refused below them,
     // before any write.
     let (form, invalid_id) = match BulkActionForm::parse(body) {
         Ok(form) => (form, None),
-        Err(BulkFormError::InvalidId {
-            token,
-            action,
-            value,
-        }) => (
+        Err(BulkFormError::InvalidId { action, value }) => (
             BulkActionForm {
-                token,
                 action,
                 ids: Vec::new(),
                 stage: None,
@@ -1226,9 +1339,22 @@ async fn bulk_content_action(
             return render_forbidden("You may not promote items or make them sticky.");
         }
     }
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    // The form token and the saved state of the list's bulk form. The
+    // confirmation page rebuilds a bulk delete under this form's id, so a
+    // confirmed delete passes here too.
+    let posted = PostedForm(
+        url::form_urlencoded::parse(body.as_bytes())
+            .into_owned()
+            .collect(),
+    );
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, BULK_FORM_ID, Vec::new()).await {
+            Ok(form_state) => form_state,
+            Err(Ok(_)) => {
+                return render_error("The form has expired. Reload the page and try again.");
+            }
+            Err(Err(response)) => return response,
+        };
 
     // Validate action before processing
     if !matches!(
@@ -1445,6 +1571,7 @@ async fn bulk_content_action(
     if let Err(e) = session.insert(CONTENT_FLASH_KEY, msg).await {
         tracing::warn!(error = %e, "failed to set flash message");
     }
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
 
     Redirect::to("/admin/content").into_response()
 }
@@ -1463,7 +1590,10 @@ pub fn router() -> Router<AppState> {
             "/admin/content/{id}/edit",
             get(edit_content_form).post(edit_content_submit),
         )
-        .route("/admin/content/{id}/delete", post(delete_content))
+        .route(
+            "/admin/content/{id}/delete",
+            get(delete_content_form).post(delete_content),
+        )
         .route("/admin/content/bulk", post(bulk_content_action))
 }
 
@@ -1516,17 +1646,16 @@ mod tests {
         let form = BulkActionForm::parse(&body).unwrap();
         assert_eq!(form.ids, vec![uuid(B), uuid(A), uuid(C)]);
         assert_eq!(form.action, "publish");
-        assert_eq!(form.token, "t");
     }
 
     #[test]
-    fn a_token_with_reserved_characters_round_trips_exactly() {
+    fn a_token_with_reserved_characters_is_read_once() {
         // `+`, `/` and `=` percent encoded, and a literal `+` for a space, as a
         // browser encodes the form.
         let body = format!("_token=a%2Bb%2Fc%3D%3D+d&action=delete&ids%5B%5D={A}");
         let form = BulkActionForm::parse(&body).unwrap();
-        assert_eq!(form.token, "a+b/c== d");
         assert_eq!(form.action, "delete");
+        assert_eq!(form.ids, vec![uuid(A)]);
     }
 
     #[test]
@@ -1535,7 +1664,6 @@ mod tests {
         assert_eq!(
             BulkActionForm::parse(&body),
             Err(BulkFormError::InvalidId {
-                token: "t".to_string(),
                 action: "publish".to_string(),
                 value: "not-a-uuid".to_string(),
             })

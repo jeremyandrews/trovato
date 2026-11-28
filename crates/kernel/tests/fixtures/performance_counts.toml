@@ -4,17 +4,21 @@
 # and commit the change with the code that caused it.
 
 ["admin_content.admin.cold"]
-queries = 18
-cache_gets = 9
-cache_misses = 9
+queries = 20
+cache_gets = 11
+cache_misses = 10
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
 gathers = 0
 renders = 1
 
-["admin_content.admin.cold".statements."select:admin_preference:f8d9bdb0"]
+["admin_content.admin.cold".statements."insert:form_state_cache:56dca877"]
 count = 1
+sql = "insert into form_state_cache (form_build_id, form_id, state, created, updated) values ($?) on conflict (form_build_id) do update set state = excluded.state, updated = excluded.updated"
+
+["admin_content.admin.cold".statements."select:admin_preference:f8d9bdb0"]
+count = 2
 sql = "select prefs from admin_preference where user_id = $?"
 
 ["admin_content.admin.cold".statements."select:category_tag:66719876"]
@@ -50,8 +54,8 @@ count = 8
 sql = "select * from users where id = $?"
 
 ["admin_content.admin.warm"]
-queries = 7
-cache_gets = 9
+queries = 9
+cache_gets = 11
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
@@ -59,8 +63,12 @@ host_calls = 0
 gathers = 0
 renders = 1
 
-["admin_content.admin.warm".statements."select:admin_preference:f8d9bdb0"]
+["admin_content.admin.warm".statements."insert:form_state_cache:56dca877"]
 count = 1
+sql = "insert into form_state_cache (form_build_id, form_id, state, created, updated) values ($?) on conflict (form_build_id) do update set state = excluded.state, updated = excluded.updated"
+
+["admin_content.admin.warm".statements."select:admin_preference:f8d9bdb0"]
+count = 2
 sql = "select prefs from admin_preference where user_id = $?"
 
 ["admin_content.admin.warm".statements."select:category_tag:66719876"]

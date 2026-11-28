@@ -110,16 +110,6 @@ async fn body_of(response: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-fn token_in(html: &str) -> Option<String> {
-    let at = html.find(r#"name="_token""#)?;
-    let start = html[..at].rfind('<')?;
-    let end = at + html[at..].find('>')?;
-    let tag = &html[start..end];
-    let vat = tag.find(r#"value=""#)? + 7;
-    let vend = tag[vat..].find('"')? + vat;
-    Some(tag[vat..vend].to_string())
-}
-
 /// A bulk publish is `ItemService::update` per item, so the item it publishes
 /// gets the alias its pattern asks for.
 #[test]
@@ -146,11 +136,8 @@ fn a_bulk_action_gives_the_item_its_alias() {
                 &cookies,
             )
             .await;
-        let token = token_in(&body_of(page).await).expect("the bulk form carries a token");
-        let body = format!(
-            "_token={}&action=publish&ids%5B%5D={id}",
-            urlencoding::encode(&token)
-        );
+        let fields = common::form_fields(&body_of(page).await, "content_bulk_form");
+        let body = format!("{fields}&action=publish&ids%5B%5D={id}");
         let response = app
             .request_with_cookies(
                 Request::post("/admin/content/bulk")

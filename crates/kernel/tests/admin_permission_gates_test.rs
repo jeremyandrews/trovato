@@ -247,6 +247,20 @@ async fn ensure_some_content(app: &TestApp) {
     app.ensure_conference_items().await;
 }
 
+/// The content list's bulk form.
+const BULK_FORM_ID: &str = "content_bulk_form";
+
+/// The bulk form's `_token` and `_form_build_id`, from the content list. A
+/// viewer offered no bulk action has no bulk form: the page's token then, with
+/// no build id, which the permission checks refuse before the form is read.
+fn bulk_fields(html: &str) -> String {
+    if common::form_in(html, BULK_FORM_ID).is_some() {
+        return common::form_fields(html, BULK_FORM_ID);
+    }
+    let token = token_in(html).expect("the page carries a token");
+    format!("_token={}&_form_build_id=", urlencoding::encode(&token))
+}
+
 /// Scrape a `_token` out of a rendered admin page.
 fn token_in(html: &str) -> Option<String> {
     let at = html.find(r#"name="_token""#)?;
@@ -265,10 +279,10 @@ async fn body_of(response: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-/// The body the list screen's form sends: the token, the action, then one
-/// `ids[]` pair per checked box.
-fn bulk_body(token: &str, action: &str, ids: &[Uuid]) -> String {
-    let mut body = format!("_token={}&action={action}", urlencoding::encode(token));
+/// The body the list screen's form sends: its `fields` (token and build id),
+/// the action, then one `ids[]` pair per checked box.
+fn bulk_body(fields: &str, action: &str, ids: &[Uuid]) -> String {
+    let mut body = format!("{fields}&action={action}");
     for id in ids {
         body.push_str(&format!("&ids%5B%5D={id}"));
     }
@@ -293,7 +307,7 @@ async fn bulk(
             cookies,
         )
         .await;
-    let token = token_in(&body_of(page).await).expect("the bulk form carries a token");
+    let fields = bulk_fields(&body_of(page).await);
 
     let response = app
         .request_with_cookies(
@@ -303,7 +317,7 @@ async fn bulk(
                     "application/x-www-form-urlencoded",
                 )
                 .header("x-forwarded-for", test_ip_for(bucket))
-                .body(Body::from(bulk_body(&token, action, ids)))
+                .body(Body::from(bulk_body(&fields, action, ids)))
                 .unwrap(),
             cookies,
         )
@@ -573,10 +587,10 @@ fn a_selection_with_an_unreadable_id_writes_nothing() {
                 &cookies,
             )
             .await;
-        let token = token_in(&body_of(page).await).expect("the bulk form carries a token");
+        let fields = bulk_fields(&body_of(page).await);
         let body = format!(
             "{}&ids%5B%5D=not-a-uuid",
-            bulk_body(&token, "publish", &[real])
+            bulk_body(&fields, "publish", &[real])
         );
         let response = app
             .request_with_cookies(
