@@ -70,6 +70,12 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `PLUGINS_DIR` | `./plugins` | Plugin search path. Several directories may be given, separated by `:`; later ones win a name collision. |
 | `UPLOADS_DIR` | `./uploads` | Path for file uploads. The server checks at startup that it can write, read and delete a file there, and refuses to start if it cannot. |
 | `FILES_URL` | `/files` | Base URL that uploaded files are served under |
+| `FILE_STORAGE` | `local` | Where uploads are kept: `local` (the `UPLOADS_DIR` directory) or `s3` (an S3 compatible bucket, below). Any other value refuses to start. |
+| `S3_BUCKET` | none | The bucket, required with `FILE_STORAGE=s3`. The server checks at startup that it can write, read and delete an object there. |
+| `S3_REGION` | `AWS_REGION`, else `us-east-1` | The bucket's region. |
+| `S3_ENDPOINT` | AWS | A non-AWS S3 compatible store, for example `http://127.0.0.1:9000` for MinIO. |
+| `S3_PREFIX` | none | A key prefix, for a bucket shared with other data or other sites. |
+| `S3_ALLOW_HTTP` | `false` | Allow a plain `http://` endpoint (a local MinIO only). |
 | `TEMPLATES_DIR` | `./templates` | Tera template search path. Several directories may be given, separated by `:`; later ones override templates of the same name. |
 | `THEMES_DIR` | `./themes` | Where themes are found, one directory per theme holding `theme.toml` (`name`, `description`, optional `screenshot`), `templates/` laid over the stock templates, and `static/` served at `/static/themes/<name>/`. Several directories may be given, separated by `:`; a later one's theme replaces an earlier one of the same name. Chosen at `/admin/appearance`. |
 | `STATIC_DIR` | `./static` | Static asset search path, served under `/static`. Several directories may be given, separated by `:`; later ones override assets of the same path. The generated Pagefind index is written to the first directory unless `PAGEFIND_OUTPUT_DIR` says otherwise. |
@@ -103,6 +109,16 @@ from them under `UPLOADS_DIR/styles/`. The kernel decides access for each file
 against the content that references it, so every file must be fetched through
 the kernel's `/files/` routes. A proxy in front of the kernel may cache what the
 kernel marks `public`; responses it marks `private, no-store` must not be kept.
+
+With `FILE_STORAGE=s3` the same holds for the bucket: never make it public or
+hand out its URLs. Only the servers' own credentials should be able to read it;
+files reach readers through `/files/`. The credentials are not Trovato
+settings: the S3 client reads the standard AWS sources (an EKS Pod Identity or
+IRSA role, the instance role, or `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY` for a self hosted store such as MinIO). To move an
+existing site's files into a bucket, run `trovato files migrate-to-s3` (see
+[docs/cli-reference.md](docs/cli-reference.md#trovato-files-migrate-to-s3)),
+then switch `FILE_STORAGE` and restart.
 
 The kernel answers `/files/` with the type stored when the upload was validated
 and `X-Content-Type-Options: nosniff`; a proxy must pass `Content-Type` through
@@ -514,8 +530,9 @@ others up to a minute later. See
 ## More Than One Server
 
 Several servers can run one site behind a load balancer, with no sticky
-sessions and no extra setting, if they share one Postgres, one Redis and one
-read-write volume for `UPLOADS_DIR` and `PAGEFIND_OUTPUT_DIR`. See
+sessions and no extra setting, if they share one Postgres, one Redis, one
+file store (a read-write volume for `UPLOADS_DIR`, or an S3 bucket with
+`FILE_STORAGE=s3`) and one read-write volume for `PAGEFIND_OUTPUT_DIR`. See
 [docs/deployment/multi-server.md](docs/deployment/multi-server.md). On
 Kubernetes, migrations run as their own step; see
 [docs/deployment/upgrades.md](docs/deployment/upgrades.md).

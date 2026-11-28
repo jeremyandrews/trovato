@@ -22,6 +22,7 @@ and `trovato <command> --help` print the same, from the binary.
 | `trovato item revision-delete <item> <revision>` | Delete a past revision of an item. |
 | `trovato import <file> [--dry-run]` | Import content from another site (users, items and their revisions, comments, aliases, redirects, tiles), keeping each record's id and dates. |
 | `trovato generate --items <N> --admin-password <PASSWORD>` | Write a deterministic test site of a given size (for performance tests and benchmarks). |
+| `trovato files migrate-to-s3 [--from <dir>] [--parallel <n>]` | Copy every uploaded file into the S3 bucket `FILE_STORAGE=s3` names, checked by SHA-256 and resumable. |
 
 ## `trovato migrate`
 
@@ -258,3 +259,33 @@ Imported 150 records from site.ndjson:
 150 change(s).
 Running servers have dropped their cached copies; the next request reads the database.
 ```
+
+## `trovato files migrate-to-s3`
+
+```
+trovato files migrate-to-s3 [--from <dir>] [--parallel <n>]
+```
+
+Copies every file under the uploads directory (`UPLOADS_DIR`, or `--from`) into
+the S3 bucket the settings name (`FILE_STORAGE=s3`, `S3_BUCKET`, and `S3_REGION`
+or `S3_ENDPOINT`), under the same key, `--parallel` at a time (default 16). It
+needs no database. The design is in
+[`docs/design/production-hosting.md`](design/production-hosting.md), decision 5.
+
+- **Same URIs.** A file's URI is `local://<key>` with either store, so nothing
+  in the database changes: once the copy is done, set `FILE_STORAGE=s3` on
+  every server and restart them.
+- **Checked.** Each copy is read back from the bucket and compared with the
+  local file by SHA-256; a mismatch is a failure.
+- **Resumable.** A file the bucket already holds with the same SHA-256 is
+  skipped and counted as already there, so an interrupted run, or one that
+  failed on some files, is finished by running it again. A file the bucket
+  holds with other bytes is copied again.
+- **Nothing deleted.** Neither side loses a file. Keep the directory until the
+  servers have run on the bucket for a while: it is the way back
+  (`FILE_STORAGE=local`).
+- **Skipped:** symbolic links (one could name a file outside the directory)
+  and Trovato's own write-check and temporary files.
+- **Output:** one line, `<total> files under <dir>: <n> copied, <n> already in
+  s3://<bucket>[/<prefix>], <n> failed`, after a `failed: <key>: <reason>` line
+  per failed file. Exits nonzero when any file failed.

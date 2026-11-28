@@ -463,9 +463,12 @@ impl FileService {
         let unique_id = Uuid::now_v7().simple().to_string();
         let safe_name = sanitize_filename(filename);
 
+        // Every backend keys files as `local://<key>` (`file/storage.rs`): the
+        // scheme names the site's file store, not the medium, so a site that
+        // moves from a directory to a bucket keeps every URI.
         match self.storage.scheme() {
-            scheme @ "local" => Ok(build_storage_uri(
-                scheme,
+            "local" | "s3" => Ok(build_storage_uri(
+                "local",
                 &tenant_prefix,
                 now,
                 &unique_id,
@@ -903,14 +906,8 @@ impl FileService {
     pub async fn load_file_data(&self, path: &str) -> Result<Option<Vec<u8>>> {
         match self.storage.read(path).await {
             Ok(data) => Ok(Some(data)),
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("not found") || msg.contains("No such file") {
-                    Ok(None)
-                } else {
-                    Err(e)
-                }
-            }
+            Err(e) if super::storage::is_not_found(&e) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 }

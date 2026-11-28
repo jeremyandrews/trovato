@@ -72,6 +72,7 @@ trovato-search-index = { path = "../search-index" }
 image = { workspace = true }
 jsonwebtoken = { workspace = true }
 reqwest = { workspace = true }
+object_store = { workspace = true }
 subtle = { workspace = true }
 base64 = { workspace = true }
 url = { workspace = true }

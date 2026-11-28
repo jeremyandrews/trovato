@@ -1,0 +1,392 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+//! BG16: a site whose files are in an S3 bucket serves them exactly as a site
+//! whose files are in a directory: private files refused without access and
+//! served with it, public files with the long `public` cache header a CDN
+//! keeps, image derivatives made once and stored in the bucket for every
+//! server, and nothing ever readable from the bucket without the server's
+//! credentials.
+//!
+//! The app here is a whole `TestApp` with `FILE_STORAGE=s3` pointed at the
+//! test store (MinIO in CI), under a fresh prefix, with image styles enabled.
+//! "Another server" is a second, independent client on the same bucket and
+//! prefix: what it can read, every pod can.
+//!
+//! Needs Postgres, Redis and the S3 test store (`TROVATO_TEST_S3_ENDPOINT`,
+//! `TROVATO_TEST_S3_BUCKET`, the store's `AWS_ACCESS_KEY_ID` and
+//! `AWS_SECRET_ACCESS_KEY`). Without the store it skips locally and fails
+//! under CI.
+
+mod common;
+
+use axum::body::{Body, to_bytes};
+use axum::http::{Request, StatusCode, header};
+use common::{TestApp, run_test};
+use trovato_kernel::file::{FileStorage, S3Config, StorageConfig, build_storage};
+use trovato_kernel::models::CreateItem;
+use trovato_kernel::models::stage::LIVE_STAGE_ID;
+use trovato_kernel::tap::UserContext;
+use uuid::Uuid;
+
+const IMAGE_STYLES: &str = "trovato_image_styles";
+const BODY: &[u8] = b"an attachment kept in the bucket";
+
+struct Fixture {
+    app: TestApp,
+    s3: S3Config,
+    uploads_dir: std::path::PathBuf,
+}
+
+static FIXTURE: std::sync::OnceLock<Option<Fixture>> = std::sync::OnceLock::new();
+
+/// The S3 backed app, or `None` (skip) when no test store is configured
+/// outside CI.
+fn fixture() -> Option<&'static Fixture> {
+    FIXTURE
+        .get_or_init(|| {
+            let s3 = s3_config()?;
+            let handle = common::shared_runtime_handle();
+            Some(
+                std::thread::spawn(move || handle.block_on(build_fixture(s3)))
+                    .join()
+                    .expect("S3 fixture app init thread panicked"),
+            )
+        })
+        .as_ref()
+}
+
+fn s3_config() -> Option<S3Config> {
+    trovato_test_utils::env::load_dotenv();
+    match (
+        std::env::var("TROVATO_TEST_S3_ENDPOINT").ok(),
+        std::env::var("TROVATO_TEST_S3_BUCKET").ok(),
+    ) {
+        (Some(endpoint), Some(bucket)) => Some(S3Config {
+            bucket,
+            region: Some("us-east-1".to_string()),
+            allow_http: endpoint.starts_with("http://"),
+            endpoint: Some(endpoint),
+            prefix: Some(format!("serving-{}", Uuid::now_v7().simple())),
+        }),
+        _ => {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI must run the S3 serving tests: set TROVATO_TEST_S3_ENDPOINT and \
+                 TROVATO_TEST_S3_BUCKET (the workflow starts MinIO for them)"
+            );
+            eprintln!("skipping: no S3 test store (TROVATO_TEST_S3_ENDPOINT) configured");
+            None
+        }
+    }
+}
+
+async fn build_fixture(s3: S3Config) -> Fixture {
+    trovato_test_utils::env::load_dotenv();
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    common::ensure_database_migrated(&database_url).await;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&database_url)
+        .await
+        .expect("failed to connect for fixture setup");
+    // Image styles enabled for this app only, as `file_serving_access_test`
+    // does: install, build, put the shared row back as it was.
+    let before: Option<i16> =
+        sqlx::query_scalar("SELECT status FROM plugin_status WHERE name = $1")
+            .bind(IMAGE_STYLES)
+            .fetch_optional(&pool)
+            .await
+            .expect("read plugin status");
+    trovato_kernel::plugin::status::install_plugin(&pool, IMAGE_STYLES, "1.0.0")
+        .await
+        .unwrap_or_else(|e| panic!("failed to install '{IMAGE_STYLES}': {e:#}"));
+
+    let mut uploads_dir = std::path::PathBuf::new();
+    let storage = StorageConfig::S3(s3.clone());
+    let app = TestApp::with_config(|config| {
+        config.file_storage = storage;
+        uploads_dir = config.uploads_dir.clone();
+    })
+    .await;
+    assert_eq!(app.state.files().storage().scheme(), "s3");
+    assert!(app.state.image_styles().is_some());
+
+    match before {
+        Some(status) => {
+            sqlx::query("UPDATE plugin_status SET status = $2 WHERE name = $1")
+                .bind(IMAGE_STYLES)
+                .bind(status)
+                .execute(&pool)
+                .await
+                .expect("restore plugin status");
+        }
+        None => {
+            sqlx::query("DELETE FROM plugin_status WHERE name = $1")
+                .bind(IMAGE_STYLES)
+                .execute(&pool)
+                .await
+                .expect("remove fixture plugin status");
+        }
+    }
+    pool.close().await;
+    Fixture {
+        app,
+        s3,
+        uploads_dir,
+    }
+}
+
+/// A second client on the same bucket and prefix: another server.
+fn other_server(f: &Fixture) -> std::sync::Arc<dyn FileStorage> {
+    build_storage(
+        &StorageConfig::S3(f.s3.clone()),
+        std::path::Path::new("/nonexistent"),
+        "/files",
+    )
+    .unwrap()
+}
+
+fn admin() -> UserContext {
+    UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
+}
+
+async fn create_user(app: &TestApp) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO users (id, name, pass, mail, status, is_admin) \
+         VALUES ($1, $2, 'x', $3, 1, false)",
+    )
+    .bind(id)
+    .bind(format!("s3owner_{}", id.simple()))
+    .bind(format!("{}@example.test", id.simple()))
+    .execute(&app.db)
+    .await
+    .expect("seed owner user");
+    id
+}
+
+/// Upload `data` as `filename`; return (uri, serve path).
+async fn upload(
+    app: &TestApp,
+    owner: Uuid,
+    filename: &str,
+    mime: &str,
+    data: &[u8],
+) -> (String, String) {
+    let up = app
+        .state
+        .files()
+        .upload(owner, filename, mime, data)
+        .await
+        .expect("upload");
+    let path = up.uri.strip_prefix("local://").unwrap().to_string();
+    (up.uri, path)
+}
+
+/// A conference item, published (`status` 1) or not (0), referencing `uri`.
+async fn item_referencing(app: &TestApp, title: &str, status: i16, uri: &str) {
+    app.state
+        .items()
+        .create(
+            CreateItem {
+                item_type: "conference".to_string(),
+                title: title.to_string(),
+                author_id: Uuid::nil(),
+                status: Some(status),
+                promote: Some(0),
+                sticky: Some(0),
+                fields: Some(serde_json::json!({ "field_city": { "value": uri } })),
+                stage_id: Some(LIVE_STAGE_ID),
+                language: Some("en".to_string()),
+                log: Some("BG16 S3 serving test".to_string()),
+            },
+            &admin(),
+        )
+        .await
+        .expect("create item");
+}
+
+async fn get(app: &TestApp, path: &str, cookies: Option<&str>) -> axum::response::Response {
+    let request = Request::get(path).body(Body::empty()).unwrap();
+    match cookies {
+        Some(cookies) => app.request_with_cookies(request, cookies).await,
+        None => app.request(request).await,
+    }
+}
+
+fn header_of(resp: &axum::response::Response, name: header::HeaderName) -> String {
+    resp.headers()
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string()
+}
+
+async fn admin_cookies(app: &TestApp) -> String {
+    let name = format!("s3admin{}", Uuid::now_v7().simple());
+    app.create_and_login_admin(&name, "test-password-123", &format!("{name}@example.com"))
+        .await
+}
+
+fn png_bytes() -> Vec<u8> {
+    let img = image::RgbImage::from_pixel(16, 16, image::Rgb([20, 120, 200]));
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut buf, image::ImageFormat::Png)
+        .expect("encode png");
+    buf.into_inner()
+}
+
+/// An upload lands in the bucket, where another server reads it, and not on
+/// this server's disk.
+#[test]
+fn an_upload_is_stored_in_the_bucket_for_every_server() {
+    run_test(async {
+        let Some(f) = fixture() else { return };
+        let owner = create_user(&f.app).await;
+        let name = format!("shared-{}.txt", Uuid::now_v7().simple());
+        let (uri, path) = upload(&f.app, owner, &name, "text/plain", BODY).await;
+        assert_eq!(other_server(f).read(&uri).await.unwrap(), BODY);
+        assert!(
+            !f.uploads_dir.join(&path).exists(),
+            "the upload must not be written to the local uploads directory"
+        );
+    });
+}
+
+/// A file referenced only by an unpublished item is 404 to an anonymous
+/// visitor, and served, uncacheable, to an administrator.
+#[test]
+fn a_private_file_is_refused_without_access_and_served_with_it() {
+    run_test(async {
+        let Some(f) = fixture() else { return };
+        f.app.ensure_conference_type().await;
+        let owner = create_user(&f.app).await;
+        let name = format!("private-{}.txt", Uuid::now_v7().simple());
+        let (uri, path) = upload(&f.app, owner, &name, "text/plain", BODY).await;
+        item_referencing(&f.app, "S3 Private Attachment", 0, &uri).await;
+
+        let resp = get(&f.app, &format!("/files/{path}"), None).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "anonymous is refused");
+
+        let cookies = admin_cookies(&f.app).await;
+        let resp = get(&f.app, &format!("/files/{path}"), Some(&cookies)).await;
+        assert_eq!(resp.status(), StatusCode::OK, "an administrator is served");
+        assert_eq!(header_of(&resp, header::CACHE_CONTROL), "private, no-store");
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], BODY);
+    });
+}
+
+/// A file a published item references is served to anyone with the headers
+/// a CDN keeps for a week, its stored type, and `nosniff`.
+#[test]
+fn a_public_file_is_served_with_cdn_friendly_headers() {
+    run_test(async {
+        let Some(f) = fixture() else { return };
+        f.app.ensure_conference_type().await;
+        let owner = create_user(&f.app).await;
+        let name = format!("public-{}.txt", Uuid::now_v7().simple());
+        let (uri, path) = upload(&f.app, owner, &name, "text/plain", BODY).await;
+        item_referencing(&f.app, "S3 Public Attachment", 1, &uri).await;
+
+        let resp = get(&f.app, &format!("/files/{path}"), None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            header_of(&resp, header::CACHE_CONTROL),
+            "public, max-age=604800"
+        );
+        assert_eq!(header_of(&resp, header::CONTENT_TYPE), "text/plain");
+        assert_eq!(
+            header_of(&resp, "x-content-type-options".parse().unwrap()),
+            "nosniff"
+        );
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], BODY);
+    });
+}
+
+/// The object itself cannot be fetched from the store without credentials:
+/// the only way to a file is Trovato's route and its access check.
+#[test]
+fn the_bucket_does_not_answer_an_unsigned_request() {
+    run_test(async {
+        let Some(f) = fixture() else { return };
+        f.app.ensure_conference_type().await;
+        let owner = create_user(&f.app).await;
+        let name = format!("unsigned-{}.txt", Uuid::now_v7().simple());
+        let (uri, path) = upload(&f.app, owner, &name, "text/plain", BODY).await;
+        item_referencing(&f.app, "S3 Unsigned Attachment", 1, &uri).await;
+
+        let endpoint = f.s3.endpoint.as_deref().unwrap().trim_end_matches('/');
+        let prefix = f.s3.prefix.as_deref().unwrap();
+        let url = format!("{endpoint}/{}/{prefix}/{path}", f.s3.bucket);
+        let resp = reqwest::get(&url).await.expect("reach the store");
+        assert_eq!(
+            resp.status().as_u16(),
+            403,
+            "an unsigned GET of a public file's object must be refused"
+        );
+    });
+}
+
+/// An image style derivative is made once and stored in the bucket, where
+/// every server finds it; a stored derivative of a restricted image is still
+/// refused to an anonymous visitor.
+#[test]
+fn image_derivatives_are_stored_in_the_bucket_and_still_access_checked() {
+    run_test(async {
+        let Some(f) = fixture() else { return };
+        f.app.ensure_conference_type().await;
+        let owner = create_user(&f.app).await;
+
+        let name = format!("pic-{}.png", Uuid::now_v7().simple());
+        let (uri, path) = upload(&f.app, owner, &name, "image/png", &png_bytes()).await;
+        item_referencing(&f.app, "S3 Public Picture", 1, &uri).await;
+        let url = format!("/files/styles/w8/{path}");
+        let resp = get(&f.app, &url, None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(header_of(&resp, header::CACHE_CONTROL).starts_with("public"));
+        let made = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert!(image::load_from_memory(&made).is_ok());
+        let stored = other_server(f)
+            .read(&format!("local://styles/w8/{path}"))
+            .await
+            .expect("the derivative is in the bucket");
+        assert_eq!(stored, made.to_vec());
+        assert!(!f.uploads_dir.join("styles/w8").join(&path).exists());
+
+        // Served again from the bucket: replace the stored bytes and see them.
+        let marker = png_bytes();
+        other_server(f)
+            .write(&format!("local://styles/w8/{path}"), &marker)
+            .await
+            .unwrap();
+        let again = get(&f.app, &url, None).await;
+        let again = to_bytes(again.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            again.to_vec(),
+            marker,
+            "a stored derivative is served from the bucket"
+        );
+
+        let name = format!("secret-{}.png", Uuid::now_v7().simple());
+        let (uri, path) = upload(&f.app, owner, &name, "image/png", &png_bytes()).await;
+        item_referencing(&f.app, "S3 Restricted Picture", 0, &uri).await;
+        let url = format!("/files/styles/w8/{path}");
+        let cookies = admin_cookies(&f.app).await;
+        assert_eq!(
+            get(&f.app, &url, Some(&cookies)).await.status(),
+            StatusCode::OK
+        );
+        assert!(
+            other_server(f)
+                .exists(&format!("local://styles/w8/{path}"))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            get(&f.app, &url, None).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    });
+}

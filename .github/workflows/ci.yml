@@ -348,6 +348,12 @@ jobs:
           echo "PAGEFIND_BIN=$RUNNER_TEMP/pagefind" >> "$GITHUB_ENV"
           echo "TROVATO_REQUIRE_PAGEFIND_CLI=1" >> "$GITHUB_ENV"
 
+      # The S3 file storage tests (BG16) run against a throwaway MinIO with
+      # random credentials made by the script; they fail, not skip, under CI
+      # when it is missing.
+      - name: Start MinIO for the S3 storage tests
+        run: ./scripts/ci-start-minio.sh
+
       - name: Run integration tests (shard ${{ matrix.shard }}/3)
         env:
           SHARD: ${{ matrix.shard }}
@@ -655,6 +661,9 @@ jobs:
       # tests. `--test-threads=1` is gone with the reason it was there for: the
       # targets' own locks make their tests safe to run together, which a local
       # `cargo test` has always relied on.
+      - name: Start MinIO for the S3 storage tests
+        run: ./scripts/ci-start-minio.sh
+
       - name: Generate coverage report
         run: |
           cargo llvm-cov clean --workspace

@@ -88,9 +88,10 @@ async fn serve_derivative(
     let cache_control =
         served_file_cache_control(&state, &original_uri, &viewer, PUBLIC_MAX_AGE).await;
 
-    // Try reading from disk cache directly (avoids TOCTOU race with separate exists + read)
-    let cache_path = image_service.cache_path(&style_name, &file_path);
-    match tokio::fs::read(&cache_path).await {
+    // A derivative made before, by any server, is in the file store beside
+    // the originals (`styles/<style>/<path>`), so every server finds it.
+    let derivative_uri = crate::services::image_style::derivative_uri(&style_name, &file_path);
+    match state.files().storage().read(&derivative_uri).await {
         Ok(data) => {
             let content_type = guess_content_type(&file_path);
             return (
@@ -103,8 +104,8 @@ async fn serve_derivative(
             )
                 .into_response();
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Not cached yet, generate below
+        Err(e) if crate::file::is_not_found(&e) => {
+            // Not made yet, generate below
         }
         Err(e) => {
             tracing::debug!(error = %e, "failed to read cached derivative, regenerating");
@@ -170,20 +171,15 @@ async fn serve_derivative(
     // Process through style effects on a blocking thread to avoid starving
     // the Tokio runtime with CPU-intensive image decoding/encoding.
     let svc = image_service.clone();
-    let sn = style_name.clone();
-    let fp = file_path.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let derivative = svc.process_image(&original, &style)?;
-        // Save to disk cache while still on the blocking thread
-        if let Err(e) = svc.save_derivative(&sn, &fp, &derivative) {
-            tracing::warn!(error = %e, "failed to cache derivative");
-        }
-        Ok::<Vec<u8>, anyhow::Error>(derivative)
-    })
-    .await;
+    let result = tokio::task::spawn_blocking(move || svc.process_image(&original, &style)).await;
 
     let derivative = match result {
-        Ok(Ok(data)) => data,
+        Ok(Ok(data)) => {
+            if let Err(e) = state.files().storage().write(&derivative_uri, &data).await {
+                tracing::warn!(error = %format!("{e:#}"), "failed to store derivative");
+            }
+            data
+        }
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "failed to process image");
             return crate::error::AppError::with_status(

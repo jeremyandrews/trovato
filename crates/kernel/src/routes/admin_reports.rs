@@ -803,7 +803,17 @@ async fn cron_requirement(state: &AppState) -> (Requirement, Option<i64>) {
 async fn files_requirement(state: &AppState) -> Requirement {
     const TITLE: &str = "File system";
     let Some(dir) = state.files().local_dir() else {
-        return Requirement::new(TITLE, "Remote storage", "ok");
+        let storage = state.files().storage();
+        let place = storage.describe();
+        return match storage.check_usable().await {
+            Ok(()) => Requirement::new(TITLE, format!("Object storage ({place})"), "ok"),
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "status report: file store");
+                Requirement::new(TITLE, format!("Not usable ({place})"), "error").because(
+                    "Uploads will fail. Check the S3_* settings and this server's access to the bucket.",
+                )
+            }
+        };
     };
     match crate::file::storage::check_writable(dir).await {
         Ok(()) => Requirement::new(TITLE, format!("Writable ({})", dir.display()), "ok"),
