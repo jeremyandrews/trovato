@@ -502,6 +502,7 @@ pub async fn inject_site_context_for(
     // with the page's root values.
     let tile_render = crate::services::tile::TileRenderContext {
         state,
+        session,
         viewer,
         language: &active_language,
         roles: &user_roles,
