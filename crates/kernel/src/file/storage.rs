@@ -100,6 +100,40 @@ pub fn is_unreachable(e: &anyhow::Error) -> bool {
         .any(|cause| cause.downcast_ref::<StoreUnreachable>().is_some())
 }
 
+/// How long the startup check waits for a remote store before starting anyway.
+pub const REMOTE_STARTUP_CHECK_LIMIT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// The startup check: `Ok` when the server may start, `Err` when it must not.
+///
+/// A directory (`local_dir` is `Some`) must pass in full, however long it
+/// takes: a hung uploads mount is not an outage of another service but this
+/// server's own disk, and a server that starts on it cannot store anything.
+/// A remote store that answers definitely (no such bucket, denied, wrong
+/// region) stops the start; one that cannot be reached, or does not answer
+/// within [`REMOTE_STARTUP_CHECK_LIMIT`], is logged and the server starts, so
+/// a pod restarted during the store's outage does not crash loop.
+pub async fn startup_check(store: &dyn FileStorage) -> Result<()> {
+    if store.local_dir().is_some() {
+        return store.check_usable().await;
+    }
+    match tokio::time::timeout(REMOTE_STARTUP_CHECK_LIMIT, store.check_usable()).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) if is_unreachable(&e) => {
+            tracing::error!(error = %format!("{e:#}"), "file store unreachable at startup; starting anyway");
+            Ok(())
+        }
+        Ok(Err(e)) => Err(e),
+        Err(_) => {
+            tracing::error!(
+                store = %store.describe(),
+                "file store did not answer the startup check within {} seconds; starting anyway",
+                REMOTE_STARTUP_CHECK_LIMIT.as_secs()
+            );
+            Ok(())
+        }
+    }
+}
+
 /// File storage backend trait.
 #[async_trait]
 pub trait FileStorage: Send + Sync {

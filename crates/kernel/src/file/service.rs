@@ -262,6 +262,25 @@ impl FileService {
         self.storage.local_dir()
     }
 
+    /// Whether `uri`, which has no `file_managed` row of its own, may still
+    /// name a managed file in this store: on a directory, when a row's URI
+    /// differs from it only in letter case. A case-insensitive file system
+    /// (macOS, Windows) reads both spellings as the same file, so the other
+    /// spelling must get that file's access check, never be served as an
+    /// unmanaged file. An object store's keys are exact, so there it never does.
+    pub async fn is_other_spelling_of_managed(&self, uri: &str) -> Result<bool> {
+        if self.storage.local_dir().is_none() {
+            return Ok(false);
+        }
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM file_managed WHERE lower(uri) = lower($1) AND uri <> $1)",
+        )
+        .bind(uri)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to look up other spellings of a file")
+    }
+
     /// Upload a file (default tenant — no tenant prefix in URI).
     ///
     /// Validates size and MIME type, stores the file, and creates a database record.
@@ -361,6 +380,7 @@ impl FileService {
                 .await
                 .context("failed to look up file")?;
 
+        let is_new = existing.is_none();
         let (uri, bytes_changed) = match existing {
             Some(uri) => {
                 let changed = match self.storage.read(&uri).await {
@@ -384,7 +404,7 @@ impl FileService {
 
         let now = chrono::Utc::now().timestamp();
         let alt_text = file.alt_text.map(|t| t.trim().to_string());
-        sqlx::query(
+        let written = sqlx::query(
             r#"
             INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)
@@ -413,8 +433,16 @@ impl FileService {
         .bind(alt_text)
         .bind(bytes_changed)
         .execute(&self.pool)
-        .await
-        .context("failed to write file record")?;
+        .await;
+        if let Err(e) = written {
+            // New bytes with no row would be served to anyone as an unmanaged
+            // file: take them back out. (A failure here leaves an object under
+            // an unguessable new name, and is logged.)
+            if is_new && let Err(cleanup) = self.storage.delete(&uri).await {
+                warn!(error = %format!("{cleanup:#}"), uri = %uri, "failed to remove the bytes of an upload whose record was not written");
+            }
+            return Err(anyhow::Error::new(e).context("failed to write file record"));
+        }
 
         let url = self.storage.public_url(&uri);
 

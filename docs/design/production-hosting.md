@@ -360,7 +360,7 @@ store.
   under the same role. `trovato-migrate`: read `db-owner` only. `external-secrets`: read `trovato/*` only. The drill
   role: restore into and delete `drill-*` instances only. No pod has any
   permission over IAM, KMS key policy, backups or logs.
-- **The provider can be breached.** No long lived key anywhere: pods use Pod
+- **The provider can be breached.** No long lived key anywhere but one: pods use Pod
   Identity; CI reaches AWS through GitHub OIDC (`token.actions.githubusercontent.com`)
   assuming a role whose trust policy names this repository and the `main`
   branch or a `production` environment, for one hour; people use IAM Identity
@@ -369,6 +369,19 @@ store.
   16 characters) or passes `aws-access-key-id` to an action. The CI test MinIO
   uses credentials made at random per run by `scripts/ci-start-minio.sh`, never
   written into a workflow.
+- **The one long lived key: mail.** Trovato sends mail over SMTP, and SES
+  takes SMTP only with a password derived from an IAM user's access key, so
+  `trovato/mail` holds the one key that does not expire. It is held down
+  instead: the IAM user `trovato-ses-smtp` has no console password and one
+  inline policy, `ses:SendRawEmail` from the site's verified sending
+  identity only, with `aws:SourceIp` limited to the NAT gateway's address,
+  so a leaked password sends mail from trovato.blog's own network or not at
+  all; SES sending limits and the bounce and complaint alarms (morning items)
+  cap what it could do. Rotation creates the second key as the rotation role,
+  and the `CreateAccessKey` page excludes exactly that role and user, so a
+  routine rotation pages no one while any other `CreateAccessKey` still does.
+  The way to no long lived key at all is an SES API transport (`SendEmail`
+  with the pod's role), a change to Trovato's mail sender left for later.
 - **Rotation in one command with no downtime** (`deploy/aws/scripts/rotate-secrets.sh`,
   part 3), every secret in turn:
   - database: two app roles (`trovato_app_a`, `trovato_app_b`); the one not in
@@ -380,8 +393,8 @@ store.
     together until the pods have rolled, then `SET` retires the old one;
   - Stripe, mail, Cloudflare: a new key from the provider's API (Stripe's
     rolled key keeps the old one valid for a set time; SES SMTP credentials
-    are an IAM key pair rotated by creating the second before deleting the
-    first; Cloudflare tokens are rolled by API), stored, pods rolled, old key
+    are the IAM key pair named above, rotated by creating the second before
+    deleting the first; Cloudflare tokens are rolled by API), stored, pods rolled, old key
     revoked;
   - session and signing keys: a new key is added beside the old, pods roll,
     and the old is removed after the session lifetime.
@@ -410,7 +423,8 @@ store.
   an organization on GitHub Enterprise Cloud ($21 per user a month, two users),
   a cost named in the table below and a step for Jeremy.
 - **Alerts on unusual IAM activity** (page now, decision 11): EventBridge rules
-  on the trail for root sign-in, `CreateUser`, `CreateAccessKey`,
+  on the trail for root sign-in, `CreateUser`, `CreateAccessKey` (except the rotation role's
+  on `trovato-ses-smtp`, above),
   `CreateLoginProfile`, any `Attach*Policy`/`Put*Policy`/`CreatePolicyVersion`,
   and changes to the trail, the log bucket or a backup vault; and GuardDuty for
   access from unusual networks and anomalous API use (findings of high
@@ -479,6 +493,15 @@ store.
   version current then, and only keys that did not exist then are deleted
   (their versions stay, outside what is served, for 90 days). Nothing is ever
   moved to another key under `files/`, which would be served with no row.
+  Matching the times is not enough: an upload writes its bytes before its
+  row, so a restore point between the two holds an object with no row (and
+  a failed delete keeps both, by design). Before the site reopens the runbook
+  therefore lists the restored bucket against the restored `file_managed`
+  table and deletes every key under `files/` that no row names (a
+  derivative, `styles/<style>/<path>`, counts as named when its original
+  is), printing what it removed; the drill checks that a restore leaves no
+  such key. In normal running an upload whose row fails takes its bytes back
+  out (`FileService::store`).
   Failing over to the Frankfurt copy is one way: uploads and deletes made
   there exist only there, so the way back is a copy from Frankfurt to Milan
   with the servers scaled to zero, never a plain switch of `S3_REGION`.
@@ -517,7 +540,14 @@ store.
    through Cloudflare and at the origin directly: a failure through Cloudflare
    alone is Cloudflare's outage, which no one here can fix, and is a morning
    item with a status page note. This is the "all writes failing for more
-   than N minutes" rule, with N = 10.
+   than N minutes" rule, with N = 10. Neither request counts nor
+   `/health/ready` see a write path failing while no one writes (a lost
+   bucket permission at night), so a third input fires it on its own: a
+   write probe, a cron task every minute that writes, reads back and deletes
+   a row in Postgres and an object in the file store (the startup check's
+   steps) and exports `trovato_write_probe_ok` (1 or 0, per store); rule 1
+   also fires when it is 0 for 10 minutes on every pod. It needs no user
+   traffic, and the probe itself is part 3.
 2. Data loss risk: RDS instance not available for 10 minutes (a failover that
    did not heal), database free storage under 5% with autoscaling at its
    maximum. (Uploads failing count toward rule 1: they are writes.) Held
@@ -662,6 +692,8 @@ argument is worth rechecking then.
 - **Moving blogs between regions**: later work.
 - **The Pagefind index in the file store**: a follow-up; launch uses EFS.
 - **Signed URLs**: rejected (decision 5).
+- **An SES API mail transport**: later work; until then the SES SMTP key is
+  the one long lived key (decision 6).
 - **RDS Proxy and Aurora**: rejected for now (decision 3), named upgrades.
 
 ## Parts
@@ -675,7 +707,8 @@ argument is worth rechecking then.
    AWS key in any workflow, pinned `FROM` digests), Kubernetes manifests for
    EKS (External Secrets, Pod Identity, HPA, PDB), `deploy/aws/README.md`.
 3. `bg16-ops`: the restore drill and rotation drill scripts and their local CI
-   runs, alert rules, the Upptime configuration, the restore runbook, the on
+   runs, the restore's bucket-against-rows check, the write probe
+   (`trovato_write_probe_ok`), alert rules, the Upptime configuration, the restore runbook, the on
    call guide and the breach runbook.
 
 ## Tests (part 1)

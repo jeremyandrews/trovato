@@ -681,3 +681,76 @@ fn the_status_report_checks_the_bucket() {
         }
     });
 }
+
+/// A directory store that remembers every key written to it.
+struct Recording {
+    inner: trovato_kernel::file::LocalFileStorage,
+    written: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl FileStorage for Recording {
+    async fn write(&self, uri: &str, data: &[u8]) -> anyhow::Result<()> {
+        self.written.lock().unwrap().push(uri.to_string());
+        self.inner.write(uri, data).await
+    }
+    async fn read(&self, uri: &str) -> anyhow::Result<Vec<u8>> {
+        self.inner.read(uri).await
+    }
+    async fn delete(&self, uri: &str) -> anyhow::Result<()> {
+        self.inner.delete(uri).await
+    }
+    async fn exists(&self, uri: &str) -> anyhow::Result<bool> {
+        self.inner.exists(uri).await
+    }
+    fn public_url(&self, uri: &str) -> String {
+        self.inner.public_url(uri)
+    }
+    fn scheme(&self) -> &'static str {
+        "local"
+    }
+    async fn check_usable(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn describe(&self) -> String {
+        "recording".into()
+    }
+}
+
+/// An upload whose record cannot be written leaves no bytes behind: stored
+/// with no row, they would be served to anyone as an unmanaged file. Needs
+/// only Postgres.
+#[test]
+fn an_upload_whose_record_fails_leaves_no_bytes() {
+    run_test(async {
+        let app = common::shared_app().await;
+        let dir =
+            std::env::temp_dir().join(format!("trovato-recording-{}", Uuid::now_v7().simple()));
+        let store = std::sync::Arc::new(Recording {
+            inner: trovato_kernel::file::LocalFileStorage::new(&dir, "/files"),
+            written: std::sync::Mutex::new(Vec::new()),
+        });
+        let files = trovato_kernel::file::FileService::new(app.db.clone(), store.clone());
+        // No such user: the row's owner reference refuses it.
+        let no_owner = Uuid::now_v7();
+        let name = format!("orphan-{}.txt", Uuid::now_v7().simple());
+        assert!(
+            files
+                .upload(no_owner, &name, "text/plain", BODY)
+                .await
+                .is_err(),
+            "the record cannot be written"
+        );
+        let written = store.written.lock().unwrap().clone();
+        assert_eq!(
+            written.len(),
+            1,
+            "the bytes were written first: {written:?}"
+        );
+        assert!(
+            !store.exists(&written[0]).await.unwrap(),
+            "and taken back out when the record failed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}

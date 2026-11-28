@@ -49,7 +49,8 @@ fn is_internal_name(name: &str) -> bool {
 /// goes on; only `root` itself failing stops it).
 ///
 /// Symbolic links are not followed: a link could name a file outside the
-/// directory, which must never be copied into the store.
+/// directory, which must never be copied into the store. A file whose path is not
+/// UTF-8 is reported with the directories that could not be listed.
 async fn list_files(root: &Path) -> Result<(Vec<String>, Vec<(String, String)>)> {
     let mut out = Vec::new();
     let mut unlisted = Vec::new();
@@ -79,11 +80,19 @@ async fn list_files(root: &Path) -> Result<(Vec<String>, Vec<(String, String)>)>
                 let rel = path
                     .strip_prefix(root)
                     .context("listed file outside the directory")?;
-                let parts: Vec<String> = rel
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                    .collect();
-                out.push(parts.join("/"));
+                // A key is text: a name that is not UTF-8 has no key of its
+                // own (a lossy spelling could be another file's name), so it
+                // is reported, never copied under a guess.
+                let parts: Option<Vec<&str>> =
+                    rel.components().map(|c| c.as_os_str().to_str()).collect();
+                match parts {
+                    Some(parts) => out.push(parts.join("/")),
+                    None => unlisted.push((
+                        rel.display().to_string(),
+                        "the name is not UTF-8, so it has no file store key; rename it and run again"
+                            .to_string(),
+                    )),
+                }
             }
         }
     }
@@ -113,26 +122,25 @@ enum Copied {
     AlreadyThere,
 }
 
-/// Read the regular file at `path`, refusing one that is no longer a regular
-/// file inside `root`: its directory must still resolve under `root`, and the
-/// file itself is opened without following a symbolic link (on Unix).
-fn read_inside(root: &Path, path: &Path) -> Result<Vec<u8>> {
+/// Read the regular file at `key` under `root`, refusing anything that is no
+/// longer a regular file inside `root` by the time it is opened.
+///
+/// On Unix every directory on the way is opened relative to the one before,
+/// none of them through a symbolic link (`O_NOFOLLOW`), and the file itself
+/// the same way, so a directory or file swapped for a link at any moment is
+/// refused rather than followed out of the directory: there is no window
+/// between a check and the open. Elsewhere the file's directory is checked to
+/// resolve under `root` and the file not to be a link, just before opening.
+fn read_inside(root: &Path, key: &str) -> Result<Vec<u8>> {
     use std::io::Read;
-    let parent = path.parent().context("a file with no directory")?;
-    if !parent.canonicalize()?.starts_with(root.canonicalize()?) {
-        anyhow::bail!("its directory is no longer inside the uploads directory");
-    }
-    if !std::fs::symlink_metadata(path)?.file_type().is_file() {
-        anyhow::bail!("no longer a regular file");
-    }
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
+    let parts: Vec<&str> = key.split('/').collect();
+    if parts
+        .iter()
+        .any(|p| p.is_empty() || *p == "." || *p == "..")
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        anyhow::bail!("not a plain path under the directory");
     }
-    let mut file = options.open(path)?;
+    let mut file = open_inside(root, &parts)?;
     if !file.metadata()?.file_type().is_file() {
         anyhow::bail!("no longer a regular file");
     }
@@ -141,12 +149,53 @@ fn read_inside(root: &Path, path: &Path) -> Result<Vec<u8>> {
     Ok(data)
 }
 
+#[cfg(unix)]
+fn open_inside(root: &Path, parts: &[&str]) -> Result<std::fs::File> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    let (name, dirs) = parts.split_last().context("an empty path")?;
+    let step = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut dir = open(
+        root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    for part in dirs {
+        dir = openat(&dir, *part, step, Mode::empty()).with_context(|| {
+            format!("{part}/ is no longer a directory inside the uploads directory")
+        })?;
+    }
+    // Non-blocking, so a FIFO put in the file's place is opened (and then
+    // refused as not a regular file) rather than waited on.
+    let fd = openat(
+        &dir,
+        *name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .context("no longer a regular file inside the uploads directory")?;
+    Ok(std::fs::File::from(fd))
+}
+
+#[cfg(not(unix))]
+fn open_inside(root: &Path, parts: &[&str]) -> Result<std::fs::File> {
+    let path = parts
+        .iter()
+        .fold(root.to_path_buf(), |p, part| p.join(part));
+    let parent = path.parent().context("a file with no directory")?;
+    if !parent.canonicalize()?.starts_with(root.canonicalize()?) {
+        anyhow::bail!("its directory is no longer inside the uploads directory");
+    }
+    if !std::fs::symlink_metadata(&path)?.file_type().is_file() {
+        anyhow::bail!("no longer a regular file");
+    }
+    Ok(std::fs::File::open(&path)?)
+}
+
 async fn copy_one(root: &Path, key: &str, dest: &dyn FileStorage) -> Result<Copied> {
-    // Checked again just before reading, not only when listed: a file swapped
-    // for a symbolic link in between is refused, not followed.
-    let path = root.join(key);
-    let root = root.to_path_buf();
-    let data = tokio::task::spawn_blocking(move || read_inside(&root, &path))
+    // Checked again as it is opened, not only when listed: a file or
+    // directory swapped for a symbolic link in between is refused, not followed.
+    let (root, owned_key) = (root.to_path_buf(), key.to_string());
+    let data = tokio::task::spawn_blocking(move || read_inside(&root, &owned_key))
         .await
         .context("the read task failed")?
         .context("failed to read the local file")?;
@@ -248,18 +297,49 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("secret.txt"), b"not an upload").unwrap();
         std::fs::write(root.join("2026/plain.txt"), b"upload").unwrap();
-        assert_eq!(
-            read_inside(&root, &root.join("2026/plain.txt")).unwrap(),
-            b"upload"
-        );
+        assert_eq!(read_inside(&root, "2026/plain.txt").unwrap(), b"upload");
 
         // The file itself replaced by a link.
         std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("2026/link.txt")).unwrap();
-        assert!(read_inside(&root, &root.join("2026/link.txt")).is_err());
+        assert!(read_inside(&root, "2026/link.txt").is_err());
 
         // A directory on its path replaced by a link to outside.
         std::os::unix::fs::symlink(&outside, root.join("swapped")).unwrap();
-        assert!(read_inside(&root, &root.join("swapped/secret.txt")).is_err());
+        assert!(read_inside(&root, "swapped/secret.txt").is_err());
+
+        // A FIFO in a file's place is refused, not waited on.
+        let fifo = std::ffi::CString::new(
+            root.join("2026/fifo.txt")
+                .into_os_string()
+                .into_encoded_bytes(),
+        )
+        .unwrap();
+        // SAFETY: `fifo` is a valid NUL-terminated path for the call's duration.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(read_inside(&root, "2026/fifo.txt").is_err());
+        assert!(read_inside(&root, "2026/../2026/plain.txt").is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Linux file names are bytes; macOS refuses names that are not UTF-8, so
+    /// this runs where such a name can exist.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_name_that_is_not_utf8_is_reported_not_copied_under_a_guess() {
+        use std::os::unix::ffi::OsStrExt;
+        let base =
+            std::env::temp_dir().join(format!("trovato-notutf8-{}", uuid::Uuid::now_v7().simple()));
+        let root = base.join("uploads");
+        std::fs::create_dir_all(&root).unwrap();
+        let bad = std::ffi::OsStr::from_bytes(b"photo-\xff.jpg");
+        std::fs::write(root.join(bad), b"the real bytes").unwrap();
+        // The name a lossy conversion would give it, holding other bytes.
+        std::fs::write(root.join("photo-\u{fffd}.jpg"), b"a different file").unwrap();
+
+        let (keys, failed) = list_files(&root).await.unwrap();
+        assert_eq!(keys, vec!["photo-\u{fffd}.jpg".to_string()]);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert!(failed[0].1.contains("not UTF-8"), "{failed:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

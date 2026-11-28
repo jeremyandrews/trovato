@@ -297,8 +297,13 @@ every command. The design is in
   would be served to anyone as unmanaged files, and lacks the new uploads: past
   that point the way back is a copy from the bucket, not the old directory, so
   move the directory out of `UPLOADS_DIR`.
-- **Skipped:** symbolic links (one could name a file outside the directory)
-  and Trovato's own write-check and temporary files.
+- **Skipped:** symbolic links (one could name a file outside the directory;
+  each directory on a file's path is opened without following one, so a link
+  swapped in during the run is refused too) and Trovato's own write-check and
+  temporary files.
+- **Reported, not copied:** a file whose name is not UTF-8 (a key is text,
+  and a guessed spelling could be another file's name): rename it and run
+  again.
 - **Output:** after its log lines, one summary line, `<total> files under <dir>: <n> copied, <n> already in
   s3://<bucket>[/<prefix>], <n> failed`, after a `failed: <key>: <reason>` line
   per failed file. Exits nonzero when any file failed.

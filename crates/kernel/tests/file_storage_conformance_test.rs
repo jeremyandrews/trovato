@@ -561,3 +561,72 @@ async fn migration_reports_an_unreadable_directory_and_goes_on() {
         assert_eq!(report.failed[0].0, "lost+found/");
     }
 }
+
+/// A store whose startup check answers only after `delay`, and then refuses.
+struct SlowToRefuse {
+    inner: LocalFileStorage,
+    dir: Option<PathBuf>,
+    delay: std::time::Duration,
+}
+
+#[async_trait::async_trait]
+impl FileStorage for SlowToRefuse {
+    async fn write(&self, uri: &str, data: &[u8]) -> anyhow::Result<()> {
+        self.inner.write(uri, data).await
+    }
+    async fn read(&self, uri: &str) -> anyhow::Result<Vec<u8>> {
+        self.inner.read(uri).await
+    }
+    async fn delete(&self, uri: &str) -> anyhow::Result<()> {
+        self.inner.delete(uri).await
+    }
+    async fn exists(&self, uri: &str) -> anyhow::Result<bool> {
+        self.inner.exists(uri).await
+    }
+    fn public_url(&self, uri: &str) -> String {
+        self.inner.public_url(uri)
+    }
+    fn scheme(&self) -> &'static str {
+        if self.dir.is_some() { "local" } else { "s3" }
+    }
+    fn local_dir(&self) -> Option<&Path> {
+        self.dir.as_deref()
+    }
+    async fn check_usable(&self) -> anyhow::Result<()> {
+        tokio::time::sleep(self.delay).await;
+        anyhow::bail!("the uploads directory could not be written")
+    }
+    fn describe(&self) -> String {
+        "slow".into()
+    }
+}
+
+/// A slow uploads directory (a hung mount) is waited for in full and its
+/// refusal stops the start; only a remote store that does not answer in time
+/// is started through.
+#[tokio::test]
+async fn startup_check_waits_for_a_slow_directory_but_not_a_slow_bucket() {
+    let dir = TempDir::new("startup-slow");
+    let delay =
+        trovato_kernel::file::REMOTE_STARTUP_CHECK_LIMIT + std::time::Duration::from_secs(1);
+    let directory = SlowToRefuse {
+        inner: LocalFileStorage::new(&dir.0, "/files"),
+        dir: Some(dir.0.clone()),
+        delay,
+    };
+    let bucket = SlowToRefuse {
+        inner: LocalFileStorage::new(&dir.0, "/files"),
+        dir: None,
+        delay,
+    };
+    let (directory, bucket) = tokio::join!(
+        trovato_kernel::file::startup_check(&directory),
+        trovato_kernel::file::startup_check(&bucket),
+    );
+    let err = directory.expect_err("a directory that refuses, however late, stops the start");
+    assert!(
+        format!("{err:#}").contains("could not be written"),
+        "{err:#}"
+    );
+    bucket.expect("a bucket that does not answer in time is started through");
+}

@@ -201,6 +201,13 @@ pub(crate) fn is_original_upload_path(path: &str) -> bool {
             .all(|c| !c.is_empty() && c != "." && !is_working_name(c))
 }
 
+/// Whether a path with no `file_managed` row may be served as an unmanaged
+/// file: not when it is a managed file spelled in other letter case, which a
+/// case-insensitive directory would read as that (perhaps private) file.
+pub(crate) async fn unmanaged_is_servable(state: &AppState, uri: &str) -> anyhow::Result<bool> {
+    Ok(!state.files().is_other_spelling_of_managed(uri).await?)
+}
+
 /// One of Trovato's own working file names (see [`is_original_upload_path`]).
 fn is_working_name(c: &str) -> bool {
     // Case-blind, for a case-insensitive local filesystem.
@@ -285,9 +292,16 @@ async fn serve_uploaded_file(
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
     let content_type = match state.items().file_access(&uri, &viewer).await {
         Ok(FileAccess::Allowed { filemime }) => filemime,
-        Ok(FileAccess::Unmanaged) => mime_for_filename(path)
-            .unwrap_or("application/octet-stream")
-            .to_string(),
+        Ok(FileAccess::Unmanaged) => match unmanaged_is_servable(&state, &uri).await {
+            Ok(true) => mime_for_filename(path)
+                .unwrap_or("application/octet-stream")
+                .to_string(),
+            Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+            Err(e) => {
+                warn!(error = %format!("{e:#}"), path = %path, "failed to authorize file access");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        },
         Ok(FileAccess::Denied) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             warn!(error = %e, path = %path, "failed to authorize file access");

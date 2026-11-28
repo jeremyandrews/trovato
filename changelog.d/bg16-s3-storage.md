@@ -17,3 +17,10 @@ than by words in the error text that the directory store never used, and a
 write to a directory is a rename of a finished temporary file, so a reader never
 sees half a file. The design of the hosted network's production setup on AWS,
 which this is the first part of, is `docs/design/production-hosting.md`.
+
+On a case-insensitive uploads directory (macOS, Windows), a managed file asked
+for in other letter case is now refused like the file itself, by `/files/` and
+by the image style route, instead of being served as an unmanaged file. An
+upload whose record cannot be written takes its bytes back out of the store.
+The startup check waits for an uploads directory in full, however slow; only a
+remote store gets the short limit.

@@ -100,7 +100,16 @@ async fn serve_derivative(
         Ok(crate::content::FileAccess::Unmanaged) => {
             // No row: a deleted file's leftover derivatives must never become
             // public, so a derivative is served only while its original is
-            // still stored.
+            // still stored, and never for a managed file spelled in other
+            // letter case (one file on a case-insensitive directory).
+            match crate::routes::file::unmanaged_is_servable(&state, &original_uri).await {
+                Ok(true) => {}
+                Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+                Err(e) => {
+                    tracing::warn!(error = %format!("{e:#}"), path = %file_path, "failed to authorize derivative access");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            }
             match state.files().storage().exists(&original_uri).await {
                 Ok(true) => {}
                 Ok(false) => return StatusCode::NOT_FOUND.into_response(),

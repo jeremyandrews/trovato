@@ -594,29 +594,13 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     let config = Config::from_env().context("failed to load configuration")?;
     info!(port = config.port, "Configuration loaded");
 
-    // Refuse to start on a file store (the uploads directory, or the S3
-    // bucket) this server cannot use: a definite answer (no such bucket, access
-    // denied, other bytes read back) fails the deploy. A store that cannot be
-    // reached at all, or does not answer within 8 seconds (well inside the
-    // example manifest's liveness budget of three 10 second probes, which
-    // start before the server listens), is an outage that heals
-    // itself: say so and start, so a pod restarted during it does not crash
-    // loop; uploads fail until it is back, and the status report shows it.
+    // Refuse to start on a file store this server cannot use (see
+    // `file::startup_check`: a directory must pass in full; a remote store
+    // that cannot be reached is logged and the server starts, so a pod
+    // restarted during its outage does not crash loop).
     let file_store =
         crate::file::build_storage(&config.file_storage, &config.uploads_dir, &config.files_url)?;
-    match tokio::time::timeout(std::time::Duration::from_secs(8), file_store.check_usable()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) if crate::file::is_unreachable(&e) => {
-            tracing::error!(error = %format!("{e:#}"), "file store unreachable at startup; starting anyway");
-        }
-        Ok(Err(e)) => return Err(e),
-        Err(_) => {
-            tracing::error!(
-                store = %file_store.describe(),
-                "file store did not answer the startup check within 8 seconds; starting anyway"
-            );
-        }
-    }
+    crate::file::startup_check(file_store.as_ref()).await?;
 
     // With migrations as their own step, wait (alive, not ready) until the
     // schema this binary needs is there, rather than exit and crash loop.
