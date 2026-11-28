@@ -10,7 +10,6 @@ ALTER TABLE file_managed ADD COLUMN visibility SMALLINT NOT NULL DEFAULT 0;
 
 COMMENT ON COLUMN file_managed.visibility IS '0=public (served by /files/{path}), 1=private (served only by /file/{id}/download)';
 
--- The private-download route looks up by id and then needs this column; the
--- general listing/admin queries already use the primary key or owner_id/status
--- indexes and do not need visibility indexed on its own.
-CREATE INDEX idx_file_visibility ON file_managed(visibility) WHERE visibility = 1;
+-- The partial index on this column is a separate, `CONCURRENTLY` migration
+-- (20261211000002): building it here, in a transaction, would block writes
+-- to file_managed for the build's duration.
