@@ -22,9 +22,22 @@ use uuid::Uuid;
 
 use super::record::UserRecord;
 use super::{Outcome, Run, require_id};
+use crate::models::User;
 use crate::services::user::{
     AccountFields, account_change_events, account_created_event, password_event,
 };
+
+/// Tables and columns a stored user's id may still sit in, with what to call
+/// it in the refusal. The same ones [`User::reattribute_content`] hands to
+/// the anonymous author on every other delete path: an import `delete`
+/// refuses instead, so a migration never silently reattributes a site's
+/// content to "Anonymous" without being told.
+const USER_REFERENCES: &[(&str, &str, &str)] = &[
+    ("item", "author_id", "an item's author"),
+    ("item_revision", "author_id", "a revision's author"),
+    ("comment", "author_id", "a comment's author"),
+    ("file_managed", "owner_id", "a file's owner"),
+];
 
 /// The column limit of `users.name` and `users.mail`.
 const MAX_LENGTH: usize = 255;
@@ -234,4 +247,41 @@ pub(crate) async fn import_user(run: &mut Run<'_>, r: UserRecord) -> Result<Outc
     } else {
         Outcome::Created
     })
+}
+
+/// Import one `delete` record naming a user: remove the account, unless
+/// something stored still points at it — an item, a revision, a comment or a
+/// file it owns — in which case the import fails naming the record, and
+/// nothing is written (`docs/design/import.md`, "Delete"). Every other
+/// deletion path (`UserService::delete`, the admin delete button) hands such
+/// rows to the anonymous author instead of refusing; import does not, so a
+/// migration never reattributes content without the operator choosing to.
+/// Once nothing refers to it, [`User::delete_in`] is the same path that
+/// takes: it still clears the two administrative provenance fields
+/// (`config_revision.author_id`, `stage_deletion.deleted_by`) that a stored
+/// row can hold without blocking the delete. An id that is not a stored user
+/// is unchanged, so a rerun is idempotent.
+pub(crate) async fn delete_user(run: &mut Run<'_>, id: Uuid) -> Result<Outcome> {
+    require_id(id, "id")?;
+    let stored: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *run.tx)
+        .await
+        .context("failed to look up the user")?;
+    if stored.is_none() {
+        return Ok(Outcome::Unchanged);
+    }
+    for (table, column, what) in USER_REFERENCES {
+        let sql = format!("SELECT 1 FROM {table} WHERE {column} = $1 LIMIT 1");
+        let referenced: Option<i32> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+            .bind(id)
+            .fetch_optional(&mut *run.tx)
+            .await
+            .with_context(|| format!("failed to check {table}.{column}"))?;
+        if referenced.is_some() {
+            anyhow::bail!("user {id} is still {what} and cannot be deleted by import");
+        }
+    }
+    User::delete_in(&mut run.tx, id).await?;
+    Ok(Outcome::Deleted)
 }

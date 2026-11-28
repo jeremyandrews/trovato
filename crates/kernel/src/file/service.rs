@@ -883,6 +883,29 @@ impl FileService {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Unregister a `file_managed` row inside the caller's transaction,
+    /// without touching storage.
+    ///
+    /// `trovato import`'s `delete` record uses this, not [`Self::delete`]:
+    /// storage deletion is not transactional (there is no rolling it back),
+    /// so running it inside the import's transaction could leave bytes gone
+    /// after a later line fails and the whole import rolls back. It is also
+    /// the same asymmetry the `file` record's own create keeps: import never
+    /// writes, moves or removes a byte of a file it did not place on disk
+    /// itself (`docs/design/import.md`, "file"). `file_reference` rows for
+    /// any item that referenced it cascade, as they do for [`Self::delete`].
+    pub async fn delete_row_in(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        id: Uuid,
+    ) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM file_managed WHERE id = $1")
+            .bind(id)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete file record")?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Cleanup temporary files older than the given age.
     ///
     /// Returns the number of files deleted.

@@ -258,6 +258,22 @@ pub(crate) async fn import_item(run: &mut Run<'_>, r: ItemRecord) -> Result<Outc
     })
 }
 
+/// Import one `delete` record naming an item: remove it, with its revisions,
+/// comments, aliases, menu links and queued embed jobs, through
+/// [`Item::delete_in`] — the same path `ItemService::delete` (the admin
+/// delete button) takes, inside the import's own transaction instead of its
+/// own. The search entry drops the same way too: the database trigger that
+/// queues it fires on the `DELETE FROM item` either path runs. An id that is
+/// not a stored item is unchanged, so a rerun is idempotent.
+pub(crate) async fn delete_item(run: &mut Run<'_>, id: Uuid) -> Result<Outcome> {
+    require_id(id, "id")?;
+    if stored_item(run, id).await?.is_none() {
+        return Ok(Outcome::Unchanged);
+    }
+    Item::delete_in(&mut run.tx, id).await?;
+    Ok(Outcome::Deleted)
+}
+
 /// A stored revision, as a record would describe it.
 #[derive(Debug, PartialEq, sqlx::FromRow)]
 struct StoredRevision {

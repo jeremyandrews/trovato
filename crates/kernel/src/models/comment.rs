@@ -692,6 +692,18 @@ impl Comment {
         Ok(result.rows_affected() > 0)
     }
 
+    /// [`Self::delete`] inside the caller's transaction. Replies cascade by
+    /// `ON DELETE CASCADE` on `parent_id`, as they do for [`Self::delete`].
+    pub async fn delete_in(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM comment WHERE id = $1")
+            .bind(id)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete comment")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Get replies to a comment.
     pub async fn get_replies(pool: &PgPool, comment_id: Uuid) -> Result<Vec<Self>> {
         let comments = sqlx::query_as::<_, Comment>(

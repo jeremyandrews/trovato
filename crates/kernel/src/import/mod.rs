@@ -19,7 +19,7 @@ mod record;
 mod tile;
 mod user;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::BufRead;
 
 use anyhow::{Context, Result};
@@ -33,7 +33,8 @@ use crate::tap::UserContext;
 pub use record::RECORD_TYPES;
 use record::Record;
 
-/// How many records of one type an import created, updated and left alone.
+/// How many records of one type an import created, updated, left alone and
+/// deleted.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
     /// Absent before, written now.
@@ -42,12 +43,15 @@ pub struct Counts {
     pub updated: usize,
     /// Stored and identical: nothing written.
     pub unchanged: usize,
+    /// Stored, and removed by a `delete` record. An id a `delete` named that
+    /// was not stored counts as `unchanged`, not here.
+    pub deleted: usize,
 }
 
 impl Counts {
     /// Records this import wrote.
     pub fn changes(&self) -> usize {
-        self.created + self.updated
+        self.created + self.updated + self.deleted
     }
 }
 
@@ -83,8 +87,8 @@ impl ImportReport {
             .filter_map(|t| self.counts.get(t).map(|c| (t, c)))
             .map(|(t, c)| {
                 format!(
-                    "  {t}: {} created, {} updated, {} unchanged",
-                    c.created, c.updated, c.unchanged
+                    "  {t}: {} created, {} updated, {} unchanged, {} deleted",
+                    c.created, c.updated, c.unchanged, c.deleted
                 )
             })
             .collect()
@@ -128,6 +132,14 @@ pub(crate) struct Run<'a> {
     /// `(user, role)` grants this run made, recorded as `user.roles_changed`
     /// in the same transaction, as `trovato user role-add` records one.
     pub(crate) role_grants: Vec<(Uuid, Uuid)>,
+    /// `(kind, id)` an earlier line in this run created, updated or left
+    /// unchanged. A later `delete` naming one of these fails: a delete and a
+    /// create of the same id in one file are refused, in either order.
+    touched: HashSet<(&'static str, Uuid)>,
+    /// `(kind, id)` a `delete` on an earlier line in this run removed or
+    /// found already gone. A later create or change naming one of these
+    /// fails, for the same reason.
+    deleted: HashSet<(&'static str, Uuid)>,
 }
 
 /// What became of one record.
@@ -136,6 +148,8 @@ pub(crate) enum Outcome {
     Created,
     Updated,
     Unchanged,
+    /// Stored, and removed.
+    Deleted,
 }
 
 /// Import the records read from `input` (named `source` in messages).
@@ -163,6 +177,8 @@ pub async fn import(state: &AppState, input: impl BufRead, dry_run: bool) -> Res
         formats: crate::content::submission::permitted_text_formats(&operator),
         security_events: Vec::new(),
         role_grants: Vec::new(),
+        touched: HashSet::new(),
+        deleted: HashSet::new(),
     };
     let mut report = ImportReport {
         dry_run,
@@ -181,16 +197,39 @@ pub async fn import(state: &AppState, input: impl BufRead, dry_run: bool) -> Res
             continue;
         }
         let record: Record = serde_json::from_str(text).map_err(|e| fail(e.to_string()))?;
-        let record_type = record.type_name();
+        let bucket = record.bucket().map_err(|e| fail(e.to_string()))?;
+        let key = (bucket, record.id());
+        if let Record::Delete(_) = &record {
+            if run.touched.contains(&key) {
+                return Err(fail(format!(
+                    "{bucket} {} was created or changed earlier in this import, and cannot \
+                     also be deleted",
+                    key.1
+                ))
+                .into());
+            }
+            run.deleted.insert(key);
+        } else {
+            if run.deleted.contains(&key) {
+                return Err(fail(format!(
+                    "{bucket} {} was deleted earlier in this import, and cannot also be \
+                     created or changed",
+                    key.1
+                ))
+                .into());
+            }
+            run.touched.insert(key);
+        }
         let outcome = apply(&mut run, record)
             .await
             .map_err(|e| fail(format!("{e:#}")))?;
         report.records += 1;
-        let counts = report.counts.entry(record_type).or_default();
+        let counts = report.counts.entry(bucket).or_default();
         match outcome {
             Outcome::Created => counts.created += 1,
             Outcome::Updated => counts.updated += 1,
             Outcome::Unchanged => counts.unchanged += 1,
+            Outcome::Deleted => counts.deleted += 1,
         }
     }
 
@@ -288,6 +327,15 @@ async fn apply(run: &mut Run<'_>, record: Record) -> Result<Outcome> {
         Record::User(r) => user::import_user(run, r).await,
         Record::Tile(r) => tile::import_tile(run, r).await,
         Record::File(r) => file::import_file(run, r).await,
+        Record::Delete(r) => match record::delete_kind(&r.kind)? {
+            "item" => item::delete_item(run, r.id).await,
+            "comment" => comment::delete_comment(run, r.id).await,
+            "alias" => alias::delete_alias(run, r.id).await,
+            "tile" => tile::delete_tile(run, r.id).await,
+            "file" => file::delete_file(run, r.id).await,
+            "user" => user::delete_user(run, r.id).await,
+            other => unreachable!("record::delete_kind only returns a known kind: {other}"),
+        },
     }
 }
 

@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use super::record::{AliasRecord, RedirectRecord};
 use super::{Outcome, Run, require_id, require_language, require_order};
+use crate::models::UrlAlias;
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::services::redirect::{canonicalize_source, validate_redirect_destination};
 use crate::services::url_alias::normalize_path;
@@ -111,6 +112,24 @@ pub(crate) async fn import_alias(run: &mut Run<'_>, r: AliasRecord) -> Result<Ou
     .await
     .context("failed to insert the alias")?;
     Ok(Outcome::Created)
+}
+
+/// Import one `delete` record naming an alias: remove it, through
+/// [`UrlAlias::delete_in`] — the same path `UrlAliasService::delete` (the
+/// admin delete link) takes. An id that is not a stored alias is unchanged,
+/// so a rerun is idempotent.
+pub(crate) async fn delete_alias(run: &mut Run<'_>, id: Uuid) -> Result<Outcome> {
+    require_id(id, "id")?;
+    let stored: Option<i32> = sqlx::query_scalar("SELECT 1 FROM url_alias WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *run.tx)
+        .await
+        .context("failed to look up the alias")?;
+    if stored.is_none() {
+        return Ok(Outcome::Unchanged);
+    }
+    UrlAlias::delete_in(&mut run.tx, id).await?;
+    Ok(Outcome::Deleted)
 }
 
 /// A stored redirect, as a record would describe it.

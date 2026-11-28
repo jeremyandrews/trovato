@@ -13,6 +13,7 @@ use uuid::Uuid;
 use super::record::TileRecord;
 use super::{Outcome, Run, require_flag, require_id, require_order};
 use crate::models::stage::LIVE_STAGE_ID;
+use crate::models::tile::Tile;
 use crate::routes::helpers::is_valid_machine_name;
 use crate::routes::tile_admin::AUDIENCE_VALUES;
 
@@ -186,4 +187,22 @@ pub(crate) async fn import_tile(run: &mut Run<'_>, r: TileRecord) -> Result<Outc
     .await
     .context("failed to insert the tile")?;
     Ok(Outcome::Created)
+}
+
+/// Import one `delete` record naming a tile: remove it, through
+/// [`Tile::delete_in`] — the same path `TileService::delete` (the admin
+/// delete link) takes. An id that is not a stored tile is unchanged, so a
+/// rerun is idempotent.
+pub(crate) async fn delete_tile(run: &mut Run<'_>, id: Uuid) -> Result<Outcome> {
+    require_id(id, "id")?;
+    let stored: Option<i32> = sqlx::query_scalar("SELECT 1 FROM tile WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *run.tx)
+        .await
+        .context("failed to look up the tile")?;
+    if stored.is_none() {
+        return Ok(Outcome::Unchanged);
+    }
+    Tile::delete_in(&mut run.tx, id).await?;
+    Ok(Outcome::Deleted)
 }

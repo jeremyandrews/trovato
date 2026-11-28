@@ -203,6 +203,17 @@ impl Tile {
         Ok(result.rows_affected() > 0)
     }
 
+    /// [`Self::delete`] inside the caller's transaction.
+    pub async fn delete_in(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM tile WHERE id = $1")
+            .bind(id)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete tile")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Check if this tile is visible for a given request path, user roles,
     /// signed-in state and the type of the item the page shows, if any.
     ///

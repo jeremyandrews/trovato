@@ -171,3 +171,23 @@ pub(crate) async fn import_file(run: &mut Run<'_>, r: FileRecord) -> Result<Outc
     .context("failed to insert the file")?;
     Ok(Outcome::Created)
 }
+
+/// Import one `delete` record naming a file: unregister its `file_managed`
+/// row, through [`FileService::delete_row_in`] — not [`FileService::delete`],
+/// which also removes the bytes from storage: that is not transactional, and
+/// import never touches bytes it did not place on disk itself. An id that is
+/// not a stored file is unchanged, so a rerun is idempotent.
+pub(crate) async fn delete_file(run: &mut Run<'_>, id: Uuid) -> Result<Outcome> {
+    require_id(id, "id")?;
+    let stored: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM file_managed WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *run.tx)
+            .await
+            .context("failed to look up the file")?;
+    if stored.is_none() {
+        return Ok(Outcome::Unchanged);
+    }
+    FileService::delete_row_in(&mut run.tx, id).await?;
+    Ok(Outcome::Deleted)
+}

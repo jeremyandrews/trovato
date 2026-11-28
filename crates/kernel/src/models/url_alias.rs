@@ -484,6 +484,17 @@ impl UrlAlias {
         Ok(result.rows_affected() > 0)
     }
 
+    /// [`Self::delete`] inside the caller's transaction. The caller
+    /// invalidates the navigation cache once the transaction commits.
+    pub async fn delete_in(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM url_alias WHERE id = $1")
+            .bind(id)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete url alias")?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Delete all aliases for a source path.
     pub async fn delete_by_source(pool: &PgPool, source: &str) -> Result<u64> {
         let result = sqlx::query("DELETE FROM url_alias WHERE source = $1")

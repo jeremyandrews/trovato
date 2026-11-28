@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use super::record::CommentRecord;
 use super::{Outcome, Run, require_id, require_order, require_user};
+use crate::models::Comment;
 use crate::models::comment::{CommentStatus, normalize_subject, subject_too_long};
 
 /// A stored comment, as a record would describe it.
@@ -154,4 +155,24 @@ pub(crate) async fn import_comment(run: &mut Run<'_>, r: CommentRecord) -> Resul
     .await
     .context("failed to insert the comment")?;
     Ok(Outcome::Created)
+}
+
+/// Import one `delete` record naming a comment: remove it, through
+/// [`Comment::delete_in`] — the same path `CommentService::delete` (the
+/// admin delete link) takes. Its replies cascade with it, and the search
+/// entry and the item's comment count drop by the same database triggers a
+/// comment posted or deleted through the site fires. An id that is not a
+/// stored comment is unchanged, so a rerun is idempotent.
+pub(crate) async fn delete_comment(run: &mut Run<'_>, id: Uuid) -> Result<Outcome> {
+    require_id(id, "id")?;
+    let stored: Option<i32> = sqlx::query_scalar("SELECT 1 FROM comment WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *run.tx)
+        .await
+        .context("failed to look up the comment")?;
+    if stored.is_none() {
+        return Ok(Outcome::Unchanged);
+    }
+    Comment::delete_in(&mut run.tx, id).await?;
+    Ok(Outcome::Deleted)
 }

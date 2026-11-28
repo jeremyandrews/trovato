@@ -1,12 +1,34 @@
 //! The records of an import file, as they are read from it.
 
+use anyhow::Result;
 use serde::{Deserialize, Deserializer};
 use uuid::Uuid;
 
 /// Every record type, in the order the report lists them.
 pub const RECORD_TYPES: &[&str] = &[
-    "user", "file", "item", "revision", "comment", "alias", "redirect", "tile",
+    "user", "file", "item", "revision", "comment", "alias", "redirect", "tile", "delete",
 ];
+
+/// The kinds a `delete` record may name: every kind with an id of its own
+/// that an import can also create or change. Not `revision` (immutable, never
+/// deleted on its own) and not `redirect` (out of scope for this record).
+const DELETE_KINDS: &[&str] = &["item", "comment", "alias", "tile", "file", "user"];
+
+/// Check `kind` against [`DELETE_KINDS`], and return the matching literal (so
+/// a report bucket key is always one of the fixed strings [`RECORD_TYPES`]
+/// lists, not a copy of the file's own string).
+pub(crate) fn delete_kind(kind: &str) -> Result<&'static str> {
+    DELETE_KINDS
+        .iter()
+        .copied()
+        .find(|k| *k == kind)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "'{kind}' is not a kind a delete record can name ({})",
+                DELETE_KINDS.join(", ")
+            )
+        })
+}
 
 /// One line of the file, by its `type`.
 #[derive(Debug, Deserialize)]
@@ -20,6 +42,7 @@ pub(crate) enum Record {
     User(UserRecord),
     Tile(TileRecord),
     File(FileRecord),
+    Delete(DeleteRecord),
 }
 
 impl Record {
@@ -34,8 +57,47 @@ impl Record {
             Self::User(_) => "user",
             Self::Tile(_) => "tile",
             Self::File(_) => "file",
+            Self::Delete(_) => "delete",
         }
     }
+
+    /// The id this line names: the record's own id, or for a `delete` record,
+    /// the id of the record it names.
+    pub(crate) fn id(&self) -> Uuid {
+        match self {
+            Self::Item(r) => r.id,
+            Self::Revision(r) => r.id,
+            Self::Comment(r) => r.id,
+            Self::Alias(r) => r.id,
+            Self::Redirect(r) => r.id,
+            Self::User(r) => r.id,
+            Self::Tile(r) => r.id,
+            Self::File(r) => r.id,
+            Self::Delete(r) => r.id,
+        }
+    }
+
+    /// The report bucket this line counts against: the kind it names, for
+    /// every type, so a `delete` is counted against the same bucket its
+    /// matching create or change would be (`report.of("item")`, not a
+    /// separate `"delete"` bucket) — one line per kind in the printed
+    /// summary, each with its own `deleted` count.
+    pub(crate) fn bucket(&self) -> Result<&'static str> {
+        match self {
+            Self::Delete(r) => delete_kind(&r.kind),
+            other => Ok(other.type_name()),
+        }
+    }
+}
+
+/// A `delete` record: removes a stored record of `kind`, by the id its
+/// create used. An id that names nothing stored is unchanged, so a rerun is
+/// idempotent (`docs/design/import.md`, "Delete").
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeleteRecord {
+    pub id: Uuid,
+    pub kind: String,
 }
 
 /// An item as it is now: the item row and its current revision.
