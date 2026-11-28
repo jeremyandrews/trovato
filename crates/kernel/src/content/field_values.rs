@@ -317,7 +317,9 @@ mod tests {
     fn the_write_check_refuses_a_bad_link_value() {
         let link = field("l", "Link", FieldType::Link, 1);
         let ok = json!({ "l": {"uri": "https://example.org/", "title": "Site"} });
-        assert!(check_field_values(&ok, std::slice::from_ref(&link), None, &HashMap::new()).is_empty());
+        assert!(
+            check_field_values(&ok, std::slice::from_ref(&link), None, &HashMap::new()).is_empty()
+        );
 
         let bad = json!({ "l": {"uri": "javascript:alert(1)"} });
         let errors = check_field_values(&bad, &[link], None, &HashMap::new());
@@ -330,7 +332,10 @@ mod tests {
         let choice = field("choice", "Choice", FieldType::List, 1)
             .allowed_values(&[("gold", "Gold"), ("silver", "Silver")]);
         let ok = json!({ "choice": "gold" });
-        assert!(check_field_values(&ok, std::slice::from_ref(&choice), None, &HashMap::new()).is_empty());
+        assert!(
+            check_field_values(&ok, std::slice::from_ref(&choice), None, &HashMap::new())
+                .is_empty()
+        );
 
         let bad = json!({ "choice": "platinum" });
         let errors = check_field_values(&bad, &[choice], None, &HashMap::new());
@@ -342,7 +347,9 @@ mod tests {
     fn the_write_check_refuses_a_telephone_with_a_mismatched_e164() {
         let tel = field("t", "Tel", FieldType::Telephone, 1);
         let ok = json!({ "t": {"value": "+39 0583 123456", "e164": "+390583123456"} });
-        assert!(check_field_values(&ok, std::slice::from_ref(&tel), None, &HashMap::new()).is_empty());
+        assert!(
+            check_field_values(&ok, std::slice::from_ref(&tel), None, &HashMap::new()).is_empty()
+        );
 
         let bad = json!({ "t": {"value": "+39 0583 123456", "e164": "+10000000000"} });
         let errors = check_field_values(&bad, &[tel], None, &HashMap::new());
