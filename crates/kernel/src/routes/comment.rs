@@ -19,6 +19,10 @@ use crate::pagination::{Page, PageParams};
 use crate::routes::helpers::{require_csrf_header, require_login_json, user_context_for};
 use crate::state::AppState;
 
+/// The text format a comment posted through the comment routes is stored in,
+/// and so the one its preview is rendered through.
+const NEW_COMMENT_FORMAT: &str = "filtered_html";
+
 /// Render a comment body to HTML with safe format whitelisting.
 fn render_comment_body(comment: &Comment) -> String {
     FilterPipeline::for_format(&comment.body_format).process(&comment.body)
@@ -189,6 +193,9 @@ struct CommentFormValues<'a> {
     body: &'a str,
 }
 
+/// The comment form's Preview button, and the field a click on it posts.
+const PREVIEW_BUTTON: &str = "preview";
+
 /// The form a new comment or reply is posted with, `comment_form`: under the
 /// thread on the item page (`inline`), and on the reply page.
 fn build_comment_form(
@@ -219,6 +226,10 @@ fn build_comment_form(
         .required()
         .default_value(values.body)
         .weight(1);
+    // Preview posts the form like the other button; `create_comment` sees
+    // `preview` among the posted fields and shows the comment instead of
+    // saving it. `comment-post.js` leaves this button's submission alone.
+    form = form.element(PREVIEW_BUTTON, FormElement::submit("Preview").weight(99));
     if inline {
         // The form `comment-post.js` posts as JSON and `comment-reply.js`
         // points at a comment.
@@ -400,6 +411,11 @@ async fn create_comment(
             )
             .await
             {
+                // Preview: the comment as it would be posted, above the form
+                // still holding it. Nothing is written.
+                Ok(_) if posted.get(PREVIEW_BUTTON).is_some() => {
+                    return preview_page(&state, &session, &viewer, item_id, &submission).await;
+                }
                 Ok(form_state) => Some(Ok((form_state, viewer))),
                 Err(Ok(errors)) => {
                     let values = CommentFormValues {
@@ -413,6 +429,7 @@ async fn create_comment(
                         submission.parent_id,
                         values,
                         &errors,
+                        None,
                     )
                     .await;
                 }
@@ -488,6 +505,52 @@ async fn create_comment(
         with_query(&target, "comment", outcome)
     ))
     .into_response()
+}
+
+/// The reply page showing `submission` as it would look once posted: the
+/// subject and body through the text format a posted comment is stored in, in
+/// the comment pages' own markup, above the form still holding what was
+/// typed. Nothing is saved; the reply page asks every question posting would
+/// (signed in, the item visible, `post comments`, comments open).
+async fn preview_page(
+    state: &AppState,
+    session: &Session,
+    viewer: &crate::tap::UserContext,
+    item_id: Uuid,
+    submission: &CommentSubmission,
+) -> axum::response::Response {
+    let values = CommentFormValues {
+        subject: submission.subject.as_deref().unwrap_or_default(),
+        body: &submission.body,
+    };
+    let (preview, errors) = match validate_subject(submission.subject.as_deref()) {
+        Ok(subject) => (
+            Some(serde_json::json!({
+                "author_name": viewer.name(),
+                "created": chrono::Utc::now().timestamp(),
+                "subject": subject,
+                "body_html": FilterPipeline::for_format(NEW_COMMENT_FORMAT).process(&submission.body),
+            })),
+            Vec::new(),
+        ),
+        Err(refusal) => (
+            None,
+            vec![crate::form::ValidationError::field(
+                "subject",
+                refusal.public_message(),
+            )],
+        ),
+    };
+    reply_page(
+        state,
+        session,
+        item_id,
+        submission.parent_id,
+        values,
+        &errors,
+        preview,
+    )
+    .await
 }
 
 /// The item's own address, alias included when it has one, for the post-submit
@@ -640,7 +703,7 @@ async fn create_comment_inner(
         author_id: user_id,
         subject,
         body: request.body.clone(),
-        body_format: Some("filtered_html".to_string()),
+        body_format: Some(NEW_COMMENT_FORMAT.to_string()),
         status: Some(status.as_i16()),
     };
     // Get commenter info
@@ -1287,7 +1350,9 @@ fn comment_page_forbidden(message: &str) -> axum::response::Response {
 /// comment route, which redirects back to the item.
 ///
 /// A refused submission of the comment form comes back here, showing
-/// `values` and `errors` with a `422`.
+/// `values` and `errors` with a `422`. A preview ([`preview_page`]) comes
+/// back here too, with `preview`, the comment as it would be posted, shown
+/// above the form.
 async fn reply_page(
     state: &AppState,
     session: &Session,
@@ -1295,6 +1360,7 @@ async fn reply_page(
     parent_id: Option<Uuid>,
     values: CommentFormValues<'_>,
     errors: &[crate::form::ValidationError],
+    preview: Option<serde_json::Value>,
 ) -> axum::response::Response {
     let viewer = crate::routes::item::get_user_context(session, state).await;
     let path = match parent_id {
@@ -1341,6 +1407,9 @@ async fn reply_page(
     if let Some(parent) = &parent {
         context.insert("comment", &comment_for_page(state, parent).await);
     }
+    if let Some(preview) = &preview {
+        context.insert("preview", preview);
+    }
     context.insert("item_title", &target.item.title);
     context.insert("item_path", &target.item_path);
     let form = build_comment_form(item_id, parent_id, values, false, &target.item_path);
@@ -1368,6 +1437,7 @@ async fn reply_to_item(
         None,
         CommentFormValues::default(),
         &[],
+        None,
     )
     .await
 }
@@ -1384,6 +1454,7 @@ async fn reply_to_comment(
         Some(parent_id),
         CommentFormValues::default(),
         &[],
+        None,
     )
     .await
 }
@@ -1846,14 +1917,21 @@ pub(crate) struct CommentMail {
 }
 
 /// Load what [`comment_notification`] needs to mail `item`'s author, or `None`
-/// when there is no mail to send: mail is not configured, or the author is
-/// gone or has no address.
+/// when there is no mail to send: mail is not configured, the site has turned
+/// the notice off ([`crate::models::comment::notify_authors`]), or the author
+/// is gone or has no address.
+///
+/// Both notice paths, a comment posted visible here and a held one approved
+/// in `routes::admin`, come through this, so the setting is read in one place.
 pub(crate) async fn comment_mail_context(
     state: &AppState,
     item: &crate::models::Item,
     commenter_name: Option<&str>,
 ) -> Option<CommentMail> {
     let email_service = state.email()?;
+    if !crate::models::comment::notify_authors(state.db()).await {
+        return None;
+    }
     let author = match state.users().find_by_id(item.author_id).await {
         Ok(Some(u)) => u,
         Ok(None) => {

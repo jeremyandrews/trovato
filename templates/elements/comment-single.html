@@ -1,0 +1,16 @@
+{# One comment as the comment pages show it: `shown`, with `author_name`,
+   `created`, `subject` and `body_html`. Included by comment-page.html for the
+   comment a page is about and for a preview, so both read alike. `shown_class`
+   adds a class (comment--preview); `shown.id` is absent on a preview. #}
+<article class="comment{% if shown_class %} {{ shown_class }}{% endif %}"{% if shown.id %} id="comment-{{ shown.id }}"{% endif %}>
+    <header class="comment__header">
+        <span class="comment__author">{{ shown.author_name | default(value="Anonymous") }}</span>
+        <time class="comment__date" datetime="{{ shown.created }}">{{ shown.created | date(format="%B %d, %Y at %H:%M") }}</time>
+    </header>
+    {% if shown.subject %}
+    <h3 class="comment__subject">{{ shown.subject }}</h3>
+    {% endif %}
+    <div class="comment__body">
+        {{ shown.body_html | safe }} {# SAFE: FilterPipeline output — sanitized by the comment's text format (routes::comment) #}
+    </div>
+</article>
