@@ -77,6 +77,23 @@ impl std::fmt::Display for StoreUnreachable {
 
 impl std::error::Error for StoreUnreachable {}
 
+/// Whether one cause in an S3 error chain says the store gave no definite
+/// answer: a transport failure (connect, send, time out, interrupted), or a
+/// 5xx, 408 or 429 status after the client's retries. A 3xx (the region's
+/// bare redirect) and every other 4xx are definite answers about a setting,
+/// so a bad `S3_REGION` or `S3_ENDPOINT` fails the deploy. `object_store`
+/// keeps the status type private, so the status is read from its message.
+fn is_outage(cause: &(dyn std::error::Error + 'static)) -> bool {
+    use object_store::client::{HttpError, HttpErrorKind};
+    if let Some(http) = cause.downcast_ref::<HttpError>() {
+        return !matches!(http.kind(), HttpErrorKind::Decode);
+    }
+    let text = cause.to_string();
+    text.strip_prefix("Server returned non-2xx status code: ")
+        .and_then(|rest| rest.get(..3))
+        .is_some_and(|code| code.starts_with('5') || code == "408" || code == "429")
+}
+
 /// Whether `e` is [`StoreUnreachable`].
 pub fn is_unreachable(e: &anyhow::Error) -> bool {
     e.chain()
@@ -360,14 +377,10 @@ impl FileStorage for S3FileStorage {
                  role may put, get and delete objects there.",
                 self.describe()
             );
-            // A transport failure or server error is the store being down;
-            // anything else (not found, denied) is a definite answer.
-            let transient = e.chain().any(|cause| {
-                matches!(
-                    cause.downcast_ref::<object_store::Error>(),
-                    Some(object_store::Error::Generic { .. })
-                )
-            });
+            // Only no answer at all, or a server error, is the store being
+            // down; anything else (no such bucket, denied, the wrong region)
+            // is a definite answer about a setting.
+            let transient = e.chain().any(is_outage);
             if transient {
                 anyhow::Error::new(StoreUnreachable(message))
             } else {
@@ -450,14 +463,10 @@ impl FileStorage for LocalFileStorage {
 
         // Write beside the target, then rename over it, so a reader on this or
         // another server sees the old bytes or the new ones, never a mix.
-        let file_name = path
-            .file_name()
-            .context("storage URI names no file")?
-            .to_string_lossy();
-        let temp = path.with_file_name(format!(
-            ".{file_name}.trovato-tmp-{}",
-            uuid::Uuid::now_v7().simple()
-        ));
+        // The temporary name is short and fixed in length, so a stored name
+        // near the file system's 255-byte limit still has room.
+        path.file_name().context("storage URI names no file")?;
+        let temp = path.with_file_name(format!(".trovato-tmp-{}", uuid::Uuid::now_v7().simple()));
         let written = async {
             let mut file = fs::File::create(&temp)
                 .await

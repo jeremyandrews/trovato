@@ -460,7 +460,7 @@ fn trovato_working_objects_are_never_served() {
         let id = Uuid::now_v7().simple();
         for key in [
             format!(".trovato-write-check-{id}"),
-            format!("2026/11/.x_{id}.jpg.trovato-tmp-{id}"),
+            format!("2026/11/.trovato-tmp-{id}"),
         ] {
             other_server(f)
                 .write(&format!("local://{key}"), b"working")
@@ -599,7 +599,11 @@ fn a_file_whose_bytes_cannot_be_deleted_keeps_its_row() {
             .execute(&app.db)
             .await
             .unwrap();
-        files.cleanup_temp_files(1).await.unwrap();
+        assert_eq!(
+            files.cleanup_temp_files(1).await.unwrap(),
+            0,
+            "a file whose bytes were not deleted is not counted cleaned up"
+        );
         assert!(
             files.get(up.id).await.unwrap().is_some(),
             "temp file cleanup keeps the row too"
@@ -610,5 +614,56 @@ fn a_file_whose_bytes_cannot_be_deleted_keeps_its_row() {
             .await
             .unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
+async fn status_report(app: &TestApp) -> String {
+    let cookies = admin_cookies(app).await;
+    let resp = get(app, "/admin/reports/status", Some(&cookies)).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    // The template escapes `/`.
+    String::from_utf8(body.to_vec())
+        .unwrap()
+        .replace("&#x2F;", "/")
+}
+
+/// The status report checks the bucket for real: a usable one is shown by
+/// name and prefix, one this server cannot use is an error, and neither shows
+/// the store's secret.
+#[test]
+fn the_status_report_checks_the_bucket() {
+    run_test(async {
+        let Some(f) = fixture() else { return };
+        let html = status_report(&f.app).await;
+        let place = format!(
+            "Object storage (s3://{}/{})",
+            f.s3.bucket,
+            f.s3.prefix.as_deref().unwrap()
+        );
+        assert!(html.contains(&place), "the report shows {place:?}");
+        assert!(
+            !html.contains("Not usable ("),
+            "a usable bucket is no error"
+        );
+
+        let missing = S3Config {
+            bucket: format!("no-such-bucket-{}", Uuid::now_v7().simple()),
+            ..f.s3.clone()
+        };
+        let broken = TestApp::with_config(|config| {
+            config.file_storage = StorageConfig::S3(missing.clone());
+        })
+        .await;
+        let html = status_report(&broken).await;
+        let place = format!(
+            "Not usable (s3://{}/{})",
+            missing.bucket,
+            missing.prefix.as_deref().unwrap()
+        );
+        assert!(html.contains(&place), "the report shows {place:?}");
+        if let Ok(secret) = std::env::var("AWS_SECRET_ACCESS_KEY") {
+            assert!(!html.contains(&secret), "the secret is never shown");
+        }
     });
 }

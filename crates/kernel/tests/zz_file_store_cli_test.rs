@@ -127,6 +127,8 @@ async fn serve_refuses_a_bucket_it_cannot_use_before_the_database() {
     assert_ne!(code, Some(0), "{out}");
     assert!(out.contains("is not usable"), "{out}");
     assert!(out.contains(&bucket), "{out}");
+    // A missing bucket is a setting to fix, not an outage to ride out.
+    assert!(!out.contains("starting anyway"), "{out}");
     assert!(!out.contains(&s.secret), "the secret must never be printed");
 }
 

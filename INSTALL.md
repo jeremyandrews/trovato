@@ -118,8 +118,9 @@ IRSA role, the instance role, or `AWS_ACCESS_KEY_ID` and
 `AWS_SECRET_ACCESS_KEY` for a self hosted store such as MinIO). To move an
 existing site's files into a bucket, run `trovato files migrate-to-s3` (see
 [docs/cli-reference.md](docs/cli-reference.md#trovato-files-migrate-to-s3)),
-with writes stopped (servers scaled to zero, or the site in maintenance) and into an
-empty bucket or prefix, then switch `FILE_STORAGE` and start the servers. Never
+with writes stopped (every server scaled to zero and nothing calling `/cron`;
+maintenance mode is not enough, as administrators and cron still delete files)
+and into an empty bucket or prefix, then switch `FILE_STORAGE` and start the servers. Never
 run it again after the switch: a file deleted since would be copied back with no
 record, and be served to anyone as an unmanaged file.
 

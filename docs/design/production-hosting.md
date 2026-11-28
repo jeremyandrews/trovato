@@ -240,8 +240,9 @@ directory, so single server and self hosted installs work exactly as before.
   role, the drill role and the break-glass admin role. The bucket (or prefix)
   holds only Trovato's files: an object with no `file_managed` row is served as
   an unmanaged file to anyone the route allows, so nothing else may be put
-  there; in a bucket shared by several sites every site has its own
-  `S3_PREFIX` and no role is ever granted the whole bucket. A derivative is
+  there. One bucket per install: the web role can list the whole bucket
+  (below), so a bucket shared by several sites would let each list the
+  others' key names. A derivative is
   served only while its original is stored, so a deleted private image's
   leftover derivatives never become public.
 - **Image styles in S3 too.** Derivatives are read and written through the trait
@@ -265,8 +266,9 @@ directory, so single server and self hosted installs work exactly as before.
   `UPLOADS_DIR` (or `--from`) into the configured bucket under the same key,
   `--parallel` at a time. Each copy is read back and compared by SHA-256; a file
   the bucket already holds with the same SHA-256 is skipped, so an interrupted
-  or partly failed run is finished by running it again (with writes stopped:
-  a rerun after the switch would bring back files deleted since, with no
+  or partly failed run is finished by running it again (with writes stopped, which means every server scaled to zero and
+  nothing calling `/cron`, since maintenance mode still lets administrators
+  and cron delete files: a rerun after the switch would bring back files deleted since, with no
   row, and so public). Symbolic links are not
   followed (one could name a file outside the directory), and Trovato's own
   sentinel and temporary files are skipped. Nothing is deleted on either side:
@@ -285,9 +287,13 @@ directory, so single server and self hosted installs work exactly as before.
   store down for longer is better reported than hidden. At startup a definite
   answer (no such bucket, access denied, other bytes read back) stops the
   server, which fails a deploy with a bad setting; a store that cannot be
-  reached at all, or does not answer within 20 seconds, is logged and the
-  server starts anyway (`StoreUnreachable`), so a pod restarted during an S3
-  outage serves reads and other writes instead of crash looping. Uploads fail
+  reached at all, or does not answer within 8 seconds (inside the liveness
+  probe's budget), is logged and the server starts anyway
+  (`StoreUnreachable`), so a pod restarted during an S3 outage serves reads
+  and other writes instead of crash looping. Only no answer at all and a 5xx,
+  408 or 429 count as unreachable: a wrong region's redirect or a 400 is a
+  definite answer, so a missing `S3_REGION` fails the deploy rather than
+  starting a site whose every upload fails. Uploads fail
   until the store returns, which is rule 1's business if it lasts.
 - **Style names are machine names.** The image style route accepts only
   `[A-Za-z0-9_-]` for the style and holds the original's path to the `/files/`
@@ -296,7 +302,7 @@ directory, so single server and self hosted installs work exactly as before.
   derivative while the access check ran on a path naming no file. This was
   already reachable on `main` through the disk cache; part 1 closes it.
 - **Trovato's working names are never served:** `/files/` refuses
-  `.trovato-write-check-*` and a local write's `.<name>.trovato-tmp-*`.
+  `.trovato-write-check-*` and a local write's `.trovato-tmp-*`.
 
 **The crate: `object_store` 0.14** (Apache Arrow project; used by Arrow, Delta
 Lake and InfluxDB). Nothing in the workspace speaks S3, and the standard set has
@@ -338,7 +344,8 @@ store.
   restart picks up, with no volume mounts to reason about.
 - **Least privilege per service (EKS Pod Identity).** `trovato-web`:
   `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on
-  `arn:aws:s3:::<files-bucket>/<S3_PREFIX>/*`, and `s3:ListBucket` on the
+  `arn:aws:s3:::<files-bucket>/<S3_PREFIX>/*` (`arn:aws:s3:::<files-bucket>/*` with
+  no prefix), and `s3:ListBucket` on the
   bucket with no condition (trovato.blog has one bucket per install, so it
   lists only its own keys; without `ListBucket` S3 answers a missing key with
   403 rather than 404, which Trovato reports as a store failure, and a
@@ -347,8 +354,7 @@ store.
   under the role), `kms:GenerateDataKey` and `kms:Decrypt` on the bucket's key only,
   and `secretsmanager:GetSecretValue` on its own secrets; no `s3:*`, no bucket
   policy or ACL action. `trovato files migrate-to-s3` runs as a one-off Job
-  under the same role. Two sites sharing a bucket get one role each, scoped to
-  their own prefix. `trovato-migrate`: read `db-owner` only. `external-secrets`: read `trovato/*` only. The drill
+  under the same role. `trovato-migrate`: read `db-owner` only. `external-secrets`: read `trovato/*` only. The drill
   role: restore into and delete `drill-*` instances only. No pod has any
   permission over IAM, KMS key policy, backups or logs.
 - **The provider can be breached.** No long lived key anywhere: pods use Pod
@@ -453,10 +459,20 @@ store.
 |---|---|---|---|
 | Database, an error or bad migration | RDS point in time restore to a new instance, then switch the Secret | 5 minutes | 30 to 60 minutes at launch size (measured by the drill) |
 | Database, region lost | AWS Backup daily snapshot, copied to a Frankfurt vault with **Vault Lock in compliance mode** (35 days), so a compromised production account cannot delete it | 24 hours | 4 hours: `tofu apply` of the same modules in Frankfurt, restore, DNS |
-| Files | S3 versioning (noncurrent versions kept 90 days) and replication to a Frankfurt bucket, itself versioned | Minutes (replication) | Minutes: point the pods at the replica, or copy back |
+| Files | S3 versioning (noncurrent versions kept 90 days) and replication to a Frankfurt bucket, itself versioned, **with delete marker replication on** | Minutes (replication) | Minutes: point the pods at the replica, or copy back |
 | Redis | Not backed up: rebuildable (decision 4) | | Minutes (a new node) |
 | Infrastructure | The repository and the tofu state (versioned bucket) | | `tofu apply` |
 
+- **Files and rows must agree.** An object with no `file_managed` row is
+  served to anyone as an unmanaged file, so every restore keeps the bucket no
+  larger than the database. The replication rule replicates delete markers
+  (S3 leaves them out by default), or the Frankfurt copy would still hold
+  every file ever deleted and serve them all once the pods point at it;
+  pointing at it also needs the web role on the replica's bucket policy, its
+  KMS key and `S3_REGION=eu-central-1`. A database point in time restore
+  leaves the objects uploaded after the restore point with no row: the
+  runbook moves every key whose object is newer than the restore time out of
+  the served prefix before the site reopens.
 - **The restore runbook** (`docs/deployment/restore-runbook.md`, part 3) gives
   each row's literal commands.
 - **The restore drill** (`deploy/aws/scripts/restore-drill.sh`, part 3)

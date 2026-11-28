@@ -41,8 +41,7 @@ pub struct MigrationReport {
 /// Names Trovato writes for itself and never serves: the startup write check
 /// and a local write's temporary file.
 fn is_internal_name(name: &str) -> bool {
-    name.starts_with(".trovato-write-check-")
-        || (name.starts_with('.') && name.contains(".trovato-tmp-"))
+    name.starts_with(".trovato-write-check-") || name.starts_with(".trovato-tmp-")
 }
 
 /// Every regular file under `root`, as `/`-separated paths relative to it,
@@ -114,18 +113,42 @@ enum Copied {
     AlreadyThere,
 }
 
+/// Read the regular file at `path`, refusing one that is no longer a regular
+/// file inside `root`: its directory must still resolve under `root`, and the
+/// file itself is opened without following a symbolic link (on Unix).
+fn read_inside(root: &Path, path: &Path) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let parent = path.parent().context("a file with no directory")?;
+    if !parent.canonicalize()?.starts_with(root.canonicalize()?) {
+        anyhow::bail!("its directory is no longer inside the uploads directory");
+    }
+    if !std::fs::symlink_metadata(path)?.file_type().is_file() {
+        anyhow::bail!("no longer a regular file");
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        anyhow::bail!("no longer a regular file");
+    }
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)?;
+    Ok(data)
+}
+
 async fn copy_one(root: &Path, key: &str, dest: &dyn FileStorage) -> Result<Copied> {
     // Checked again just before reading, not only when listed: a file swapped
     // for a symbolic link in between is refused, not followed.
     let path = root.join(key);
-    let meta = tokio::fs::symlink_metadata(&path)
+    let root = root.to_path_buf();
+    let data = tokio::task::spawn_blocking(move || read_inside(&root, &path))
         .await
-        .context("failed to read the local file")?;
-    if !meta.file_type().is_file() {
-        anyhow::bail!("no longer a regular file");
-    }
-    let data = tokio::fs::read(&path)
-        .await
+        .context("the read task failed")?
         .context("failed to read the local file")?;
     let want = Sha256::digest(&data);
     let uri = format!("local://{key}");
@@ -207,8 +230,36 @@ mod tests {
     #[test]
     fn internal_names_are_skipped_and_ordinary_dotfiles_are_not() {
         assert!(is_internal_name(".trovato-write-check-0197"));
-        assert!(is_internal_name(".photo.jpg.trovato-tmp-0197abc"));
+        assert!(is_internal_name(".trovato-tmp-0197abc"));
         assert!(!is_internal_name(".well-known"));
         assert!(!is_internal_name("photo.jpg"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_swapped_for_a_link_or_moved_outside_is_not_read() {
+        let base = std::env::temp_dir().join(format!(
+            "trovato-readinside-{}",
+            uuid::Uuid::now_v7().simple()
+        ));
+        let root = base.join("uploads");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(root.join("2026")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"not an upload").unwrap();
+        std::fs::write(root.join("2026/plain.txt"), b"upload").unwrap();
+        assert_eq!(
+            read_inside(&root, &root.join("2026/plain.txt")).unwrap(),
+            b"upload"
+        );
+
+        // The file itself replaced by a link.
+        std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("2026/link.txt")).unwrap();
+        assert!(read_inside(&root, &root.join("2026/link.txt")).is_err());
+
+        // A directory on its path replaced by a link to outside.
+        std::os::unix::fs::symlink(&outside, root.join("swapped")).unwrap();
+        assert!(read_inside(&root, &root.join("swapped/secret.txt")).is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

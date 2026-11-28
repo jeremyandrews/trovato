@@ -188,7 +188,7 @@ pub(crate) async fn served_file_cache_control(
 /// traversal guard.
 ///
 /// Trovato's own working names are refused too: the startup write check's
-/// `.trovato-write-check-*` and a local write's `.<name>.trovato-tmp-*`, which
+/// `.trovato-write-check-*` and a local write's `.trovato-tmp-*`, which
 /// a crash can leave behind and which have no `file_managed` row, so the
 /// access check would otherwise treat them as unmanaged files anyone may fetch.
 pub(crate) fn is_original_upload_path(path: &str) -> bool {
@@ -205,7 +205,7 @@ pub(crate) fn is_original_upload_path(path: &str) -> bool {
 fn is_working_name(c: &str) -> bool {
     // Case-blind, for a case-insensitive local filesystem.
     let c = c.to_ascii_lowercase();
-    c.starts_with(".trovato-write-check-") || (c.starts_with('.') && c.contains(".trovato-tmp-"))
+    c.starts_with(".trovato-write-check-") || c.starts_with(".trovato-tmp-")
 }
 
 /// Get file info.
@@ -515,9 +515,7 @@ mod tests {
         assert!(!is_original_upload_path(".Trovato-Write-Check-0197"));
         assert!(!is_original_upload_path("Styles/w400/photo.jpg"));
         assert!(!is_original_upload_path("STYLES/w400/photo.jpg"));
-        assert!(!is_original_upload_path(
-            "2026/11/.a_b.jpg.trovato-tmp-0197"
-        ));
+        assert!(!is_original_upload_path("2026/11/.trovato-tmp-0197abc"));
         assert!(is_original_upload_path("2026/11/a_trovato-tmp.jpg"));
         assert!(is_original_upload_path(".well-known/x.txt"));
     }

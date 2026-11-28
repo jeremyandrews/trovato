@@ -275,9 +275,10 @@ every command. The design is in
 
 - **Same URIs.** A file's URI is `local://<key>` with either store, so nothing
   in the database changes.
-- **Procedure.** Stop writes first (scale the servers to zero, or put the site
-  in maintenance; readers behind a CDN keep being served from its cache), run
-  the command into an empty bucket or prefix, then set `FILE_STORAGE=s3` on
+- **Procedure.** Stop writes first: scale every server to zero and stop
+  anything calling `/cron` (maintenance mode is not enough: administrators and
+  cron still delete files). Readers behind a CDN keep being served from its
+  cache. Run the command into an empty bucket or prefix, then set `FILE_STORAGE=s3` on
   every server and start them. A warm-up run while the site is live is safe
   only if no file is deleted before the final run: a file deleted after a run
   stays in the bucket with no record, and is then served to anyone as an

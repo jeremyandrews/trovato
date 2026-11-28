@@ -22,7 +22,7 @@ use std::sync::Arc;
 use trovato_kernel::file::migrate::copy_dir_to_storage;
 use trovato_kernel::file::{
     FileStorage, LocalFileStorage, S3Config, S3FileStorage, StorageConfig, StorageNotFound,
-    build_storage, is_not_found,
+    build_storage, is_not_found, is_unreachable,
 };
 use uuid::Uuid;
 
@@ -175,6 +175,20 @@ async fn local_storage_keeps_the_contract() {
     assert!(left.is_empty(), "files left behind: {left:?}");
 }
 
+/// The longest name an upload can be stored under (a 32-character id, `_`
+/// and a cleaned name of up to 200 bytes) is still written: the temporary
+/// name beside it must not push past the file system's 255-byte limit.
+#[tokio::test]
+async fn local_storage_writes_the_longest_stored_name() {
+    let dir = TempDir::new("conformance-long");
+    let storage = LocalFileStorage::new(&dir.0, "/files");
+    let name = format!("{}_{}.jpg", Uuid::now_v7().simple(), "n".repeat(196));
+    assert_eq!(name.len(), 233);
+    let uri = format!("local://2026/11/{name}");
+    storage.write(&uri, b"long").await.expect("write");
+    assert_eq!(storage.read(&uri).await.unwrap(), b"long");
+}
+
 #[tokio::test]
 async fn s3_storage_keeps_the_contract() {
     let Some(config) = s3_config() else { return };
@@ -219,10 +233,11 @@ async fn s3_check_refuses_a_missing_bucket_by_name() {
     };
     config.bucket = format!("no-such-bucket-{}", Uuid::now_v7().simple());
     let storage = s3_storage(&config);
-    let err = format!(
-        "{:#}",
-        storage.check_usable().await.expect_err("must refuse")
-    );
+    let err = storage.check_usable().await.expect_err("must refuse");
+    // The store answered: a definite refusal, which stops `serve`, never an
+    // outage it starts through.
+    assert!(!is_unreachable(&err), "{err:#}");
+    let err = format!("{err:#}");
     assert!(err.contains(&config.bucket), "{err}");
     assert!(err.contains("S3_BUCKET"), "{err}");
     if let Ok(secret) = std::env::var("AWS_SECRET_ACCESS_KEY") {
@@ -235,6 +250,62 @@ async fn s3_check_refuses_a_missing_bucket_by_name() {
     }
     let debug = format!("{:?}", S3FileStorage::new(&config, "/files").unwrap());
     assert!(!debug.contains("secret"), "{debug}");
+}
+
+/// A stand-in S3 endpoint that answers every request with `status` and an
+/// empty body. Returns its `http://127.0.0.1:<port>` address.
+async fn answering(status: &'static str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                // Read the request head and whatever body came with it, then
+                // answer and close.
+                let mut buf = vec![0u8; 64 * 1024];
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    socket.read(&mut buf),
+                )
+                .await;
+                let reply =
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// The startup check tells a store that is down from one that answered: a
+/// server error is an outage the server starts through, while a region's bare
+/// redirect or a 400 (what a wrong `S3_REGION` or `S3_ENDPOINT` gets) is a
+/// setting to fix and stops it. Needs only the test store's credentials, so
+/// the client signs without looking for an instance role.
+#[tokio::test]
+async fn s3_check_tells_an_outage_from_a_wrong_setting() {
+    let Some(base) = s3_config() else { return };
+    for (status, outage) in [
+        ("503 Service Unavailable", true),
+        ("500 Internal Server Error", true),
+        ("429 Too Many Requests", true),
+        ("301 Moved Permanently", false),
+        ("400 Bad Request", false),
+    ] {
+        let config = S3Config {
+            endpoint: Some(answering(status).await),
+            allow_http: true,
+            ..base.clone()
+        };
+        let err = s3_storage(&config)
+            .check_usable()
+            .await
+            .expect_err("a store that never succeeds is not usable");
+        assert_eq!(is_unreachable(&err), outage, "{status}: {err:#}");
+        assert!(format!("{err:#}").contains(&config.bucket), "{status}");
+    }
 }
 
 /// A store that keeps other bytes than it was given: every copy must fail its
@@ -314,11 +385,7 @@ fn uploads_tree(root: &Path, outside: &Path) -> Vec<(String, Vec<u8>)> {
         std::fs::write(path, data).unwrap();
     }
     std::fs::write(root.join(".trovato-write-check-0197"), b"sentinel").unwrap();
-    std::fs::write(
-        root.join("2026/11/.b_photo.jpg.trovato-tmp-0197"),
-        b"partial",
-    )
-    .unwrap();
+    std::fs::write(root.join("2026/11/.trovato-tmp-0197"), b"partial").unwrap();
     std::fs::write(outside, b"must never be copied").unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(outside, root.join("2026/link.txt")).unwrap();
@@ -348,7 +415,7 @@ async fn migration_copies_everything_once(dest: Arc<dyn FileStorage>) {
     }
     for skipped in [
         "local://.trovato-write-check-0197",
-        "local://2026/11/.b_photo.jpg.trovato-tmp-0197",
+        "local://2026/11/.trovato-tmp-0197",
         "local://2026/link.txt",
         "local://2026/linkdir/secret.txt",
     ] {
