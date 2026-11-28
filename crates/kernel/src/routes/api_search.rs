@@ -15,7 +15,7 @@
 //!
 //! **The server builds its own prompt.** Neither `summarize` nor `followup`
 //! takes prompt text from the browser: both take `results: [{ "url": ... }]`,
-//! resolve each URL to an item ([`resolve_result_url`]) and run it through
+//! resolve each URL to an item (`resolve_result_url`) and run it through
 //! [`crate::content::item_service::ItemService::filter_page_for_view`] for the
 //! calling viewer, so a caller gets context built only from what they may see
 //! — not from an item that is unpublished, on a stage they cannot reach, or
@@ -541,7 +541,7 @@ fn item_context_text(item: &Item, max_chars: usize) -> String {
 /// context built from whatever is left, including none of it.
 ///
 /// Takes `pool` and `items` rather than the whole [`AppState`], the way
-/// [`crate::services::ai_chat::AiChatService::search_for_context`] takes its
+/// [`crate::services::ai_chat::ChatService::search_for_context`] takes its
 /// `ItemService`: a test can hand this a service whose dispatcher loads
 /// `trovato_field_access_ref`, to assert a denied field never reaches a
 /// prompt, without a real field-access plugin wired into the whole app. `pub`
