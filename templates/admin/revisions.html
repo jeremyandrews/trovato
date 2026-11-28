@@ -8,10 +8,14 @@
 {% block local_tasks %}{% if local_tasks is defined %}{{ tabs::tab_bar(local_tasks=local_tasks) }}{% endif %}{% endblock local_tasks %}
 
 {% block content %}
-{# The compare form stands alone: each row's Revert is a form of its own, and
-   a form nested in another is ended by the browser at the inner one. The radio
-   buttons and the submit button join it through their form attribute. #}
+{# The compare form and the revert form stand alone, before the table: a form
+   nested in another is ended by the browser at the inner one. The radio
+   buttons and the Compare button join the compare form through their form
+   attribute; each row's Revert button joins the revert form
+   (routes::item::REVERT_FORM_ID) the same way and posts to its own revision
+   with formaction. #}
 <form id="revision-compare" method="get" action="/item/{{ item_id }}/revisions/compare"></form>
+{% if revert_form %}{{ revert_form | safe }}{% endif %} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
 {% if revisions %}
 <div class="table-scroll" role="region" aria-labelledby="revisions-caption" tabindex="0">
@@ -51,10 +55,7 @@
                     <em class="revision-current">{{ t(s="Current revision") }}</em>
                     {% else %}
                     {% if may_revert %}
-                    <form method="post" action="/item/{{ item_id }}/revert/{{ rev.id }}" class="inline-form" novalidate>
-                        <input type="hidden" name="_token" value="{{ csrf_token }}">
-                        <button type="submit" class="button button--small">{{ t(s="Revert to the revision of {date}", date=rev.date) }}</button>
-                    </form>
+                    <button type="submit" form="{{ revert_form_id }}" formaction="/item/{{ item_id }}/revert/{{ rev.id }}" class="button button--small">{{ t(s="Revert to the revision of {date}", date=rev.date) }}</button>
                     {% endif %}
                     {% if may_delete %}
                     <a href="/item/{{ item_id }}/revisions/{{ rev.id }}/delete" class="button button--small button--danger">{{ t(s="Delete the revision of {date}", date=rev.date) }}</a>

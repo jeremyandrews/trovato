@@ -160,12 +160,6 @@ async fn post(
     (status, location, body(response).await)
 }
 
-fn token(html: &str) -> String {
-    let needle = r#"name="_token" value=""#;
-    let at = html.find(needle).expect("a form token") + needle.len();
-    html[at..at + html[at..].find('"').unwrap()].to_string()
-}
-
 async fn admin(app: &TestApp, prefix: &str) -> String {
     let name = common::username(prefix);
     let prefix = prefix.to_string();
@@ -231,6 +225,10 @@ fn encode(s: &str) -> String {
     urlencoding::encode(s).into_owned()
 }
 
+/// The content list's bulk form and the form on an item's delete page.
+const BULK_FORM_ID: &str = "content_bulk_form";
+const DELETE_FORM_ID: &str = "content_delete_form";
+
 /// **F3.** With JavaScript off, Delete leads to a page that names what will be
 /// deleted; nothing is deleted until its button is pressed.
 #[test]
@@ -248,55 +246,42 @@ fn a_delete_asks_on_its_own_page_before_it_deletes() {
         )
         .await;
         assert!(
-            page.contains(&format!(r#"action="/admin/content/{id}/delete?confirm""#)),
-            "the row's delete form asks first"
+            page.contains(&format!(
+                r#"<a class="link-button link-button--danger" href="/admin/content/{id}/delete">Delete {title}</a>"#
+            )),
+            "the row's Delete is a link to the delete page"
         );
-        let form = format!(
-            "_token={}&_confirm={}&_confirm_label={}",
-            encode(&token(&page)),
-            encode(&format!("Delete {title}? This cannot be undone.")),
-            encode(&format!("Delete {title}")),
-        );
-        let (status, location, _) = post(
-            app,
-            &cookies,
-            &format!("/admin/content/{id}/delete?confirm"),
-            form,
-        )
-        .await;
-        assert_eq!(status, StatusCode::SEE_OTHER);
-        assert_eq!(location, "/admin/confirm");
         assert!(
-            exists(app, id).await,
-            "nothing is deleted before confirming"
+            !page.contains(&format!("/admin/content/{id}/delete?confirm")),
+            "the list holds no delete form of its own"
         );
 
-        let (status, confirm) = get(app, &cookies, "/admin/confirm").await;
+        let (status, confirm) = get(app, &cookies, &format!("/admin/content/{id}/delete")).await;
         assert_eq!(status, StatusCode::OK);
+        assert!(exists(app, id).await, "opening the page deletes nothing");
         assert!(confirm.contains("<h1"), "the page has its heading");
         assert!(confirm.contains(&format!("Delete {title}? This cannot be undone.")));
+        let form = common::form_in(&confirm, DELETE_FORM_ID).expect("the delete form");
         assert!(
-            confirm.contains(&format!(
+            form.contains(&format!(
                 r#"action="&#x2F;admin&#x2F;content&#x2F;{id}&#x2F;delete""#
             )),
-            "the button posts to the delete itself, without the marker"
+            "the button posts to the delete itself"
         );
         assert!(
-            confirm.contains(&format!(
-                r#"button button--danger">Delete {title}</button>"#
-            )),
-            "the button names what it deletes"
+            form.contains(r#"button--danger""#) && form.contains(">Delete</button>"),
+            "the button deletes"
         );
         assert!(
-            confirm.contains(r#"href="&#x2F;admin&#x2F;content?q=kept""#),
-            "Cancel goes back to the listing as it was"
+            form.contains(r#"href="/admin/content" class="button button--secondary">Cancel</a>"#),
+            "Cancel goes back to the listing"
         );
 
         let (status, location, _) = post(
             app,
             &cookies,
             &format!("/admin/content/{id}/delete"),
-            format!("_token={}", encode(&token(&confirm))),
+            common::form_fields(&confirm, DELETE_FORM_ID),
         )
         .await;
         assert!(status.is_redirection(), "{status}");
@@ -305,19 +290,43 @@ fn a_delete_asks_on_its_own_page_before_it_deletes() {
     });
 }
 
-/// A form token that does not verify never reaches the page: the handler
-/// refuses it, as it did before.
+/// A form token that does not verify is refused: by the delete, and by a bulk
+/// delete, which never reaches the confirmation page with it.
 #[test]
 fn a_forged_delete_is_refused_not_asked_about() {
     run_test(async {
         let app = shared_app().await;
         let cookies = admin(app, "b199listsforge").await;
-        let id = item(app, &format!("Kept {}", Uuid::new_v4().simple())).await;
+        let title = format!("Kept {}", Uuid::new_v4().simple());
+        let id = item(app, &title).await;
+
+        let (_, confirm) = get(app, &cookies, &format!("/admin/content/{id}/delete")).await;
+        let build_id = common::form_build_id(&confirm, DELETE_FORM_ID);
+        let (status, _, _) = post(
+            app,
+            &cookies,
+            &format!("/admin/content/{id}/delete"),
+            format!("_token=forged&_form_build_id={}", encode(&build_id)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "a forged token is refused");
+        assert!(exists(app, id).await);
+
+        let (_, page) = get(
+            app,
+            &cookies,
+            &format!("/admin/content?q={}", encode(&title)),
+        )
+        .await;
+        let build_id = common::form_build_id(&page, BULK_FORM_ID);
         let (status, location, _) = post(
             app,
             &cookies,
-            &format!("/admin/content/{id}/delete?confirm"),
-            "_token=forged&_confirm=Anything%20at%20all".to_string(),
+            "/admin/content/bulk?confirm=delete",
+            format!(
+                "_token=forged&_form_build_id={}&action=delete&ids%5B%5D={id}",
+                encode(&build_id)
+            ),
         )
         .await;
         assert_ne!(location, "/admin/confirm", "{status}");
@@ -325,8 +334,8 @@ fn a_forged_delete_is_refused_not_asked_about() {
     });
 }
 
-/// A bulk delete names how many items it will delete; another bulk action
-/// does not ask.
+/// A bulk delete names how many items it will delete, and deletes them once
+/// confirmed; another bulk action does not ask.
 #[test]
 fn a_bulk_delete_names_how_many_items() {
     run_test(async {
@@ -337,20 +346,32 @@ fn a_bulk_delete_names_how_many_items() {
         let b = item(app, &format!("Bulk B {tag}")).await;
 
         let (_, page) = get(app, &cookies, &format!("/admin/content?q={tag}")).await;
-        assert!(page.contains(r#"action="/admin/content/bulk?confirm=delete""#));
+        let form = common::form_in(&page, BULK_FORM_ID).expect("the bulk form");
+        assert!(
+            form.contains(r#"action="&#x2F;admin&#x2F;content&#x2F;bulk?confirm=delete""#),
+            "a bulk delete asks first"
+        );
         assert!(page.contains("data-select-all"), "a select all box");
         assert!(
             page.contains("data-selected-count"),
             "a live selected count"
         );
-        let token = token(&page);
+        assert!(
+            page.contains(&format!(
+                r#"name="ids[]" value="{a}" id="select-{a}" form="{BULK_FORM_ID}""#
+            )),
+            "each row's checkbox joins the bulk form"
+        );
         let ids = format!("&ids%5B%5D={a}&ids%5B%5D={b}");
 
         let (status, location, _) = post(
             app,
             &cookies,
             "/admin/content/bulk?confirm=delete",
-            format!("_token={}&action=delete{ids}", encode(&token)),
+            format!(
+                "{}&action=delete{ids}",
+                common::form_fields(&page, BULK_FORM_ID)
+            ),
         )
         .await;
         assert_eq!(
@@ -365,18 +386,38 @@ fn a_bulk_delete_names_how_many_items() {
         assert!(confirm.contains(">Delete 2 items</button>"));
         assert_eq!(confirm.matches(r#"name="ids[]""#).count(), 2);
         assert!(exists(app, a).await && exists(app, b).await);
-        let token = self::token(&confirm);
 
         // Unpublishing is not destructive: it is done at once.
+        let (_, page) = get(app, &cookies, &format!("/admin/content?q={tag}")).await;
         let (status, location, _) = post(
             app,
             &cookies,
             "/admin/content/bulk?confirm=delete",
-            format!("_token={}&action=unpublish{ids}", encode(&token)),
+            format!(
+                "{}&action=unpublish{ids}",
+                common::form_fields(&page, BULK_FORM_ID)
+            ),
         )
         .await;
         assert!(status.is_redirection(), "{status}");
         assert_ne!(location, "/admin/confirm");
+        assert!(exists(app, a).await && exists(app, b).await);
+
+        // The confirmation page's button is the bulk form, rebuilt: pressing
+        // it deletes both.
+        let (status, location, _) = post(
+            app,
+            &cookies,
+            "/admin/content/bulk",
+            format!(
+                "{}&action=delete{ids}",
+                common::form_fields(&confirm, BULK_FORM_ID)
+            ),
+        )
+        .await;
+        assert!(status.is_redirection(), "{status}");
+        assert_eq!(location, "/admin/content");
+        assert!(!exists(app, a).await && !exists(app, b).await);
     });
 }
 
@@ -449,5 +490,66 @@ fn the_content_listing_filters_sorts_and_counts() {
             page.contains(r#"href="/admin/content""#),
             "a way to clear it"
         );
+    });
+}
+
+// =============================================================================
+// B83c: the content list's bulk form and the item delete page are built and
+// checked by the form pipeline.
+// =============================================================================
+
+/// The `_token` of the form `form_id` on `html`, alone: a body without the
+/// form's `_form_build_id`.
+fn token_of(html: &str, form_id: &str) -> String {
+    let form = common::form_in(html, form_id).unwrap_or_else(|| panic!("no form {form_id}"));
+    encode(&common::input_value_in(form, "_token").expect("a token"))
+}
+
+/// The bulk form and the delete form are pipeline forms, and a submission of
+/// either without its build id is refused as expired, acting on nothing.
+#[test]
+fn the_content_forms_are_pipeline_forms_and_refuse_a_post_without_a_build_id() {
+    run_test(async {
+        let app = shared_app().await;
+        let cookies = admin(app, "b83clists").await;
+        let title = format!("Pipeline {}", Uuid::new_v4().simple());
+        let id = item(app, &title).await;
+
+        let (_, page) = get(
+            app,
+            &cookies,
+            &format!("/admin/content?q={}", encode(&title)),
+        )
+        .await;
+        assert!(common::form_in(&page, BULK_FORM_ID).is_some(), "{page}");
+        let (status, location, body) = post(
+            app,
+            &cookies,
+            "/admin/content/bulk",
+            format!(
+                "_token={}&action=unpublish&ids%5B%5D={id}",
+                token_of(&page, BULK_FORM_ID)
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{location}");
+        assert!(body.contains("The form has expired."), "{body}");
+
+        let (status, confirm) = get(app, &cookies, &format!("/admin/content/{id}/delete")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            common::form_in(&confirm, DELETE_FORM_ID).is_some(),
+            "{confirm}"
+        );
+        let (status, _, body) = post(
+            app,
+            &cookies,
+            &format!("/admin/content/{id}/delete"),
+            format!("_token={}", token_of(&confirm, DELETE_FORM_ID)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("The form has expired."), "{body}");
+        assert!(exists(app, id).await, "nothing is deleted");
     });
 }

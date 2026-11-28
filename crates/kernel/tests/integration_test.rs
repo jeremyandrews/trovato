@@ -2088,14 +2088,26 @@ fn e2e_admin_delete_content() {
             .create_and_login_admin("admin_content_5", "password123", "content5@test.com")
             .await;
 
-        // Fetch CSRF token from content list page
-        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/content").await;
+        // The delete form, from the item's delete page.
+        let confirm = app
+            .request_with_cookies(
+                Request::get(format!("/admin/content/{item_id}/delete"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(confirm.status(), StatusCode::OK);
+        let confirm_html = response_text(confirm).await;
 
         let response = app
             .request_with_cookies(
                 Request::post(format!("/admin/content/{item_id}/delete"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(common::form_fields(
+                        &confirm_html,
+                        "content_delete_form",
+                    )))
                     .unwrap(),
                 &cookies,
             )
@@ -6930,31 +6942,33 @@ fn e2e_conference_delete_shows_flash_message() {
         .await
         .unwrap();
 
-        // Get a CSRF token for the delete
-        let list_resp = app
+        // The delete form, from the item's delete page
+        let confirm_resp = app
             .request_with_cookies(
-                Request::get("/admin/content").body(Body::empty()).unwrap(),
+                Request::get(format!("/admin/content/{item_id}/delete"))
+                    .body(Body::empty())
+                    .unwrap(),
                 &cookies,
             )
             .await;
 
-        let list_cookies = extract_cookies(&list_resp);
-        let cookies = if list_cookies.is_empty() {
+        let confirm_cookies = extract_cookies(&confirm_resp);
+        let cookies = if confirm_cookies.is_empty() {
             cookies
         } else {
-            list_cookies
+            confirm_cookies
         };
-        let list_html = response_text(list_resp).await;
-
-        let csrf_token =
-            extract_csrf_token(&list_html).unwrap_or_else(|| panic!("CSRF token not found"));
+        let confirm_html = response_text(confirm_resp).await;
 
         // Delete the item
         let delete_resp = app
             .request_with_cookies(
                 Request::post(format!("/admin/content/{item_id}/delete"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(Body::from(format!("_token={csrf_token}")))
+                    .body(Body::from(common::form_fields(
+                        &confirm_html,
+                        "content_delete_form",
+                    )))
                     .unwrap(),
                 &cookies,
             )

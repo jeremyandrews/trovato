@@ -201,12 +201,17 @@ fn the_list_marks_the_current_revision_and_deletes_a_past_one() {
             "the current row offers no Delete"
         );
 
-        let token = token_after(&html, &delete_oldest);
+        let (status, confirm_html) = get(app, &cookies, &delete_oldest).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the Delete link opens a confirm page"
+        );
         let status = post_form(
             app,
             &cookies,
             &delete_oldest,
-            format!("_token={}", urlencoding::encode(&token)),
+            common::form_fields(&confirm_html, "revision_delete_form"),
         )
         .await;
         assert!(status.is_redirection(), "delete refused: {status}");
@@ -333,12 +338,11 @@ fn deleting_a_revision_needs_delete_revisions_and_delete_access() {
             confirm_html.contains("History probe one"),
             "confirm page names the revision being deleted"
         );
-        let token = token_after(&confirm_html, &path);
         let status = post_form(
             app,
             &cookies,
             &path,
-            format!("_token={}", urlencoding::encode(&token)),
+            common::form_fields(&confirm_html, "revision_delete_form"),
         )
         .await;
         assert!(status.is_redirection(), "delete refused: {status}");
@@ -377,5 +381,81 @@ fn the_database_refuses_to_delete_the_current_revision() {
             .await
             .expect("a non-current revision deletes");
         assert!(!revision_exists(app, oldest).await);
+    });
+}
+
+// =============================================================================
+// B83c: the revision list's revert form and the revision delete page are
+// built and checked by the form pipeline.
+// =============================================================================
+
+/// The revert form and the revision delete form are pipeline forms, and a
+/// submission of either without its build id is refused as expired, changing
+/// nothing.
+#[test]
+fn the_revision_forms_are_pipeline_forms_and_refuse_a_post_without_a_build_id() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_type(app).await;
+        let name = format!("b83crev{}", &Uuid::now_v7().simple().to_string()[20..]);
+        let cookies = app
+            .create_and_login_admin(
+                &name,
+                "correct-horse-battery-staple",
+                &format!("{name}@test.local"),
+            )
+            .await;
+        let (id, revisions) = seed_item(app).await;
+        let oldest = revisions[0];
+        let token_of = |html: &str, form_id: &str| {
+            let form = common::form_in(html, form_id).expect("the form");
+            urlencoding::encode(&common::input_value_in(form, "_token").expect("a token"))
+                .into_owned()
+        };
+
+        let (_, html) = get(app, &cookies, &format!("/item/{id}/revisions")).await;
+        assert!(
+            common::form_in(&html, "revision_revert_form").is_some(),
+            "{html}"
+        );
+        let status = post_form(
+            app,
+            &cookies,
+            &format!("/item/{id}/revert/{oldest}"),
+            format!("_token={}", token_of(&html, "revision_revert_form")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "refused as expired");
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM item_revision WHERE item_id = $1")
+                .bind(id)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert_eq!(count, 3, "no revert was written");
+
+        let path = format!("/item/{id}/revisions/{oldest}/delete");
+        let (status, confirm) = get(app, &cookies, &path).await;
+        assert_eq!(status, StatusCode::OK);
+        let form = common::form_in(&confirm, "revision_delete_form").expect("the delete form");
+        assert!(
+            form.contains("button--danger") && form.contains(">Delete the revision of "),
+            "the button names the revision it deletes: {form}"
+        );
+        assert!(
+            form.contains(&format!(
+                r#"href="/item/{id}/revisions" class="button button--secondary">Cancel</a>"#
+            )),
+            "Cancel goes back to the history"
+        );
+        let status = post_form(
+            app,
+            &cookies,
+            &path,
+            format!("_token={}", token_of(&confirm, "revision_delete_form")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "refused as expired");
+        assert!(revision_exists(app, oldest).await, "the revision stays");
     });
 }

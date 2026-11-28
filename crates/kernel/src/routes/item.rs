@@ -13,18 +13,27 @@ use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use uuid::Uuid;
 
+use crate::content::submission::PostedForm;
 use crate::content::{
     FieldMode, FilterPipeline, ItemRevisions, RevisionAccess, RevisionDeleted, RevisionSelection,
 };
 use crate::error::AppError;
-use crate::form::csrf::generate_csrf_token;
+use crate::form::FormElement;
 use crate::middleware::language::ResolvedLanguage;
 use crate::models::{CreateItem, UpdateItem, UrlAlias};
 use crate::pagination::{Page, PageParams};
 use crate::state::AppState;
 use crate::tap::UserContext;
 
-use super::helpers::{CsrfOnlyForm, html_escape};
+use super::helpers::html_escape;
+
+/// The revision list's one revert form. Each row's Revert button joins it
+/// through its `form` attribute and posts to its own revision's address with
+/// `formaction`, so the list builds one form however long the history is.
+const REVERT_FORM_ID: &str = "revision_revert_form";
+
+/// The form on the page that confirms deleting one past revision.
+const REVISION_DELETE_FORM_ID: &str = "revision_delete_form";
 
 /// Response for successful item operations.
 #[derive(Debug, Serialize)]
@@ -1965,7 +1974,25 @@ async fn list_revisions(
         .await
         .unwrap_or(false);
 
-    let csrf_token = generate_csrf_token(&session).await;
+    // The revert form, when some row offers a Revert.
+    let revertible = revisions
+        .iter()
+        .any(|r| Some(r.id) != item.current_revision_id);
+    let revert_form = if may_revert && revertible {
+        let account = match super::helpers::require_login(&state, &session).await {
+            Ok(account) => account,
+            Err(refusal) => return refusal,
+        };
+        let form = crate::form::Form::new(REVERT_FORM_ID)
+            .action(format!("/item/{id}/revisions"))
+            .attribute("hidden", "hidden");
+        match super::admin_form::render(&state, &session, &account, form, &[]).await {
+            Ok(html) => Some(html),
+            Err(response) => return response,
+        }
+    } else {
+        None
+    };
 
     let mut context = tera::Context::new();
     context.insert("may_revert", &may_revert);
@@ -1974,7 +2001,8 @@ async fn list_revisions(
     context.insert("item_id", &id);
     context.insert("item_title", &item.title);
     context.insert("revisions", &rev_data);
-    context.insert("csrf_token", &csrf_token);
+    context.insert("revert_form", &revert_form);
+    context.insert("revert_form_id", REVERT_FORM_ID);
 
     super::helpers::render_admin_template(
         &state,
@@ -2205,24 +2233,98 @@ async fn compare_revisions(
     .await
 }
 
-/// Revert to a previous revision.
+/// Check a submission of the revision form `form_id` from the session's
+/// user: the form pipeline's token and saved state. `Err` is the response
+/// that refuses it.
+async fn check_revision_form(
+    state: &AppState,
+    session: &Session,
+    user: &UserContext,
+    posted: &PostedForm,
+    form_id: &str,
+) -> Result<crate::form::FormState, Response> {
+    match super::admin_form::check_as(state, session, user, posted, form_id, Vec::new()).await {
+        Ok(form_state) => Ok(form_state),
+        Err(Ok(_)) => Err(super::helpers::render_error(
+            "The form has expired. Reload the page and try again.",
+        )),
+        Err(Err(response)) => Err(response),
+    }
+}
+
+/// Tell plugins a revision form's submission was saved (`tap_form_submit`).
+async fn revision_form_submitted(
+    state: &AppState,
+    user: &UserContext,
+    form_state: &crate::form::FormState,
+    posted: &PostedForm,
+) {
+    state
+        .forms()
+        .submitted(
+            form_state,
+            posted,
+            None,
+            &super::item_form::tap_state(state, user),
+        )
+        .await;
+}
+
+/// Revert to a previous revision, from the revision list's revert form.
 async fn revert_revision(
     State(state): State<AppState>,
     session: Session,
     Path((id, rev_id)): Path<(Uuid, Uuid)>,
-    Form(form): Form<CsrfOnlyForm>,
-) -> Result<impl IntoResponse, AppError> {
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Result<Response, AppError> {
+    let posted = PostedForm(pairs);
     let user = get_user_context(&session, &state).await;
-
-    // Verify CSRF token from form body
-    crate::routes::helpers::require_csrf(&session, &form.token)
-        .await
-        .map_err(|_| AppError::forbidden("Invalid or expired form token. Please try again."))?;
+    let form_state =
+        match check_revision_form(&state, &session, &user, &posted, REVERT_FORM_ID).await {
+            Ok(form_state) => form_state,
+            Err(refusal) => return Ok(refusal),
+        };
 
     match state.items().revert_to_revision(id, rev_id, &user).await {
-        Ok(_) => Ok(Redirect::to(&format!("/item/{id}/revisions"))),
+        Ok(_) => {
+            revision_form_submitted(&state, &user, &form_state, &posted).await;
+            Ok(Redirect::to(&format!("/item/{id}/revisions")).into_response())
+        }
         Err(e) => Err(write_error(e, "revert revision")),
     }
+}
+
+/// The gates deleting revision `rev_id` of item `id` passes, for the confirm
+/// page and the delete alike: the revision read gates of
+/// [`revisions_for_session`] (404, then 403), `delete revisions` with delete
+/// access to the item (403), and never the current revision (409). On success
+/// the item, the revision, and the session's user.
+async fn revision_delete_gate(
+    state: &AppState,
+    session: &Session,
+    id: Uuid,
+    rev_id: Uuid,
+) -> Result<(ItemRevisions, UserContext), Response> {
+    let loaded =
+        revisions_for_session(state, session, id, RevisionSelection::Ids(&[rev_id])).await?;
+    if loaded.revisions.is_empty() {
+        return Err(super::helpers::render_not_found());
+    }
+    let user = get_user_context(session, state).await;
+    if !state
+        .items()
+        .may_delete_revisions(&loaded.item, &user)
+        .await
+        .unwrap_or(false)
+    {
+        return Err(super::helpers::render_forbidden(
+            "You may not delete this item's revisions.",
+        ));
+    }
+    if loaded.item.current_revision_id == Some(rev_id) {
+        return Err(AppError::conflict("The current revision cannot be deleted.").into_response());
+    }
+    Ok((loaded, user))
 }
 
 /// Confirm deleting one past revision of an item.
@@ -2236,44 +2338,47 @@ async fn confirm_delete_revision(
     session: Session,
     Path((id, rev_id)): Path<(Uuid, Uuid)>,
 ) -> Response {
-    let ItemRevisions { item, revisions } = match revisions_for_session(
-        &state,
-        &session,
-        id,
-        RevisionSelection::Ids(&[rev_id]),
-    )
-    .await
-    {
-        Ok(loaded) => loaded,
-        Err(refusal) => return refusal,
-    };
+    let (ItemRevisions { item, revisions }, user) =
+        match revision_delete_gate(&state, &session, id, rev_id).await {
+            Ok(gated) => gated,
+            Err(refusal) => return refusal,
+        };
     let Some(revision) = revisions.first() else {
         return super::helpers::render_not_found();
     };
-    let user = get_user_context(&session, &state).await;
-    if !state
-        .items()
-        .may_delete_revisions(&item, &user)
-        .await
-        .unwrap_or(false)
-    {
-        return super::helpers::render_forbidden("You may not delete this item's revisions.");
-    }
-    if item.current_revision_id == Some(rev_id) {
-        return AppError::conflict("The current revision cannot be deleted.").into_response();
-    }
+    let account = match super::helpers::require_login(&state, &session).await {
+        Ok(account) => account,
+        Err(refusal) => return refusal,
+    };
 
     let authors = revision_authors(&state, &revisions).await;
-    let csrf_token = generate_csrf_token(&session).await;
+    let summary = revision_summary(revision, &authors, item.current_revision_id);
+    let path = format!("/item/{id}/revisions/{rev_id}/delete");
+    // The buttons are markup in the pipeline form: its action is outside
+    // `/admin`, so the form renders with the site's form templates, whose
+    // submit button takes no danger style and prints its words untranslated.
+    // The button names the revision by its date, translated here.
+    let text = super::admin_nav::AdminText::for_page(&state, &user, &path).await;
+    let date = summary["date"].as_str().unwrap_or_default().to_string();
+    let buttons = format!(
+        r#"<div class="form-actions"><button type="submit" class="button button--danger">{}</button> <a href="/item/{id}/revisions" class="button button--secondary">{}</a></div>"#,
+        text.html("Delete the revision of {date}", &[("date", &date)]),
+        text.html("Cancel", &[])
+    );
+    let form = crate::form::Form::new(REVISION_DELETE_FORM_ID)
+        .action(path.clone())
+        .attribute("novalidate", "novalidate")
+        .element("actions", FormElement::markup(buttons).weight(10));
+    let form_html = match super::admin_form::render(&state, &session, &account, form, &[]).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
-    context.insert("path", &format!("/item/{id}/revisions/{rev_id}/delete"));
+    context.insert("path", &path);
     context.insert("item_id", &id);
     context.insert("item_title", &item.title);
-    context.insert(
-        "revision",
-        &revision_summary(revision, &authors, item.current_revision_id),
-    );
-    context.insert("csrf_token", &csrf_token);
+    context.insert("revision", &summary);
+    context.insert("form", &form_html);
 
     super::helpers::render_admin_template(
         &state,
@@ -2286,22 +2391,39 @@ async fn confirm_delete_revision(
 
 /// Delete one past revision of an item.
 ///
-/// `POST /item/{id}/revisions/{rev_id}/delete`, with the form token. The
-/// current revision is refused (409); a user who may view the item but not
-/// delete its revisions gets 403, and one who may not view it 404.
+/// `POST /item/{id}/revisions/{rev_id}/delete`, from the confirm page's form.
+/// The current revision is refused (409); a user who may view the item but
+/// not delete its revisions gets 403, and one who may not view it 404, before
+/// the form is checked, as the confirm page refuses them.
 async fn delete_revision(
     State(state): State<AppState>,
     session: Session,
     Path((id, rev_id)): Path<(Uuid, Uuid)>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Result<Response, AppError> {
-    let user = get_user_context(&session, &state).await;
-    crate::routes::helpers::require_csrf(&session, &form.token)
-        .await
-        .map_err(|_| AppError::forbidden("Invalid or expired form token. Please try again."))?;
+    let posted = PostedForm(pairs);
+    let user = match revision_delete_gate(&state, &session, id, rev_id).await {
+        Ok((_, user)) => user,
+        Err(refusal) => return Ok(refusal),
+    };
+    let form_state = match check_revision_form(
+        &state,
+        &session,
+        &user,
+        &posted,
+        REVISION_DELETE_FORM_ID,
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(refusal) => return Ok(refusal),
+    };
 
     match state.items().delete_revision(id, rev_id, &user).await {
-        Ok(()) => Ok(Redirect::to(&format!("/item/{id}/revisions")).into_response()),
+        Ok(()) => {
+            revision_form_submitted(&state, &user, &form_state, &posted).await;
+            Ok(Redirect::to(&format!("/item/{id}/revisions")).into_response())
+        }
         Err(RevisionDeleted::NotFound) => Err(AppError::not_found("Revision")),
         Err(RevisionDeleted::Forbidden) => Err(super::helpers::refusal_for(
             &user,

@@ -263,12 +263,20 @@ fn an_author_deletes_their_own_content_and_nobody_elses() {
             exists(app, theirs).await,
             "another's item is not theirs to delete"
         );
-        let t = token(app, "/admin/content", &cookies).await;
+        assert_eq!(
+            get(app, &format!("/admin/content/{theirs}/delete"), &cookies)
+                .await
+                .status,
+            StatusCode::FORBIDDEN,
+            "nor is its delete page"
+        );
+        let page = get(app, &format!("/admin/content/{mine}/delete"), &cookies).await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.body);
         let a = post_form(
             app,
             &format!("/admin/content/{mine}/delete"),
             &cookies,
-            format!("_token={t}"),
+            common::form_fields(&page.body, "content_delete_form"),
         )
         .await;
         assert!(a.status.is_redirection(), "{}: {}", a.status, a.body);
@@ -276,12 +284,13 @@ fn an_author_deletes_their_own_content_and_nobody_elses() {
 
         // In bulk: their own goes, another's stays.
         let mine = item(app, author, 1, "b156 mine again").await;
-        let t = token(app, "/admin/content", &cookies).await;
+        let list = get(app, "/admin/content", &cookies).await;
+        let fields = common::form_fields(&list.body, "content_bulk_form");
         let a = post_form(
             app,
             "/admin/content/bulk",
             &cookies,
-            format!("_token={t}&action=delete&ids%5B%5D={mine}&ids%5B%5D={theirs}"),
+            format!("{fields}&action=delete&ids%5B%5D={mine}&ids%5B%5D={theirs}"),
         )
         .await;
         assert!(a.status.is_redirection(), "{}: {}", a.status, a.body);
