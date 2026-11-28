@@ -431,7 +431,7 @@ impl AppState {
 
         // The operator allowlist (`PLUGIN_HTTP_PRIVATE_ALLOW`): one client per
         // entry, built once here and shared (behind an `Arc`) by every
-        // dispatch path that issues plugin-influenced HTTP — the request
+        // dispatch path that issues plugin-influenced HTTP: the request
         // path's `tap_services` below, `tap_install`, and `CronService`'s
         // `tap_cron`/`tap_queue_worker` dispatch.
         let plugin_http_allow = Arc::new(crate::host::http::build_plugin_http_allow_runtime(
@@ -446,13 +446,9 @@ impl AppState {
         // installed on this deployment yet. One warning per start, naming
         // every such entry, so an operator sees a typo rather than silently
         // wondering why the plugin never reaches its destination.
-        let allow_unknown_plugins: Vec<&str> = config
+        let allow_unknown_plugins = config
             .plugin_http_private_allow
-            .entries()
-            .iter()
-            .map(|entry| entry.plugin.as_str())
-            .filter(|name| !discovered.contains_key(*name))
-            .collect();
+            .unknown_plugins(|name| discovered.contains_key(name));
         if !allow_unknown_plugins.is_empty() {
             warn!(
                 plugins = ?allow_unknown_plugins,

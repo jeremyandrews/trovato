@@ -1174,7 +1174,7 @@ impl CronService {
     /// request-path call does.
     ///
     /// Wired from `AppState`, which owns the one runtime built from `Config`
-    /// at startup — the same `Arc` `tap_services` carries.
+    /// at startup: the same `Arc` `tap_services` carries.
     pub(crate) fn set_http_allow(&mut self, allow: Arc<crate::host::http::PluginHttpAllowRuntime>) {
         self.http_allow = allow;
     }

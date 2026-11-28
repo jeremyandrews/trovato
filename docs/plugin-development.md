@@ -1139,7 +1139,7 @@ A plugin's outbound HTTP (`request` and the streaming `http-open`) refuses a
 private or loopback destination by default: no plugin reaches `127.0.0.1`,
 `10.0.0.0/8`, `192.168.0.0/16`, `fd00::/8`, `169.254.0.0/16` (which includes
 the cloud-metadata address), a hostname ending `.local`, `.internal` or
-`.localhost`, or `localhost` itself — and a redirect to any of those is
+`.localhost`, or `localhost` itself, and a redirect to any of those is
 refused mid-chain even when the first hop was public. This is the kernel's
 SSRF fence; it exists because a plugin's URL is frequently built from
 something a visitor supplied, directly or indirectly, and a kernel that
@@ -1147,7 +1147,7 @@ followed it anywhere could be turned into a proxy onto the site's own LAN.
 
 An operator can still let one named plugin reach one named destination,
 through the `PLUGIN_HTTP_PRIVATE_ALLOW` server setting (see
-[INSTALL.md](../INSTALL.md)) — there is no manifest declaration or runtime
+[INSTALL.md](../INSTALL.md)): there is no manifest declaration or runtime
 call a plugin itself can make for this; it is an operator's decision, made
 outside the plugin entirely. The setting is a comma-separated list of
 
@@ -1168,8 +1168,8 @@ clears the fence this way. The match is exact and narrow on purpose: the
 calling plugin's machine name, an `http`/`https` scheme, the exact port, and
 the destination (literal equality, CIDR containment, or, for a hostname
 entry, case-insensitive name equality). A different plugin, a different
-port, or any other destination — including the same address on a different
-port — still meets the refusal every request meets by default, and a
+port, or any other destination (including the same address on a different
+port) still meets the refusal every request meets by default, and a
 redirect away from the granted destination is refused the same way a redirect
 to any other private target always is. An entry is per plugin and per port
 because granting a destination more broadly than the one plugin and the one

@@ -7,7 +7,7 @@
 //! every request is checked against first. This module is consulted only when
 //! that check would otherwise refuse the request, and only to ask one
 //! question: did the operator name exactly this plugin, this destination and
-//! this port? A match here never *lowers* the default fence for anyone else —
+//! this port? A match here never *lowers* the default fence for anyone else:
 //! a different plugin, a different port, or a redirect to anywhere else still
 //! meets the same refusal every other request does. See
 //! `docs/plugin-development.md#reaching-private-addresses-from-plugins` for the
@@ -21,7 +21,7 @@
 //! hostname destination ([`is_never_allowable`], checked by the kernel's
 //! resolver in [`crate::host::http`] against whatever address DNS answers).
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 use url::Url;
 
@@ -93,11 +93,20 @@ impl Entry {
     ///
     /// The match is exact: the calling plugin's name, an `http`/`https`
     /// scheme, the entry's port (defaulting `url`'s own port the same way
-    /// [`Url::port_or_known_default`] does), and the destination — literal
+    /// [`Url::port_or_known_default`] does), and the destination: literal
     /// equality, CIDR containment, or, for a hostname entry, case-insensitive
     /// name equality. Addresses are compared through
     /// [`IpAddr::to_canonical`], so an IPv4 address embedded in an IPv6 form
     /// (`::ffff:a.b.c.d`) matches the same entry its plain IPv4 form would.
+    ///
+    /// For a literal or CIDR destination, a match additionally requires that
+    /// the request's own address is not itself [`is_never_allowable`]. A CIDR
+    /// is validated at parse time only against its network address
+    /// ([`destination_sample_ip`]), so a broad or misaligned range (an entry
+    /// naming `169.0.0.0/8`, which is not itself link-local) could otherwise
+    /// still contain a never-allowable address (`169.254.169.254`) that no
+    /// check had ever run against. This second check is what actually closes
+    /// that gap, for every request, regardless of how the CIDR was drawn.
     pub(crate) fn matches(&self, plugin: &str, url: &Url) -> bool {
         if self.plugin != plugin {
             return false;
@@ -117,13 +126,21 @@ impl Entry {
         match (&self.destination, host) {
             (Destination::Host(name), url::Host::Domain(d)) => d.eq_ignore_ascii_case(name),
             (Destination::Ip(ip), url::Host::Ipv4(v4)) => {
-                IpAddr::V4(v4).to_canonical() == ip.to_canonical()
+                let addr = IpAddr::V4(v4);
+                addr.to_canonical() == ip.to_canonical() && !is_never_allowable(addr)
             }
             (Destination::Ip(ip), url::Host::Ipv6(v6)) => {
-                IpAddr::V6(v6).to_canonical() == ip.to_canonical()
+                let addr = IpAddr::V6(v6);
+                addr.to_canonical() == ip.to_canonical() && !is_never_allowable(addr)
             }
-            (Destination::Cidr(net), url::Host::Ipv4(v4)) => net.contains(IpAddr::V4(v4)),
-            (Destination::Cidr(net), url::Host::Ipv6(v6)) => net.contains(IpAddr::V6(v6)),
+            (Destination::Cidr(net), url::Host::Ipv4(v4)) => {
+                let addr = IpAddr::V4(v4);
+                net.contains(addr) && !is_never_allowable(addr)
+            }
+            (Destination::Cidr(net), url::Host::Ipv6(v6)) => {
+                let addr = IpAddr::V6(v6);
+                net.contains(addr) && !is_never_allowable(addr)
+            }
             _ => false,
         }
     }
@@ -131,8 +148,15 @@ impl Entry {
 
 /// A representative address to run the never-allowable check against at parse
 /// time: the literal itself, or a CIDR's network address. `None` for a
-/// hostname entry — its address is not known until DNS resolves it, which is
+/// hostname entry: its address is not known until DNS resolves it, which is
 /// checked separately, per resolution, by [`is_never_allowable`] itself.
+///
+/// This is an upfront, loud check for the common case (an entry whose literal
+/// or whose CIDR's own network address is never-allowable); it is not the only
+/// check. [`Entry::matches`] runs [`is_never_allowable`] again, against the
+/// request's actual address, which is what catches a CIDR broad or misaligned
+/// enough to contain a never-allowable address without its network address
+/// being one itself.
 fn destination_sample_ip(destination: &Destination) -> Option<IpAddr> {
     match destination {
         Destination::Ip(ip) => Some(*ip),
@@ -142,25 +166,39 @@ fn destination_sample_ip(destination: &Destination) -> Option<IpAddr> {
 }
 
 /// Is this address one no entry may ever name, and no hostname entry may ever
-/// resolve to — link-local (including `169.254.169.254`, the cloud-metadata
+/// resolve to: link-local (including `169.254.169.254`, the cloud-metadata
 /// address), multicast, broadcast, or unspecified? Checked at parse time for a
-/// literal or CIDR destination, and at resolve time, against whatever address
+/// literal or CIDR destination, at match time against the request's actual
+/// address ([`Entry::matches`]), and at resolve time, against whatever address
 /// DNS answers, for a hostname destination.
+///
+/// An IPv6 address embedding one of these as IPv4 (IPv4-mapped, NAT64, 6to4,
+/// or IPv4-compatible) is classified by the embedded address, the same way
+/// [`crate::net_policy::is_disallowed_ip`] is, through the same
+/// [`crate::net_policy::embedded_ipv4`] this reuses: an IPv6-only check here
+/// would let a DNS answer in one of those forms carry a cloud-metadata or
+/// link-local address past a resolver that only sees ordinary global unicast.
 ///
 /// Deliberately narrower than [`crate::net_policy::is_disallowed_ip`]: loopback
 /// and RFC 1918 / unique-local space is exactly what an entry exists to allow.
 pub(crate) fn is_never_allowable(ip: IpAddr) -> bool {
-    match ip.to_canonical() {
-        IpAddr::V4(v4) => {
-            v4.is_link_local() || v4.is_multicast() || v4.is_broadcast() || v4.is_unspecified()
-        }
-        IpAddr::V6(v6) => {
-            v6.is_unspecified() || v6.is_multicast() || {
-                let s = v6.segments();
-                (s[0] & 0xffc0) == 0xfe80 // fe80::/10, link-local
+    match ip {
+        IpAddr::V4(v4) => is_never_allowable_v4(v4),
+        IpAddr::V6(v6) => match crate::net_policy::embedded_ipv4(v6) {
+            Some(v4) => is_never_allowable_v4(v4),
+            None => {
+                v6.is_unspecified() || v6.is_multicast() || {
+                    let s = v6.segments();
+                    (s[0] & 0xffc0) == 0xfe80 // fe80::/10, link-local
+                }
             }
-        }
+        },
     }
+}
+
+/// The IPv4 half of [`is_never_allowable`].
+fn is_never_allowable_v4(v4: Ipv4Addr) -> bool {
+    v4.is_link_local() || v4.is_multicast() || v4.is_broadcast() || v4.is_unspecified()
 }
 
 /// Split `<destination>:<port>` into its two parts, handling a bracketed IPv6
@@ -212,7 +250,7 @@ fn parse_destination(dest: &str) -> Result<Destination, String> {
 }
 
 /// The parsed `PLUGIN_HTTP_PRIVATE_ALLOW` setting: comma-separated
-/// `<plugin>@<destination>:<port>` entries. Empty is today's behaviour — no
+/// `<plugin>@<destination>:<port>` entries. Empty is today's behaviour: no
 /// plugin reaches a private or loopback address.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PluginHttpAllow {
@@ -247,6 +285,18 @@ impl PluginHttpAllow {
 
     pub(crate) fn entries(&self) -> &[Entry] {
         &self.entries
+    }
+
+    /// Every configured entry's plugin name `is_known` says it has never
+    /// heard of, for the startup warning: such an entry is inert rather than
+    /// an error, since the plugin may simply not be installed on this
+    /// deployment yet.
+    pub(crate) fn unknown_plugins(&self, is_known: impl Fn(&str) -> bool) -> Vec<&str> {
+        self.entries
+            .iter()
+            .map(|entry| entry.plugin.as_str())
+            .filter(|name| !is_known(name))
+            .collect()
     }
 }
 
@@ -310,6 +360,21 @@ mod tests {
     fn empty_value_is_the_empty_allowlist() {
         assert!(PluginHttpAllow::parse("").unwrap().is_empty());
         assert!(PluginHttpAllow::parse("   ").unwrap().is_empty());
+    }
+
+    /// An entry naming a plugin nobody installed is reported, not refused: it
+    /// is inert, the state behind a one-time startup warning, not a parse error.
+    #[test]
+    fn unknown_plugins_reports_only_entries_whose_plugin_is_not_known() {
+        let allow = PluginHttpAllow::parse("p1@127.0.0.1:80,p2@10.0.0.5:81").unwrap();
+        let known = |name: &str| name == "p1";
+        assert_eq!(allow.unknown_plugins(known), vec!["p2"]);
+    }
+
+    #[test]
+    fn unknown_plugins_is_empty_when_every_plugin_is_known() {
+        let allow = PluginHttpAllow::parse("p1@127.0.0.1:80").unwrap();
+        assert!(allow.unknown_plugins(|_| true).is_empty());
     }
 
     #[test]
@@ -402,6 +467,42 @@ mod tests {
         assert!(!entry.matches("p1", &url("http://11.0.0.1:6081/")));
     }
 
+    /// A CIDR's parse-time check only runs against its network address
+    /// (`destination_sample_ip`), so a broad or misaligned range can parse
+    /// successfully while still containing a never-allowable address: here
+    /// `169.0.0.0/8`'s network address is not itself link-local, but the
+    /// range fully contains `169.254.0.0/16`. `matches` must still refuse a
+    /// request to that address, not just whatever address the CIDR was
+    /// written against.
+    #[test]
+    fn cidr_entry_never_grants_a_never_allowable_address_it_happens_to_contain() {
+        let allow =
+            PluginHttpAllow::parse("p1@169.0.0.0/8:6081").expect("a broad CIDR still parses");
+        let entry = &allow.entries()[0];
+        assert!(
+            !entry.matches("p1", &url("http://169.254.169.254:6081/")),
+            "cloud metadata must never match, even inside a CIDR that contains it"
+        );
+        // An address the same CIDR contains that is NOT never-allowable still matches.
+        assert!(entry.matches("p1", &url("http://169.1.2.3:6081/")));
+    }
+
+    /// A literal entry equal to a never-allowable address is refused at parse
+    /// time already (`never_allowable_literals_and_cidrs_are_refused`); this
+    /// is the second line of defense at the match layer, exercised the same
+    /// way the CIDR case above is, so the two checks cannot silently diverge.
+    #[test]
+    fn literal_entry_match_also_runs_the_never_allowable_check() {
+        // A hand-built entry bypassing `parse`'s own guard, so this test
+        // exercises `matches`'s check in isolation.
+        let entry = Entry {
+            plugin: "p1".to_string(),
+            destination: Destination::Ip("169.254.169.254".parse().unwrap()),
+            port: 80,
+        };
+        assert!(!entry.matches("p1", &url("http://169.254.169.254:80/")));
+    }
+
     #[test]
     fn hostname_entry_matches_case_insensitively_but_not_other_hosts() {
         let allow = PluginHttpAllow::parse("p1@Varnish.Internal:6081").unwrap();
@@ -435,5 +536,26 @@ mod tests {
                 "{ip} must be allowed"
             );
         }
+    }
+
+    /// A never-allowable IPv4 address embedded in an IPv6 form (IPv4-mapped,
+    /// NAT64, or 6to4) is still refused, the same way a DNS answer in one of
+    /// those forms is still refused by [`crate::host::http::EntryAllowResolver`]
+    /// for a hostname entry's own matched name.
+    #[test]
+    fn is_never_allowable_sees_through_every_ipv6_embedding_of_a_forbidden_address() {
+        for addr in [
+            "::ffff:169.254.169.254", // IPv4-mapped cloud metadata
+            "64:ff9b::a9fe:a9fe",     // NAT64 169.254.169.254
+            "2002:a9fe:a9fe::",       // 6to4 wrapping 169.254.169.254
+            "::ffff:224.0.0.1",       // IPv4-mapped multicast
+        ] {
+            assert!(
+                is_never_allowable(addr.parse().unwrap()),
+                "{addr} embeds a forbidden address and must be refused"
+            );
+        }
+        // The same forms wrapping a public address must still be allowed.
+        assert!(!is_never_allowable("::ffff:8.8.8.8".parse().unwrap()));
     }
 }

@@ -105,7 +105,7 @@ server setting yourself.
 **What changed.** A plugin's outbound HTTP has always refused a private or
 loopback destination (the SSRF fence), with no override. A new setting,
 `PLUGIN_HTTP_PRIVATE_ALLOW`, lets an operator name one plugin, one
-private/loopback destination and one port it may reach — for example a
+private/loopback destination and one port it may reach, for example a
 self-hosted Varnish cache a purge plugin needs to reach. It is empty by
 default, which is exactly today's behaviour: no plugin reaches a private or
 loopback address, and nothing changes unless you set it. See
