@@ -95,19 +95,21 @@ async fn post(app: &TestApp, cookies: &str, path: &str, body: String) -> StatusC
     .status()
 }
 
-/// Pull a CSRF token out of a rendered page.
+/// The translation form's `_token` and `_form_build_id`, urlencoded, from
+/// the translation page at `path`.
 ///
 /// Tokens are pooled per session and single-use, so each POST needs its own GET.
-async fn csrf_token(app: &TestApp, cookies: &str, path: &str) -> String {
+async fn form_fields(app: &TestApp, cookies: &str, path: &str) -> String {
     let (status, html) = get(app, cookies, path).await;
-    assert_eq!(status, StatusCode::OK, "cannot read a token from {path}");
-    let marker = r#"name="_token" value=""#;
-    let start = html
-        .find(marker)
-        .map(|p| p + marker.len())
-        .unwrap_or_else(|| panic!("no CSRF token on {path}"));
-    let end = start + html[start..].find('"').expect("unterminated token");
-    html[start..end].to_string()
+    assert_eq!(status, StatusCode::OK, "cannot read the form from {path}");
+    common::form_fields(&html, "content_translation_form")
+}
+
+/// The same for the form on that page that removes the translation.
+async fn delete_fields(app: &TestApp, cookies: &str, path: &str) -> String {
+    let (status, html) = get(app, cookies, path).await;
+    assert_eq!(status, StatusCode::OK, "cannot read the form from {path}");
+    common::form_fields(&html, "content_translation_delete_form")
 }
 
 async fn stored(app: &TestApp, item: Uuid, lang: &str) -> Option<(String, serde_json::Value)> {
@@ -134,12 +136,12 @@ fn the_admin_form_writes_a_translation() {
             "the fixture item starts untranslated"
         );
 
-        let token = csrf_token(app, &cookies, &path).await;
+        let token = form_fields(app, &cookies, &path).await;
         let status = post(
             app,
             &cookies,
             &path,
-            format!("_token={token}&_form_build_id=x&title=Tradotto+{tag}&body=il+corpo"),
+            format!("{token}&title=Tradotto+{tag}&body=il+corpo"),
         )
         .await;
         assert_eq!(
@@ -166,21 +168,21 @@ fn a_second_save_replaces_the_translation() {
         let (cookies, item, _tag) = fixture(app).await;
         let path = format!("/admin/content/{item}/translate/it");
 
-        let token = csrf_token(app, &cookies, &path).await;
+        let token = form_fields(app, &cookies, &path).await;
         post(
             app,
             &cookies,
             &path,
-            format!("_token={token}&_form_build_id=x&title=Primo&body=prima"),
+            format!("{token}&title=Primo&body=prima"),
         )
         .await;
 
-        let token = csrf_token(app, &cookies, &path).await;
+        let token = form_fields(app, &cookies, &path).await;
         post(
             app,
             &cookies,
             &path,
-            format!("_token={token}&_form_build_id=x&title=Secondo&body=seconda"),
+            format!("{token}&title=Secondo&body=seconda"),
         )
         .await;
 
@@ -237,7 +239,7 @@ fn a_user_without_the_permission_cannot_write_a_translation() {
         // A real token, taken by an administrator who may use this screen, then
         // replayed by someone who may not: the permission check is what stops
         // it, not the absence of a token.
-        let token = csrf_token(app, &admin_cookies, &path).await;
+        let token = form_fields(app, &admin_cookies, &path).await;
 
         let name = format!("transnoperm_{tag}");
         let cookies = app
@@ -248,7 +250,7 @@ fn a_user_without_the_permission_cannot_write_a_translation() {
             app,
             &cookies,
             &path,
-            format!("_token={token}&_form_build_id=x&title=Vietato&body=x"),
+            format!("{token}&title=Vietato&body=x"),
         )
         .await;
         assert_ne!(status, StatusCode::SEE_OTHER);
@@ -266,7 +268,7 @@ fn a_save_in_an_unknown_language_is_refused() {
         let app = shared_app().await;
         let (cookies, item, _tag) = fixture(app).await;
 
-        let token = csrf_token(
+        let token = form_fields(
             app,
             &cookies,
             &format!("/admin/content/{item}/translate/it"),
@@ -276,7 +278,7 @@ fn a_save_in_an_unknown_language_is_refused() {
             app,
             &cookies,
             &format!("/admin/content/{item}/translate/zz"),
-            format!("_token={token}&_form_build_id=x&title=Nope&body=x"),
+            format!("{token}&title=Nope&body=x"),
         )
         .await;
 
@@ -307,7 +309,7 @@ fn an_item_cannot_be_translated_into_its_own_language() {
         let app = shared_app().await;
         let (cookies, item, _tag) = fixture(app).await;
 
-        let token = csrf_token(
+        let token = form_fields(
             app,
             &cookies,
             &format!("/admin/content/{item}/translate/it"),
@@ -317,7 +319,7 @@ fn an_item_cannot_be_translated_into_its_own_language() {
             app,
             &cookies,
             &format!("/admin/content/{item}/translate/en"),
-            format!("_token={token}&_form_build_id=x&title=Same&body=x"),
+            format!("{token}&title=Same&body=x"),
         )
         .await;
 
@@ -334,24 +336,18 @@ fn a_translation_can_be_removed() {
         let (cookies, item, _tag) = fixture(app).await;
         let path = format!("/admin/content/{item}/translate/it");
 
-        let token = csrf_token(app, &cookies, &path).await;
+        let token = form_fields(app, &cookies, &path).await;
         post(
             app,
             &cookies,
             &path,
-            format!("_token={token}&_form_build_id=x&title=Da+rimuovere&body=x"),
+            format!("{token}&title=Da+rimuovere&body=x"),
         )
         .await;
         assert!(stored(app, item, "it").await.is_some());
 
-        let token = csrf_token(app, &cookies, &path).await;
-        let status = post(
-            app,
-            &cookies,
-            &format!("{path}/delete"),
-            format!("_token={token}"),
-        )
-        .await;
+        let fields = delete_fields(app, &cookies, &path).await;
+        let status = post(app, &cookies, &format!("{path}/delete"), fields).await;
 
         assert_eq!(status, StatusCode::SEE_OTHER);
         assert!(
@@ -373,12 +369,12 @@ fn a_written_translation_reaches_the_reader() {
         let (cookies, item, tag) = fixture(app).await;
         let path = format!("/admin/content/{item}/translate/it");
 
-        let token = csrf_token(app, &cookies, &path).await;
+        let token = form_fields(app, &cookies, &path).await;
         post(
             app,
             &cookies,
             &path,
-            format!("_token={token}&_form_build_id=x&title=Tradotto+{tag}&body=il+corpo"),
+            format!("{token}&title=Tradotto+{tag}&body=il+corpo"),
         )
         .await;
 
@@ -458,7 +454,7 @@ fn a_translation_cannot_be_written_to_an_item_the_translator_cannot_view() {
         // The token comes off a page this translator may read; tokens are pooled
         // per session, not bound to a path, so this is the token the save would
         // have carried.
-        let token = csrf_token(
+        let token = form_fields(
             app,
             &cookies,
             &format!("/admin/content/{visible}/translate/it"),
@@ -468,10 +464,7 @@ fn a_translation_cannot_be_written_to_an_item_the_translator_cannot_view() {
             app,
             &cookies,
             &format!("/admin/content/{draft}/translate/it"),
-            format!(
-                "_token={}&_form_build_id=x&title=Tradotto+di+nascosto",
-                urlencoding::encode(&token)
-            ),
+            format!("{token}&title=Tradotto+di+nascosto"),
         )
         .await;
         assert_eq!(
@@ -485,7 +478,7 @@ fn a_translation_cannot_be_written_to_an_item_the_translator_cannot_view() {
         );
 
         // The same translator can still save against the item they may view.
-        let token = csrf_token(
+        let token = form_fields(
             app,
             &cookies,
             &format!("/admin/content/{visible}/translate/it"),
@@ -495,10 +488,7 @@ fn a_translation_cannot_be_written_to_an_item_the_translator_cannot_view() {
             app,
             &cookies,
             &format!("/admin/content/{visible}/translate/it"),
-            format!(
-                "_token={}&_form_build_id=x&title=Tradotto+alla+luce",
-                urlencoding::encode(&token)
-            ),
+            format!("{token}&title=Tradotto+alla+luce"),
         )
         .await;
         assert_eq!(
@@ -539,7 +529,7 @@ fn a_translation_cannot_be_deleted_from_an_item_the_translator_cannot_view() {
 
         let (_, cookies) = common::user_holding(app, "transdaccess", &["translate content"]).await;
 
-        let token = csrf_token(
+        let fields = delete_fields(
             app,
             &cookies,
             &format!("/admin/content/{visible}/translate/it"),
@@ -549,7 +539,7 @@ fn a_translation_cannot_be_deleted_from_an_item_the_translator_cannot_view() {
             app,
             &cookies,
             &format!("/admin/content/{draft}/translate/it/delete"),
-            format!("_token={}", urlencoding::encode(&token)),
+            fields,
         )
         .await;
         assert_eq!(
@@ -563,7 +553,7 @@ fn a_translation_cannot_be_deleted_from_an_item_the_translator_cannot_view() {
         );
 
         // The allowed delete still works.
-        let token = csrf_token(
+        let fields = delete_fields(
             app,
             &cookies,
             &format!("/admin/content/{visible}/translate/it"),
@@ -573,7 +563,7 @@ fn a_translation_cannot_be_deleted_from_an_item_the_translator_cannot_view() {
             app,
             &cookies,
             &format!("/admin/content/{visible}/translate/it/delete"),
-            format!("_token={}", urlencoding::encode(&token)),
+            fields,
         )
         .await;
         assert_eq!(
@@ -610,4 +600,149 @@ async fn create_draft(app: &TestApp, title: &str) -> Uuid {
         .await
         .expect("create draft")
         .id
+}
+
+// =============================================================================
+// B83c: the translation screen's two forms, the translation and the remove
+// button, are built and checked by the form pipeline.
+// =============================================================================
+
+/// The translation form is a pipeline form: a post without its build id is
+/// refused as expired, and a missing title is shown on the title field.
+#[test]
+fn the_translation_form_is_a_pipeline_form() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, item, _tag) = fixture(app).await;
+        let path = format!("/admin/content/{item}/translate/it");
+
+        let (status, html) = get(app, &cookies, &path).await;
+        assert_eq!(status, StatusCode::OK);
+        let form = common::form_in(&html, "content_translation_form").expect("the form");
+        assert!(
+            form.contains(r#"name="body""#),
+            "the type's text field: {form}"
+        );
+        assert!(
+            form.contains("Original: the original body"),
+            "each field's hint is its original: {form}"
+        );
+        assert!(
+            common::form_in(&html, "content_translation_delete_form").is_none(),
+            "nothing to remove yet"
+        );
+
+        let token =
+            urlencoding::encode(&common::input_value_in(form, "_token").unwrap()).into_owned();
+        let response = app
+            .request_with_cookies(
+                Request::post(&path)
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("x-forwarded-for", test_ip_for("transwrite"))
+                    .body(Body::from(format!("_token={token}&title=Senza&body=x")))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("The form has expired."));
+        assert!(stored(app, item, "it").await.is_none(), "nothing written");
+
+        let fields = form_fields(app, &cookies, &path).await;
+        let response = app
+            .request_with_cookies(
+                Request::post(&path)
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("x-forwarded-for", test_ip_for("transwrite"))
+                    .body(Body::from(format!("{fields}&title=++&body=il+corpo")))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK, "shown again");
+        let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        let html = String::from_utf8_lossy(&bytes).into_owned();
+        let form = common::form_in(&html, "content_translation_form").expect("the form again");
+        let title = &form[form.find(r#"id="title""#).expect("the title field")..];
+        let title = &title[..title.find('>').unwrap()];
+        assert!(title.contains(r#"aria-invalid="true""#), "{title}");
+        assert!(form.contains("A translation needs a title."), "{form}");
+        assert!(form.contains("il corpo"), "what was typed is kept");
+        assert!(stored(app, item, "it").await.is_none(), "nothing written");
+    });
+}
+
+/// The remove button is a pipeline form that asks first: it goes to the
+/// confirmation page, and the confirmed form removes the translation.
+#[test]
+fn the_remove_translation_form_asks_first_and_then_removes() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, item, _tag) = fixture(app).await;
+        let path = format!("/admin/content/{item}/translate/it");
+        let fields = form_fields(app, &cookies, &path).await;
+        post(
+            app,
+            &cookies,
+            &path,
+            format!("{fields}&title=Da+rimuovere&body=x"),
+        )
+        .await;
+        assert!(stored(app, item, "it").await.is_some());
+
+        let (_, html) = get(app, &cookies, &path).await;
+        let form = common::form_in(&html, "content_translation_delete_form").expect("the form");
+        assert!(
+            form.contains(&format!(
+                r#"action="&#x2F;admin&#x2F;content&#x2F;{item}&#x2F;translate&#x2F;it&#x2F;delete?confirm""#
+            )),
+            "it asks first: {form}"
+        );
+        let question = common::input_value_in(form, "_confirm").expect("the question");
+        assert_eq!(
+            question,
+            "Remove the it translation? This cannot be undone."
+        );
+        let label = common::input_value_in(form, "_confirm_label").expect("the label");
+        let body = format!(
+            "{}&_confirm={}&_confirm_label={}",
+            common::form_fields(&html, "content_translation_delete_form"),
+            urlencoding::encode(&question),
+            urlencoding::encode(&label)
+        );
+        let response = app
+            .request_with_cookies(
+                Request::post(format!("{path}/delete?confirm"))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("x-forwarded-for", test_ip_for("transwrite"))
+                    .body(Body::from(body))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers().get("location").unwrap(),
+            "/admin/confirm"
+        );
+        assert!(stored(app, item, "it").await.is_some(), "not yet removed");
+
+        let (status, confirm) = get(app, &cookies, "/admin/confirm").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(confirm.contains("Remove the it translation? This cannot be undone."));
+        let status = post(
+            app,
+            &cookies,
+            &format!("{path}/delete"),
+            common::form_fields(&confirm, "content_translation_delete_form"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert!(stored(app, item, "it").await.is_none(), "removed");
+    });
 }

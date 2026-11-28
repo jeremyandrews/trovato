@@ -31,7 +31,7 @@ use axum::routing::get;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
-use crate::form::csrf::generate_csrf_token;
+use crate::form::FormElement;
 use crate::i18n::UiMessage;
 use crate::state::AppState;
 
@@ -215,23 +215,78 @@ fn pending_for(
     })
 }
 
+/// The form id the confirmation page builds when the waiting submission
+/// came from a form that was not built by the form pipeline.
+const CONFIRM_FORM_ID: &str = "admin_confirm";
+
 /// `GET /admin/confirm`: the waiting action, with the button that does it.
+///
+/// The button is a form built through the form pipeline under the id of the
+/// form that was posted (recalled from its `_form_build_id`), so the handler
+/// checks it exactly as it would have checked the original.
 async fn confirm_page(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_login(&state, &session).await {
-        return redirect;
-    }
+    let user = match require_login(&state, &session).await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
     let pending: Option<Pending> = session.get(PENDING_KEY).await.ok().flatten();
     let Some(pending) = pending else {
         // Nothing is waiting (already done, or the session ended).
         return Redirect::to("/admin").into_response();
     };
-    let user = get_user_context(&session, &state).await;
-    let csrf_token = generate_csrf_token(&session).await;
+    let viewer = get_user_context(&session, &state).await;
+    let form_id = match field(&pending.fields, "_form_build_id") {
+        Some(build_id) => state
+            .forms()
+            .recall(build_id, user.id)
+            .await
+            .map(|form_state| form_state.form_id),
+        None => None,
+    }
+    .unwrap_or_else(|| CONFIRM_FORM_ID.to_string());
+    let text = super::admin_nav::AdminText::for_page(&state, &viewer, CONFIRM_PATH).await;
+    let label = match &pending.label {
+        Words::Text(s) => s.clone(),
+        Words::Message(m) => m.text(state.locale().map(|l| &**l), &text.lang),
+    };
+    // The submitted fields go back as they came. Several may share a name
+    // (`ids[]`), which form elements cannot, so they are one markup element.
+    let hidden: String = pending
+        .fields
+        .iter()
+        .filter(|(k, _)| k != "_form_build_id")
+        .map(|(k, v)| {
+            format!(
+                r#"<input type="hidden" name="{}" value="{}">"#,
+                tera::escape_html(k),
+                tera::escape_html(v)
+            )
+        })
+        .collect();
+    let form = crate::form::Form::new(form_id)
+        .action(pending.action.clone())
+        .attribute("aria-describedby", "confirm-question")
+        .element("_confirm_fields", FormElement::markup(hidden).weight(0))
+        .element(
+            "op",
+            FormElement::submit(label)
+                .attribute("class", "button--danger")
+                .suffix(format!(
+                    r#"<a href="{}" class="button button--secondary">{}</a>"#,
+                    tera::escape_html(&pending.cancel),
+                    text.html("Cancel", &[])
+                ))
+                .weight(10),
+        );
+    let form_html = match super::admin_form::render(&state, &session, &user, form, &[]).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
     context.insert("path", CONFIRM_PATH);
     context.insert("pending", &pending);
-    context.insert("csrf_token", &csrf_token);
-    render_admin_template(&state, &user, "admin/confirm.html", context).await
+    context.insert("form", &form_html);
+    render_admin_template(&state, &viewer, "admin/confirm.html", context).await
 }
 
 /// The confirmation page's route.

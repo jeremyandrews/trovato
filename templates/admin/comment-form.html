@@ -1,45 +1,32 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
 {% block page_title %}{{ t(s="Edit Comment") }}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="Correct a comment's subject or text, or change whether it is shown on the site.") }}</p>{% endblock page_intro %}
 
 {% block content %}
 <div class="admin-card">
-    <form method="post" action="/admin/content/comments/{{ comment.id }}/edit" novalidate>
-        {{ form::csrf(csrf_token=csrf_token) }}
-        {% set errs = errors | default(value=[]) %}
-        {{ form::error_summary(errors=errs) }}
-
-        {{ form::field(name="subject", label=t(s="Subject"), optional=true, value=comment.subject | default(value=""), errors=errs, attrs='maxlength="255"') }}
-
-        {{ form::textarea(name="body", label=t(s="Comment Body"), value=comment.body, rows=6, required=true, errors=errs) }}
-
-        {#- Options come from CommentStatus (see status_options), so this form
-            offers every status the model stores and labels each one the way
-            the moderation list does. -#}
-        {{ form::select(name="status", label=t(s="Status"), options=status_options, value=comment.status, translate_options=true, errors=errs) }}
-
-        <dl class="comment-meta">
-            <dt>{{ t(s="Author") }}</dt>
-            <dd>{% if author_name %}{{ author_name }}{% else %}{{ t(s="Unknown") }}{% endif %}</dd>
-            <dt>{{ t(s="Content") }}</dt>
-            <dd>
-                {% if item_title %}
-                <a href="/admin/content/{{ comment.item_id }}/edit">{{ item_title }}</a>
-                {% else %}
-                {{ t(s="Unknown") }}
-                {% endif %}
-            </dd>
-            <dt>{{ t(s="Posted") }}</dt>
-            <dd>{{ comment.created | date(format="%Y-%m-%d %H:%M") }}</dd>
-            {% if comment.parent_id %}
-            <dt>{{ t(s="Reply to") }}</dt>
-            <dd>{{ t(s="Comment #{id}", id=comment.parent_id) }}</dd>
+    <dl class="comment-meta">
+        <dt>{{ t(s="Author") }}</dt>
+        <dd>{% if author_name %}{{ author_name }}{% else %}{{ t(s="Unknown") }}{% endif %}</dd>
+        <dt>{{ t(s="Content") }}</dt>
+        <dd>
+            {% if item_title %}
+            <a href="/admin/content/{{ comment.item_id }}/edit">{{ item_title }}</a>
+            {% else %}
+            {{ t(s="Unknown") }}
             {% endif %}
-        </dl>
+        </dd>
+        <dt>{{ t(s="Posted") }}</dt>
+        <dd>{{ comment.created | date(format="%Y-%m-%d %H:%M") }}</dd>
+        {% if comment.parent_id %}
+        <dt>{{ t(s="Reply to") }}</dt>
+        <dd>{{ t(s="Comment #{id}", id=comment.parent_id) }}</dd>
+        {% endif %}
+    </dl>
 
-        {{ form::actions(submit_label=t(s="Save"), cancel_url="/admin/content/comments") }}
-    </form>
+    {#- The status options come from CommentStatus, so the form offers every
+        status the model stores and labels each one the way the moderation
+        list does. -#}
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}

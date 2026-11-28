@@ -1,0 +1,20 @@
+{% extends "page--admin.html" %}
+
+{% block page_title %}{{ t(s="Delete {name}", name=stage.label) }}{% endblock page_title %}
+
+{% block content %}
+<div class="admin-card">
+    {% if not stage.deletable %}
+    <p>{{ t(s="Not deletable: the Live stage, the default stage and the public stage stay.") }}</p>
+    <p><a href="/admin/structure/stages">{{ t(s="Back to stages") }}</a></p>
+    {% else %}
+    {% if stage.references.items > 0 or stage.references.url_aliases > 0 or stage.references.menu_links > 0 or stage.references.tiles > 0 %}
+    <p>{{ t(s="This stage is still used by {uses}. Deleting it will be refused until that content is moved. Try anyway?", uses=stage.references_summary) }}</p>
+    {% else %}
+    <p>{{ t(s="Delete the {name} stage?", name=stage.label) }}</p>
+    {% endif %}
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+    <p><a href="/admin/structure/stages">{{ t(s="Cancel") }}</a></p>
+    {% endif %}
+</div>
+{% endblock content %}

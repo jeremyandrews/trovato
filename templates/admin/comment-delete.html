@@ -1,0 +1,12 @@
+{% extends "page--admin.html" %}
+
+{#- The page names the comment by its subject, else the start of its body, as
+    the moderation list's row actions do. -#}
+{% block page_title %}{% set name = comment.subject | default(value="") %}{% if not name %}{% set name = comment.body | striptags | truncate(length=30) %}{% endif %}{{ t(s="Delete {name}", name=name) }}{% endblock page_title %}
+
+{% block content %}
+<div class="admin-card">
+    <p>{{ t(s="Are you sure you want to delete this comment?") }}</p>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+</div>
+{% endblock content %}

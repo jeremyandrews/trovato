@@ -123,6 +123,8 @@ fn display_failed(e: anyhow::Error) -> Response {
 /// (the caller's own validation) are returned with any a plugin adds through
 /// `tap_form_validate`.
 ///
+/// On success it returns the saved form state, which the caller hands to
+/// [`submitted`] once the submission is saved.
 /// `Err(Ok(errors))` is a submission to show again with its errors;
 /// `Err(Err(response))` is a refusal to send as is.
 pub async fn check(
@@ -132,11 +134,25 @@ pub async fn check(
     posted: &PostedForm,
     form_id: &str,
     extra: Vec<ValidationError>,
-) -> Result<(), Result<Vec<ValidationError>, Response>> {
+) -> Result<FormState, Result<Vec<ValidationError>, Response>> {
     let viewer = super::helpers::user_context_for(state, user).await;
-    check_as(state, session, &viewer, posted, form_id, extra)
-        .await
-        .map(|_| ())
+    check_as(state, session, &viewer, posted, form_id, extra).await
+}
+
+/// Tell plugins `user`'s submission of the form [`check`] passed was saved:
+/// `tap_form_submit`, once, after the save, so a plugin never hears of a
+/// submission the save refused.
+pub async fn submitted(state: &AppState, user: &User, form_state: &FormState, posted: &PostedForm) {
+    let viewer = super::helpers::user_context_for(state, user).await;
+    state
+        .forms()
+        .submitted(
+            form_state,
+            posted,
+            None,
+            &super::item_form::tap_state(state, &viewer),
+        )
+        .await;
 }
 
 /// [`check`] for a submission from `viewer`, who may be anonymous, as
