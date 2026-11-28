@@ -318,7 +318,8 @@ GET /api/v1/search?q=hello&page=1&per_page=10
 | `per_page`  |      10 | 1–50  | Results per page (`limit` is an alias) |
 
 The one JSON search: `/api/search` is its deprecated alias. An empty `q`
-answers an empty page.
+answers an empty page. A bare word in `q` matches as a prefix (`kernel` finds
+`kerneltrap`); a quoted phrase matches exactly.
 
 **Response (200):**
 ```json

@@ -98,6 +98,133 @@ pub fn is_text_field(field_type: &trovato_sdk::types::FieldType) -> bool {
     matches!(field_type, FieldType::Text { .. } | FieldType::TextLong)
 }
 
+/// Build a `to_tsquery('english', ...)` operand from query text, in the same
+/// syntax `websearch_to_tsquery` reads (bare words, "quoted phrases", `or`
+/// between words, a leading `-` to exclude one), but with a bare word a
+/// prefix (`kernel` finds `kerneltrap`) rather than an exact match, which
+/// `websearch_to_tsquery` has no way to express (B307).
+///
+/// Every lexeme reaches Postgres quoted as a tsquery string literal (`'`
+/// doubled, `\` doubled), so none of it is ever read as tsquery syntax: a
+/// visitor's `&`, `!`, `(` or stray quote is just more characters inside a
+/// quoted literal, the same guarantee `websearch_to_tsquery` gave (B160).
+/// `to_tsquery` still stems and drops stop words inside the quotes, and
+/// drops a stop word or a punctuation-only lexeme from whatever chain it
+/// sits in rather than failing to match the chain's other words, so an
+/// unindexable word in a multi-word query never makes the rest of it answer
+/// "no results" either.
+///
+/// A word that is only punctuation (no letter or digit) is dropped here
+/// before it reaches Postgres at all. An input with no word left this way
+/// returns an empty string, which is also what an entirely empty or
+/// whitespace query returns: both mean no terms, as `websearch_to_tsquery`'s
+/// equally empty result did.
+fn build_prefix_tsquery(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut out = String::new();
+    let mut have_term = false;
+    let mut pending_or = false;
+
+    while i < len {
+        while i < len && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= len {
+            break;
+        }
+
+        let negate = chars[i] == '-' && i + 1 < len && !chars[i + 1].is_whitespace();
+        if negate {
+            i += 1;
+        }
+
+        let frag = if i < len && chars[i] == '"' {
+            i += 1;
+            let start = i;
+            while i < len && chars[i] != '"' {
+                i += 1;
+            }
+            let phrase: String = chars[start..i].iter().collect();
+            if i < len {
+                i += 1; // the closing quote; an unterminated one just runs to the end
+            }
+            phrase_fragment(&phrase)
+        } else {
+            let start = i;
+            while i < len && !chars[i].is_whitespace() && chars[i] != '"' {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            if !negate && word.eq_ignore_ascii_case("or") {
+                pending_or = true;
+                continue;
+            }
+            word_fragment(&word)
+        };
+
+        let Some(frag) = frag else { continue };
+
+        if have_term {
+            out.push_str(if pending_or { " | " } else { " & " });
+        }
+        pending_or = false;
+        if negate {
+            out.push_str("!(");
+            out.push_str(&frag);
+            out.push(')');
+        } else {
+            out.push_str(&frag);
+        }
+        have_term = true;
+    }
+
+    out
+}
+
+/// One bare word: quoted and marked a prefix, or dropped if it holds no
+/// letter or digit.
+fn word_fragment(word: &str) -> Option<String> {
+    if !word.chars().any(char::is_alphanumeric) {
+        return None;
+    }
+    Some(format!("{}:*", quote_tsquery_lexeme(word)))
+}
+
+/// A quoted phrase's words, exact (no prefix), joined `<->` so they must
+/// follow one another in order. A word that is only punctuation is dropped
+/// from the phrase rather than breaking it; a phrase left with no word at
+/// all is dropped entirely.
+fn phrase_fragment(phrase: &str) -> Option<String> {
+    let words: Vec<String> = phrase
+        .split_whitespace()
+        .filter(|w| w.chars().any(char::is_alphanumeric))
+        .map(quote_tsquery_lexeme)
+        .collect();
+    if words.is_empty() {
+        return None;
+    }
+    Some(words.join(" <-> "))
+}
+
+/// Quote a word as a tsquery string literal: Postgres's tsquery parser still
+/// tokenizes and stems whatever is between the quotes (so `'o''brien'` is
+/// still the two lexemes `o` and `brien`, `<->`-joined), but reads none of it
+/// as tsquery syntax.
+fn quote_tsquery_lexeme(word: &str) -> String {
+    let mut out = String::with_capacity(word.len() + 2);
+    out.push('\'');
+    for c in word.chars() {
+        if c == '\'' || c == '\\' {
+            out.push(c);
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
+}
+
 /// Search result with ranking information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
@@ -236,21 +363,25 @@ impl SearchService {
             });
         }
 
-        // The visitor's words go to Postgres as they were typed, parsed by
-        // `websearch_to_tsquery`: every word must match, "a quoted phrase"
-        // matches as a phrase, `or` between words matches either and a leading
-        // `-` excludes a word, which is the syntax Drupal's search taught
-        // visitors. It never fails to parse: `&`, `<b>`, quotes and
-        // apostrophes are read as punctuation, where the hand-built
-        // `to_tsquery` text this replaced (each word with `:*` appended) was
-        // tsquery syntax, so `noank & mystic` answered 500 (B160).
+        // The visitor's words are read the way Drupal's search taught them:
+        // every word must match, "a quoted phrase" matches as a phrase, `or`
+        // between words matches either, a leading `-` excludes a word, and a
+        // bare word matches as a prefix (`kernel` finds `kerneltrap`), the one
+        // piece of that syntax `websearch_to_tsquery` cannot express (B307).
+        // `build_prefix_tsquery` builds the `to_tsquery` operand by hand
+        // instead, quoting every lexeme as a tsquery literal, so `&`, `<b>`,
+        // a stray quote or an apostrophe is never read as tsquery syntax (the
+        // hand-built text B160 replaced skipped this quoting and appended
+        // `:*` straight to the raw word, so `noank & mystic` was tsquery
+        // syntax and answered 500).
         //
         // Markup in the query is read as the indexed text is: the document
-        // parser skips a tag, but `websearch_to_tsquery` would read `<b>` as
-        // the word `b` and require it next to the one after, so the query's
-        // text is taken first, with the extractor the snippet uses.
+        // parser skips a tag, but the query would otherwise read `<b>` as the
+        // word `b`, so the query's text is taken first, with the extractor
+        // the snippet uses.
         let query_text = crate::content::page_meta::text_of(query_clean);
-        let ts_query = query_text.as_str();
+        let ts_query_string = build_prefix_tsquery(&query_text);
+        let ts_query = ts_query_string.as_str();
 
         debug!(query = %query_clean, ts_query = %ts_query, "executing search");
 
@@ -260,9 +391,9 @@ impl SearchService {
         let (total, terms): (i64, i32) = if let Some(uid) = user_id {
             sqlx::query_as(
                 r#"
-                SELECT COUNT(*), numnode(websearch_to_tsquery('english', $1))
+                SELECT COUNT(*), numnode(to_tsquery('english', $1))
                 FROM item
-                WHERE search_vector @@ websearch_to_tsquery('english', $1)
+                WHERE search_vector @@ to_tsquery('english', $1)
                   AND (status = 1 OR author_id = $2)
                   AND stage_id = ANY($3)
                 "#,
@@ -276,9 +407,9 @@ impl SearchService {
         } else {
             sqlx::query_as(
                 r#"
-                SELECT COUNT(*), numnode(websearch_to_tsquery('english', $1))
+                SELECT COUNT(*), numnode(to_tsquery('english', $1))
                 FROM item
-                WHERE search_vector @@ websearch_to_tsquery('english', $1)
+                WHERE search_vector @@ to_tsquery('english', $1)
                   AND status = 1
                   AND stage_id = ANY($2)
                 "#,
@@ -302,20 +433,20 @@ impl SearchService {
                     id,
                     type,
                     title,
-                    ts_rank(search_vector, websearch_to_tsquery('english', $1))
+                    ts_rank(search_vector, to_tsquery('english', $1))
                         * COALESCE(boost.factor, 1.0::real) AS rank,
                     ts_headline(
                         'english',
                         -- B123: tags stripped from the source before
                         -- highlighting; see crate::search::snippet.
                         {source},
-                        websearch_to_tsquery('english', $1),
+                        to_tsquery('english', $1),
                         '{options}'
                     ) as snippet
                 FROM item
                 LEFT JOIN unnest($6::text[], $7::real[]) AS boost(item_type, factor)
                     ON boost.item_type = item.type
-                WHERE search_vector @@ websearch_to_tsquery('english', $1)
+                WHERE search_vector @@ to_tsquery('english', $1)
                   AND (status = 1 OR author_id = $2)
                   AND stage_id = ANY($3)
                 ORDER BY rank DESC, created DESC
@@ -344,20 +475,20 @@ impl SearchService {
                     id,
                     type,
                     title,
-                    ts_rank(search_vector, websearch_to_tsquery('english', $1))
+                    ts_rank(search_vector, to_tsquery('english', $1))
                         * COALESCE(boost.factor, 1.0::real) AS rank,
                     ts_headline(
                         'english',
                         -- B123: tags stripped from the source before
                         -- highlighting; see crate::search::snippet.
                         {source},
-                        websearch_to_tsquery('english', $1),
+                        to_tsquery('english', $1),
                         '{options}'
                     ) as snippet
                 FROM item
                 LEFT JOIN unnest($5::text[], $6::real[]) AS boost(item_type, factor)
                     ON boost.item_type = item.type
-                WHERE search_vector @@ websearch_to_tsquery('english', $1)
+                WHERE search_vector @@ to_tsquery('english', $1)
                   AND status = 1
                   AND stage_id = ANY($2)
                 ORDER BY rank DESC, created DESC
@@ -604,5 +735,77 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("body"));
         assert!(json.contains("B"));
+    }
+
+    #[test]
+    fn build_prefix_tsquery_bare_word_is_a_prefix() {
+        assert_eq!(build_prefix_tsquery("kernel"), "'kernel':*");
+        assert_eq!(build_prefix_tsquery("kernel free"), "'kernel':* & 'free':*");
+    }
+
+    #[test]
+    fn build_prefix_tsquery_quoted_phrase_has_no_prefix() {
+        assert_eq!(build_prefix_tsquery("\"fat rats\""), "'fat' <-> 'rats'");
+        // A single quoted word is still exact, not a prefix.
+        assert_eq!(build_prefix_tsquery("\"kernel\""), "'kernel'");
+    }
+
+    #[test]
+    fn build_prefix_tsquery_or_joins_with_pipe() {
+        assert_eq!(build_prefix_tsquery("cat or dog"), "'cat':* | 'dog':*");
+        // Case-insensitive, and a stray trailing `or` is just dropped.
+        assert_eq!(build_prefix_tsquery("cat OR dog"), "'cat':* | 'dog':*");
+        assert_eq!(build_prefix_tsquery("cat or"), "'cat':*");
+    }
+
+    #[test]
+    fn build_prefix_tsquery_leading_dash_excludes() {
+        assert_eq!(build_prefix_tsquery("cat -dog"), "'cat':* & !('dog':*)");
+        assert_eq!(build_prefix_tsquery("-\"fat rats\""), "!('fat' <-> 'rats')");
+        // A dash with a space after it is not an exclusion: it is its own
+        // (punctuation-only, so dropped) word, and `dog` stays a plain term.
+        assert_eq!(build_prefix_tsquery("cat - dog"), "'cat':* & 'dog':*");
+    }
+
+    #[test]
+    fn build_prefix_tsquery_drops_punctuation_only_words() {
+        assert_eq!(build_prefix_tsquery("&"), "");
+        assert_eq!(build_prefix_tsquery("cat & dog"), "'cat':* & 'dog':*");
+        assert_eq!(build_prefix_tsquery("!!!"), "");
+        assert_eq!(build_prefix_tsquery(""), "");
+        assert_eq!(build_prefix_tsquery("   "), "");
+        assert_eq!(build_prefix_tsquery("\"\""), "");
+    }
+
+    #[test]
+    fn build_prefix_tsquery_quotes_every_punctuation_character() {
+        // None of this ever becomes a second tsquery operator: it is all one
+        // quoted literal per word, each still marked a prefix.
+        assert_eq!(build_prefix_tsquery("noank&mystic"), "'noank&mystic':*");
+        assert_eq!(build_prefix_tsquery("<b>x</b>"), "'<b>x</b>':*");
+        assert_eq!(build_prefix_tsquery("it's"), "'it''s':*");
+        assert_eq!(build_prefix_tsquery("a:*b"), "'a:*b':*");
+        assert_eq!(build_prefix_tsquery("a!b"), "'a!b':*");
+        assert_eq!(build_prefix_tsquery("a(b)"), "'a(b)':*");
+        assert_eq!(build_prefix_tsquery("back\\slash"), "'back\\\\slash':*");
+        // A lone, unterminated quote does not panic or leave a dangling
+        // literal: it opens a phrase that runs to the end of the input.
+        assert_eq!(build_prefix_tsquery("cat\""), "'cat':*");
+        assert_eq!(build_prefix_tsquery("\"cat"), "'cat'");
+    }
+
+    #[test]
+    fn build_prefix_tsquery_unicode_words() {
+        assert_eq!(build_prefix_tsquery("café"), "'café':*");
+        assert_eq!(build_prefix_tsquery("日本語"), "'日本語':*");
+    }
+
+    #[test]
+    fn build_prefix_tsquery_handles_the_longest_accepted_query() {
+        let long = "kernel ".repeat(MAX_QUERY_LENGTH / "kernel ".len());
+        assert!(long.len() <= MAX_QUERY_LENGTH);
+        let built = build_prefix_tsquery(&long);
+        assert!(built.starts_with("'kernel':*"));
+        assert!(built.ends_with("'kernel':*"));
     }
 }

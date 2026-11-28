@@ -1471,17 +1471,17 @@ host_calls = 0
 gathers = 0
 renders = 0
 
-["search.anonymous.cold".statements."select:item:24ca5104"]
+["search.anonymous.cold".statements."select:item:1c96c2a4"]
 count = 1
-sql = "select count(*), numnode(websearch_to_tsquery(?)) from item where search_vector @@ websearch_to_tsquery(?) and status = ? and stage_id = any($?)"
+sql = "select count(*), numnode(to_tsquery(?)) from item where search_vector @@ to_tsquery(?) and status = ? and stage_id = any($?)"
 
 ["search.anonymous.cold".statements."select:item:39a39bd6"]
 count = 1
 sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where id = $?"
 
-["search.anonymous.cold".statements."select:item:84ddc49e"]
+["search.anonymous.cold".statements."select:item:c79e8656"]
 count = 1
-sql = "select id, type, title, ts_rank(search_vector, websearch_to_tsquery(?)) * coalesce(boost.factor, ?::real) as rank, ts_headline( ?, translate( regexp_replace( coalesce(title, ?) || ? || coalesce( fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, ? ), ? ), u&? ), websearch_to_tsquery(?), ? ) as snippet from item left join unnest($?::text[], $?::real[]) as boost(item_type, factor) on boost.item_type = item.type where search_vector @@ websearch_to_tsquery(?) and status = ? and stage_id = any($?) order by rank desc, created desc limit $? offset $?"
+sql = "select id, type, title, ts_rank(search_vector, to_tsquery(?)) * coalesce(boost.factor, ?::real) as rank, ts_headline( ?, translate( regexp_replace( coalesce(title, ?) || ? || coalesce( fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, ? ), ? ), u&? ), to_tsquery(?), ? ) as snippet from item left join unnest($?::text[], $?::real[]) as boost(item_type, factor) on boost.item_type = item.type where search_vector @@ to_tsquery(?) and status = ? and stage_id = any($?) order by rank desc, created desc limit $? offset $?"
 
 ["search.anonymous.cold".statements."select:menu_link:17337ab4"]
 count = 1
@@ -1517,13 +1517,13 @@ host_calls = 0
 gathers = 0
 renders = 0
 
-["search.anonymous.warm".statements."select:item:24ca5104"]
+["search.anonymous.warm".statements."select:item:1c96c2a4"]
 count = 1
-sql = "select count(*), numnode(websearch_to_tsquery(?)) from item where search_vector @@ websearch_to_tsquery(?) and status = ? and stage_id = any($?)"
+sql = "select count(*), numnode(to_tsquery(?)) from item where search_vector @@ to_tsquery(?) and status = ? and stage_id = any($?)"
 
-["search.anonymous.warm".statements."select:item:84ddc49e"]
+["search.anonymous.warm".statements."select:item:c79e8656"]
 count = 1
-sql = "select id, type, title, ts_rank(search_vector, websearch_to_tsquery(?)) * coalesce(boost.factor, ?::real) as rank, ts_headline( ?, translate( regexp_replace( coalesce(title, ?) || ? || coalesce( fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, ? ), ? ), u&? ), websearch_to_tsquery(?), ? ) as snippet from item left join unnest($?::text[], $?::real[]) as boost(item_type, factor) on boost.item_type = item.type where search_vector @@ websearch_to_tsquery(?) and status = ? and stage_id = any($?) order by rank desc, created desc limit $? offset $?"
+sql = "select id, type, title, ts_rank(search_vector, to_tsquery(?)) * coalesce(boost.factor, ?::real) as rank, ts_headline( ?, translate( regexp_replace( coalesce(title, ?) || ? || coalesce( fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, ? ), ? ), u&? ), to_tsquery(?), ? ) as snippet from item left join unnest($?::text[], $?::real[]) as boost(item_type, factor) on boost.item_type = item.type where search_vector @@ to_tsquery(?) and status = ? and stage_id = any($?) order by rank desc, created desc limit $? offset $?"
 
 ["search.anonymous.warm".statements."select:site_config:51f89970"]
 count = 1
@@ -1555,13 +1555,13 @@ renders = 0
 count = 1
 sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where id = $?"
 
-["search.user.cold".statements."select:item:7cf4edf9"]
+["search.user.cold".statements."select:item:695d560d"]
 count = 1
-sql = "select count(*), numnode(websearch_to_tsquery(?)) from item where search_vector @@ websearch_to_tsquery(?) and (status = ? or author_id = $?) and stage_id = any($?)"
+sql = "select id, type, title, ts_rank(search_vector, to_tsquery(?)) * coalesce(boost.factor, ?::real) as rank, ts_headline( ?, translate( regexp_replace( coalesce(title, ?) || ? || coalesce( fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, ? ), ? ), u&? ), to_tsquery(?), ? ) as snippet from item left join unnest($?::text[], $?::real[]) as boost(item_type, factor) on boost.item_type = item.type where search_vector @@ to_tsquery(?) and (status = ? or author_id = $?) and stage_id = any($?) order by rank desc, created desc limit $? offset $?"
 
-["search.user.cold".statements."select:item:8c47514f"]
+["search.user.cold".statements."select:item:7e4027fb"]
 count = 1
-sql = "select id, type, title, ts_rank(search_vector, websearch_to_tsquery(?)) * coalesce(boost.factor, ?::real) as rank, ts_headline( ?, translate( regexp_replace( coalesce(title, ?) || ? || coalesce( fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, ? ), ? ), u&? ), websearch_to_tsquery(?), ? ) as snippet from item left join unnest($?::text[], $?::real[]) as boost(item_type, factor) on boost.item_type = item.type where search_vector @@ websearch_to_tsquery(?) and (status = ? or author_id = $?) and stage_id = any($?) order by rank desc, created desc limit $? offset $?"
+sql = "select count(*), numnode(to_tsquery(?)) from item where search_vector @@ to_tsquery(?) and (status = ? or author_id = $?) and stage_id = any($?)"
 
 ["search.user.cold".statements."select:menu_link:17337ab4"]
 count = 1
@@ -1605,13 +1605,13 @@ host_calls = 0
 gathers = 0
 renders = 0
 
-["search.user.warm".statements."select:item:7cf4edf9"]
+["search.user.warm".statements."select:item:695d560d"]
 count = 1
-sql = "select count(*), numnode(websearch_to_tsquery(?)) from item where search_vector @@ websearch_to_tsquery(?) and (status = ? or author_id = $?) and stage_id = any($?)"
+sql = "select id, type, title, ts_rank(search_vector, to_tsquery(?)) * coalesce(boost.factor, ?::real) as rank, ts_headline( ?, translate( regexp_replace( coalesce(title, ?) || ? || coalesce( fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, ? ), ? ), u&? ), to_tsquery(?), ? ) as snippet from item left join unnest($?::text[], $?::real[]) as boost(item_type, factor) on boost.item_type = item.type where search_vector @@ to_tsquery(?) and (status = ? or author_id = $?) and stage_id = any($?) order by rank desc, created desc limit $? offset $?"
 
-["search.user.warm".statements."select:item:8c47514f"]
+["search.user.warm".statements."select:item:7e4027fb"]
 count = 1
-sql = "select id, type, title, ts_rank(search_vector, websearch_to_tsquery(?)) * coalesce(boost.factor, ?::real) as rank, ts_headline( ?, translate( regexp_replace( coalesce(title, ?) || ? || coalesce( fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, fields->?->>?, case when jsonb_typeof(fields->?) = ? then fields->>? end, ? ), ? ), u&? ), websearch_to_tsquery(?), ? ) as snippet from item left join unnest($?::text[], $?::real[]) as boost(item_type, factor) on boost.item_type = item.type where search_vector @@ websearch_to_tsquery(?) and (status = ? or author_id = $?) and stage_id = any($?) order by rank desc, created desc limit $? offset $?"
+sql = "select count(*), numnode(to_tsquery(?)) from item where search_vector @@ to_tsquery(?) and (status = ? or author_id = $?) and stage_id = any($?)"
 
 ["search.user.warm".statements."select:site_config:51f89970"]
 count = 1

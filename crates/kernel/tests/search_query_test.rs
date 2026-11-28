@@ -3,9 +3,17 @@
 //!
 //! The query used to be turned into `to_tsquery` text by hand, each word with
 //! `:*` appended, so a query holding `&`, `<b>` or a stray quote was tsquery
-//! syntax and the page answered 500. It is now parsed by
-//! `websearch_to_tsquery`, which reads punctuation as punctuation: every word
-//! must match, "a quoted phrase" is a phrase.
+//! syntax and the page answered 500. B160 moved to `websearch_to_tsquery`,
+//! which reads punctuation as punctuation (every word must match, "a quoted
+//! phrase" is a phrase) but, having no prefix operator, lost prefix matching
+//! as a side effect.
+//!
+//! B307 restores it: `SearchService` builds its own `to_tsquery` operand
+//! ([`trovato_kernel::search`]'s private `build_prefix_tsquery`), quoting
+//! every lexeme so no visitor character is ever tsquery syntax, same as
+//! `websearch_to_tsquery` guaranteed, while appending `:*` to a bare word so
+//! `kernel` finds `kerneltrap`. A quoted phrase still matches exactly, with
+//! no prefix.
 //!
 //! Also here: a query with no word left to search for (`a`, `&`) says so; the
 //! results are written once, not twice; and searching asks for `search content`.
@@ -109,6 +117,10 @@ fn special_characters_in_a_query_search_instead_of_failing() {
             format!("{term}'s"),
             format!("café {term}"),
             format!("{term} <script>alert(1)</script>"),
+            format!("{term}\""),
+            format!("{term}:*"),
+            format!("{term}!"),
+            format!("{term}("),
         ] {
             let (status, html) = get(&search_uri(&query)).await;
             assert_eq!(status, StatusCode::OK, "{query:?} answered {status}");
@@ -216,5 +228,108 @@ fn search_asks_for_search_content() {
         );
         let (again, _) = get("/search?q=anything").await;
         assert_eq!(again, StatusCode::OK, "with the permission back");
+    });
+}
+
+/// B307: a bare word matches as a prefix again, the way Drupal's search did
+/// before B160 (`kernel` finds `kerneltrap` and `kernels`), while a suffix of
+/// the same stored word (not a prefix) still does not, and a quoted word
+/// matches only exactly, with no prefix.
+#[test]
+fn a_bare_word_matches_as_a_prefix_again() {
+    run_test(async {
+        common::hold_until_cleanup(SERIAL.lock().await);
+        let stem = unique_term("zqkernel");
+        let compound = format!("{stem}trap"); // the "kerneltrap" shape
+        let plural = format!("{stem}s"); // the "kernels" shape
+        let other = unique_term("zqfreebsd"); // unrelated to `stem`
+
+        publish(&format!("Compound {compound}"), "body").await;
+        publish(&format!("Plural-shaped {plural}"), "body").await;
+        publish(&format!("Unrelated {other}"), "body").await;
+
+        // The bare stem, a true prefix of both, finds both by prefix.
+        let (status, html) = get(&search_uri(&stem)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            result_count(&html),
+            2,
+            "{stem:?} should find the compound and the plural-shaped word by prefix:\n{html}"
+        );
+
+        // A prefix of the unrelated word finds only it: `free` must not also
+        // match `freebsd` through the other two items.
+        let other_prefix = &other[..other.len() - 4];
+        let (_, html) = get(&search_uri(other_prefix)).await;
+        assert_eq!(
+            result_count(&html),
+            1,
+            "{other_prefix:?} should find only the unrelated item:\n{html}"
+        );
+
+        // A suffix of the same stored word (not a prefix) does not match:
+        // prefix matching is anchored at the start of the word.
+        let suffix_only = &other[other.len() - 4..];
+        let (_, html) = get(&search_uri(suffix_only)).await;
+        assert_eq!(
+            result_count(&html),
+            0,
+            "{suffix_only:?}, a suffix, must not match as a prefix:\n{html}"
+        );
+
+        // Quoted, the bare stem is an exact phrase: it must not prefix-match
+        // the compound or the plural-shaped word.
+        let (_, html) = get(&search_uri(&format!("\"{stem}\""))).await;
+        assert_eq!(
+            result_count(&html),
+            0,
+            "a quoted word must match exactly, not as a prefix:\n{html}"
+        );
+
+        // Quoted, the full compound word still matches (an exact phrase of
+        // one word is just that word).
+        let (_, html) = get(&search_uri(&format!("\"{compound}\""))).await;
+        assert_eq!(
+            result_count(&html),
+            1,
+            "the full word, quoted, still matches exactly:\n{html}"
+        );
+    });
+}
+
+/// B307 preserves what B160 added along with prefix matching: `-word`
+/// excludes, and `a or b` matches either, both still with prefix matching on
+/// the words that are not excluded.
+#[test]
+fn exclusion_and_or_still_work_with_prefix_matching() {
+    run_test(async {
+        common::hold_until_cleanup(SERIAL.lock().await);
+        let stem = unique_term("zqeither");
+        let first = format!("{stem}alpha");
+        let second = format!("{stem}beta");
+
+        publish(&format!("First {first}"), "body").await;
+        publish(&format!("Second {second}"), "body").await;
+
+        // The shared prefix alone finds both.
+        let (_, html) = get(&search_uri(&stem)).await;
+        assert_eq!(result_count(&html), 2, "{stem:?} should find both:\n{html}");
+
+        // Excluding the second by its own prefix leaves only the first.
+        let (_, html) = get(&search_uri(&format!("{stem} -{second}"))).await;
+        assert_eq!(
+            result_count(&html),
+            1,
+            "excluding the second should leave only the first:\n{html}"
+        );
+
+        // `a or b`, each a prefix of a different item, matches either.
+        let (status, html) = get(&search_uri(&format!("{first} or {second}"))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            result_count(&html),
+            2,
+            "`a or b` should match either item:\n{html}"
+        );
     });
 }
