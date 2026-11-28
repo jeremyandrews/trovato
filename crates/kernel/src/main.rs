@@ -18,6 +18,7 @@ mod config_storage;
 mod content;
 mod cron;
 mod db;
+mod edge_cache;
 mod error;
 mod file;
 mod form;

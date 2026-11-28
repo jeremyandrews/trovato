@@ -14,11 +14,13 @@
 pub mod tags;
 
 use std::collections::BTreeSet;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use sqlx::PgPool;
+
 use crate::state::AppState;
-use crate::tap::{RequestServices, RequestState, UserContext};
+use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
 
 /// How often the pending set is drained and dispatched.
 pub const DRAIN_INTERVAL: Duration = Duration::from_secs(1);
@@ -88,13 +90,17 @@ pub enum DrainOutcome {
 /// One drain: take whatever is pending and, if an enabled plugin implements
 /// `tap_cache_purge`, dispatch it once. When nothing is pending, or no plugin
 /// implements the tap, this costs a lock and a clear and nothing else.
-async fn drain(state: &AppState) -> DrainOutcome {
+///
+/// Takes the dispatcher and pool directly, rather than an [`AppState`], so a
+/// test can dispatch to a plugin it loaded into a dispatcher of its own
+/// without needing a whole app built around that plugin — see
+/// [`drain_now_with`].
+async fn drain(dispatcher: &Arc<TapDispatcher>, db: &PgPool) -> DrainOutcome {
     let pending = take_pending();
     if pending.tags.is_empty() && !pending.all {
         return DrainOutcome::Nothing;
     }
 
-    let dispatcher = state.tap_dispatcher();
     if dispatcher.registry().handler_count(TAP_CACHE_PURGE) == 0 {
         return DrainOutcome::NoPlugin;
     }
@@ -109,13 +115,8 @@ async fn drain(state: &AppState) -> DrainOutcome {
         return DrainOutcome::NoPlugin;
     };
 
-    let services = RequestServices::for_background(
-        state.db().clone(),
-        None,
-        None,
-        reqwest::Client::new(),
-    )
-    .with_plugin_runtime(dispatcher.runtime().clone());
+    let services = RequestServices::for_background(db.clone(), None, None, reqwest::Client::new())
+        .with_plugin_runtime(dispatcher.runtime().clone());
     let request_state = RequestState::new(UserContext::background(), services);
 
     // A notification: a plugin error is already logged by the dispatcher and
@@ -137,7 +138,7 @@ pub fn spawn_drain(state: AppState) {
         let mut tick = tokio::time::interval(DRAIN_INTERVAL);
         loop {
             tick.tick().await;
-            drain(&state).await;
+            drain(state.tap_dispatcher(), state.db()).await;
         }
     });
 }
@@ -146,7 +147,16 @@ pub fn spawn_drain(state: AppState) {
 /// for a test that must see the dispatch before it asserts.
 #[doc(hidden)]
 pub async fn drain_now(state: &AppState) -> DrainOutcome {
-    drain(state).await
+    drain(state.tap_dispatcher(), state.db()).await
+}
+
+/// As [`drain_now`], against an explicit dispatcher and pool rather than a
+/// whole [`AppState`]: for a test that loaded a purge plugin into its own
+/// [`TapDispatcher`] (see `plugin_queue_v2_test.rs` for the pattern) instead
+/// of building a full app around it.
+#[doc(hidden)]
+pub async fn drain_now_with(dispatcher: &Arc<TapDispatcher>, db: &PgPool) -> DrainOutcome {
+    drain(dispatcher, db).await
 }
 
 #[cfg(test)]

@@ -17,4 +17,10 @@
     </ul>
     <p>{{ t(s="The command line does the same: trovato cache clear.") }}</p>
 </section>
+
+<section class="admin-card" aria-labelledby="performance-purge">
+    <h2 id="performance-purge" class="report-heading">{{ t(s="Purge the CDN") }}</h2>
+    <p>{{ t(s="A change the site makes already tells an enabled CDN purge plugin what to drop. Use this to ask again: by tag, or for everything.") }}</p>
+    {{ purge_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+</section>
 {% endblock content %}
