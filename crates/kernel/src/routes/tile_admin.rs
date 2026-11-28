@@ -113,16 +113,6 @@ const TILE_CHOICES: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
-/// Put the tile form's choices in `context` (see [`TILE_CHOICES`]), as the
-/// hand written tile form template read them. Only the theme engine's test
-/// of that template still calls it.
-#[cfg(test)]
-pub(crate) fn insert_choices(context: &mut tera::Context) {
-    for (key, options) in TILE_CHOICES {
-        context.insert(*key, options);
-    }
-}
-
 /// The options of the choice list `key` in [`TILE_CHOICES`], for a select.
 fn choices(key: &str) -> Vec<(String, String)> {
     TILE_CHOICES

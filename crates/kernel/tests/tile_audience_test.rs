@@ -547,6 +547,11 @@ fn b83c_the_tile_form_is_a_pipeline_form_and_refuses_a_post_without_its_build_id
         let (status, html) = get_page(app, &cookies, "/admin/structure/tiles/add").await;
         assert_eq!(status, StatusCode::OK);
         let form = common::form_in(&html, TILE_FORM_ID).expect("the add form is the pipeline form");
+        // With no audience stored, Show to starts at Everyone (B174).
+        assert!(
+            form.contains(r#"<option value="" selected>"#) && form.contains("Everyone</option>"),
+            "{form}"
+        );
         // admin-helpers.js shows one type's settings by these ids.
         for id in [
             r#"id="tile_type""#,
