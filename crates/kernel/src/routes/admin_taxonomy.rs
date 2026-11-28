@@ -13,7 +13,6 @@ use tower_sessions::Session;
 use std::collections::HashMap;
 
 use crate::content::submission::PostedForm;
-use crate::form::csrf::generate_csrf_token;
 use crate::form::{Form, FormElement, ValidationError};
 use crate::models::{Category, CreateCategory, CreateTag, Tag, UpdateCategory, UpdateTag, User};
 use crate::state::AppState;
@@ -23,7 +22,7 @@ use super::admin_list::{ListQuery, page_of, sort_rows};
 use super::helpers::{
     MACHINE_NAME_ERROR, SLUG_FORMAT_ERROR, is_valid_machine_name, is_valid_slug,
     render_admin_template, render_error, render_forbidden, render_not_found, render_server_error,
-    require_any_permission, require_csrf, require_login, require_permission,
+    require_any_permission, require_login, require_permission,
 };
 
 /// The category list, under which every category screen hangs.
@@ -779,13 +778,12 @@ async fn list_tags(
         Ok(category) => category,
         Err(response) => return response,
     };
-    render_term_list(
+    term_list(
         &state,
         &session,
         &category,
         &site_urls(&state, &user, &category_id).await,
         &params,
-        true,
     )
     .await
 }
@@ -883,22 +881,15 @@ async fn delete_tag_form(
         Ok(found) => found,
         Err(response) => return response,
     };
-    let urls = TermUrls::site(&category.id);
-    let action = urls.delete(tag.id);
-    let cancel = cancel_link(&state, &user, &action, &urls.list).await;
-    let form = delete_form(TAG_DELETE_FORM_ID, action.clone(), cancel);
-    let form_html = match admin_form::render(&state, &session, &user, form, &[]).await {
-        Ok(html) => html,
-        Err(response) => return response,
-    };
-    let viewer = super::helpers::user_context_for(&state, &user).await;
-    let mut context = tera::Context::new();
-    context.insert("label", &tag.label);
-    context.insert("category", &category);
-    context.insert("urls", &urls);
-    context.insert("form", &form_html);
-    context.insert("path", &action);
-    render_admin_template(&state, &viewer, "admin/tag-delete.html", context).await
+    term_delete_page(
+        &state,
+        &session,
+        &user,
+        &category,
+        &tag,
+        &TermUrls::site(&category.id),
+    )
+    .await
 }
 
 /// POST /admin/structure/tags/{id}/delete
@@ -917,58 +908,21 @@ async fn delete_tag(
         Ok(found) => found,
         Err(response) => return response,
     };
-    let form_state = match admin_form::check(
-        &state,
-        &session,
-        &user,
-        &posted,
-        TAG_DELETE_FORM_ID,
-        Vec::new(),
-    )
-    .await
-    {
-        Ok(form_state) => form_state,
-        Err(Ok(_)) => {
-            return render_error("The form has expired. Reload the page and try again.");
-        }
-        Err(Err(response)) => return response,
-    };
     let urls = TermUrls::site(&tag.category_id);
-    let response = delete_term_now(&state, &tag, &urls).await;
-    if response.status().is_redirection() {
-        admin_form::submitted(&state, &user, &form_state, &posted).await;
-    }
-    response
+    term_delete(&state, &session, &user, &tag, &posted, &urls).await
 }
 
 // ---- Shared with the owner routes ------------------------------------------
 
 /// The term list of `category`, filtered by the listing query in `params`.
-/// Terms keep their weight order, so the list has no sort.
-///
-/// This is the owner routes' list, whose delete route takes the term
-/// list's own token rather than a confirmation page, so each row's delete
-/// button still carries it.
+/// Terms keep their weight order, so the list has no sort. A row's Delete is
+/// a link to the confirmation page at the term's delete address.
 pub(crate) async fn term_list(
     state: &AppState,
     session: &Session,
     category: &crate::models::Category,
     urls: &TermUrls,
     params: &HashMap<String, String>,
-) -> Response {
-    render_term_list(state, session, category, urls, params, false).await
-}
-
-/// The term list of `category`. With `confirm_delete`, a row's Delete is a
-/// link to the confirmation page at the term's delete address; without it,
-/// a button posting there with this page's token.
-async fn render_term_list(
-    state: &AppState,
-    session: &Session,
-    category: &crate::models::Category,
-    urls: &TermUrls,
-    params: &HashMap<String, String>,
-    confirm_delete: bool,
 ) -> Response {
     let query = ListQuery::from_params(params);
     let tags: Vec<Tag> = match state.categories().list_tags(&category.id).await {
@@ -988,10 +942,6 @@ async fn render_term_list(
     context.insert("list", &query.view(total, tags.len(), None));
     context.insert("category", category);
     context.insert("tags", &tags);
-    context.insert("confirm_delete", &confirm_delete);
-    if !confirm_delete {
-        context.insert("csrf_token", &generate_csrf_token(session).await);
-    }
     context.insert("urls", urls);
     context.insert("path", &urls.list);
 
@@ -1431,19 +1381,57 @@ pub(crate) async fn term_edit_submit(
     Redirect::to(&urls.list).into_response()
 }
 
-/// Delete `tag` for the owner routes, whose delete button posts the term
-/// list's own `token`.
+/// Delete `tag` once its confirmation form, posted in `posted`, checks out,
+/// and go back to its list: for the site-wide screens and the owner routes.
 pub(crate) async fn term_delete(
     state: &AppState,
     session: &Session,
+    user: &crate::models::User,
     tag: &crate::models::Tag,
-    token: &str,
+    posted: &PostedForm,
     urls: &TermUrls,
 ) -> Response {
-    if let Err(resp) = require_csrf(session, token).await {
-        return resp;
+    let form_state =
+        match admin_form::check(state, session, user, posted, TAG_DELETE_FORM_ID, Vec::new()).await
+        {
+            Ok(form_state) => form_state,
+            Err(Ok(_)) => {
+                return render_error("The form has expired. Reload the page and try again.");
+            }
+            Err(Err(response)) => return response,
+        };
+    let response = delete_term_now(state, tag, urls).await;
+    if response.status().is_redirection() {
+        admin_form::submitted(state, user, &form_state, posted).await;
     }
-    delete_term_now(state, tag, urls).await
+    response
+}
+
+/// The page asking whether to delete `tag` of `category`, its form posting to
+/// the delete under `urls`.
+pub(crate) async fn term_delete_page(
+    state: &AppState,
+    session: &Session,
+    user: &crate::models::User,
+    category: &crate::models::Category,
+    tag: &crate::models::Tag,
+    urls: &TermUrls,
+) -> Response {
+    let action = urls.delete(tag.id);
+    let cancel = cancel_link(state, user, &action, &urls.list).await;
+    let form = delete_form(TAG_DELETE_FORM_ID, action.clone(), cancel);
+    let form_html = match admin_form::render(state, session, user, form, &[]).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let mut context = tera::Context::new();
+    context.insert("label", &tag.label);
+    context.insert("category", category);
+    context.insert("urls", urls);
+    context.insert("form", &form_html);
+    context.insert("path", &action);
+    render_admin_template(state, &viewer, "admin/tag-delete.html", context).await
 }
 
 /// Delete `tag`, the submission already checked, and go back to its list.
