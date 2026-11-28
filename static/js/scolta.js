@@ -15,7 +15,11 @@
  *   pagefindPath: '/pagefind/pagefind.js'  — Path to Pagefind JS
  *   siteName: 'My Site'                    — Display name for the site
  *   container: '#scolta-search'            — CSS selector for the search container
- *   allowedLinkDomains: []                 — Domains allowed in summary links (empty = all)
+ *   allowedLinkDomains: []                 — Domains allowed for http(s) links in a summary
+ *                                            (empty = allow any domain). A same-site path
+ *                                            always renders; a javascript:/data:/other-origin
+ *                                            protocol-relative URL never does, regardless of
+ *                                            this setting.
  *   disclaimer: ''                         — Disclaimer text below AI summary (empty = none)
  *
  * Entry point: Scolta.init(containerSelector)
@@ -320,6 +324,7 @@
 
     const topN = results.slice(0, CONFIG.AI_SUMMARY_TOP_N);
     const context = buildLLMContext(topN);
+    const resultRefs = toResultRefs(topN);
 
     try {
       const fullQuery = expandedTerms.length > 0
@@ -329,7 +334,7 @@
       const resp = await fetch(endpoints.summarize, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: fullQuery, context }),
+        body: JSON.stringify({ query: fullQuery, results: resultRefs }),
         signal: abortController?.signal,
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -446,6 +451,17 @@
     }).join("\n\n");
   }
 
+  // What the server actually needs to build its own context: the result
+  // URLs, nothing else. The server resolves each one to the item it names,
+  // checks the viewer may see it, and reads the item's own text — none of the
+  // content or excerpt this script has locally travels to the endpoint.
+  function toResultRefs(results) {
+    return results
+      .map(r => r.data.meta?.url || "")
+      .filter(url => url)
+      .map(url => ({ url }));
+  }
+
   // Convert lightweight markdown from Claude's summary into safe HTML.
   function formatSummary(text) {
     const escaped = escapeHtml(text);
@@ -472,32 +488,50 @@
   }
 
   // Apply inline formatting: **bold** and [text](url) links.
-  // Links are only rendered if the URL matches allowedLinkDomains
-  // (empty list = allow all links).
+  //
+  // A link renders only when its URL is `http:`/`https:` (parsed with `new
+  // URL`, so `javascript:`, `data:` and the like never reach an `href`) or a
+  // same-site path: one leading `/` and not two (`//host/...` is a
+  // protocol-relative URL to another origin, not a path). Anything else
+  // renders as plain text — AI output can be steered by what it reads, and a
+  // planted `[click here](javascript:...)` must not become a clickable one.
+  // An `http:`/`https:` link is further checked against allowedLinkDomains
+  // (empty list = allow all); a same-site path has no domain to check.
   function formatInline(text) {
     const allowedDomains = getAllowedLinkDomains();
     return text
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
+        if (url.startsWith('/') && !url.startsWith('//')) {
+          return `<a href="${url}" target="_blank" rel="noopener">${linkText}</a>`;
+        }
+        let parsed;
+        try {
+          parsed = new URL(url);
+        } catch {
+          return linkText;
+        }
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          return linkText;
+        }
         if (allowedDomains.length === 0) {
           return `<a href="${url}" target="_blank" rel="noopener">${linkText}</a>`;
         }
-        try {
-          const parsed = new URL(url);
-          const host = parsed.hostname.replace(/^www\./, '');
-          if (allowedDomains.some(d => host === d || host.endsWith('.' + d))) {
-            return `<a href="${url}" target="_blank" rel="noopener">${linkText}</a>`;
-          }
-        } catch {}
-        // Non-allowed or invalid URL — show text only, no link
+        const host = parsed.hostname.replace(/^www\./, '');
+        if (allowedDomains.some(d => host === d || host.endsWith('.' + d))) {
+          return `<a href="${url}" target="_blank" rel="noopener">${linkText}</a>`;
+        }
+        // Non-allowed URL — show text only, no link
         return linkText;
       });
   }
 
   // --- Follow-up conversation ---
 
+  // Result URLs for a follow-up question, not text: the server resolves and
+  // reads each one itself (see toResultRefs).
   async function searchForFollowUpContext(question) {
-    if (!pagefind) return '';
+    if (!pagefind) return [];
     const terms = extractSearchTerms(question);
     const searchQuery = terms.length > 0 ? terms.join(' ') : question;
     try {
@@ -509,16 +543,16 @@
         );
         return { toLoad, loaded };
       });
-      if (toLoad === 0) return '';
+      if (toLoad === 0) return [];
       const scored = scoreResults(loaded, searchQuery, 1.0);
       scored.sort((a, b) => b.score - a.score);
       const best = scored.slice(0, 5);
-      const context = buildLLMContext(best);
-      console.log(`[scolta:followup] Found ${best.length} additional results for: ${searchQuery} (from ${toLoad} candidates)`);
-      return context;
+      const refs = toResultRefs(best);
+      console.log(`[scolta:followup] Found ${refs.length} additional results for: ${searchQuery} (from ${toLoad} candidates)`);
+      return refs;
     } catch (e) {
       console.warn("[scolta:followup] context search failed:", e);
-      return '';
+      return [];
     }
   }
 
@@ -563,7 +597,7 @@
     threadEl.appendChild(turnEl);
     turnEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
-    const extraContext = await searchForFollowUpContext(question);
+    const extraResults = await searchForFollowUpContext(question);
 
     // Discard if a new search started while we were fetching context
     if (followUpVersion !== searchVersion) {
@@ -571,17 +605,13 @@
       return;
     }
 
-    const userMessage = extraContext
-      ? `${question}\n\nAdditional search results for this follow-up:\n${extraContext}`
-      : question;
-
-    conversationMessages.push({ role: 'user', content: userMessage });
+    conversationMessages.push({ role: 'user', content: question });
 
     try {
       const resp = await fetch(endpoints.followup, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: conversationMessages }),
+        body: JSON.stringify({ messages: conversationMessages, results: extraResults }),
         signal: abortController?.signal,
       });
 
@@ -1441,7 +1471,7 @@
     doSearch,
     showMore,
     // The text and HTML rules, exposed for static/js/test/scolta.test.js.
-    _text: { escapeHtml, htmlToText, highlightText, truncateExcerpt, bestExcerpt },
+    _text: { escapeHtml, htmlToText, highlightText, truncateExcerpt, bestExcerpt, formatInline },
     // The index reload, exposed for static/js/test/scolta.test.js.
     _index: {
       withIndexReload,

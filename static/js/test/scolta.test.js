@@ -16,7 +16,7 @@ const path = require('node:path');
 // scolta.js attaches `Scolta` to `window`, or to `this` outside a browser,
 // which for a CommonJS module is its exports.
 const { Scolta } = require(path.join(__dirname, '..', 'scolta.js'));
-const { escapeHtml, htmlToText, highlightText, bestExcerpt } = Scolta._text;
+const { escapeHtml, htmlToText, highlightText, bestExcerpt, formatInline } = Scolta._text;
 
 test('a Pagefind excerpt is read as HTML and written escaped once', () => {
   const excerpt = 'Tom &amp; Jerry &lt;3 &quot;café&quot; <mark>noank</mark> &#39;s';
@@ -140,4 +140,42 @@ test('a search that works does not reload', async () => {
   assert.equal(await withIndexReload(async () => 1), 1);
   assert.deepEqual(pf.calls, []);
   setPagefind(null);
+});
+
+// B282: an AI summary can carry a planted `[text](url)` link (prompt
+// injection), so the renderer — not the model — decides what is clickable.
+// Only http(s) and same-site paths may become an <a href>; everything else,
+// a scheme that runs script or loads data, or a protocol-relative URL to
+// another origin, renders as plain text.
+test('formatInline renders only http(s) and same-site links', () => {
+  const link = (text) => `<a href="${text.url}" target="_blank" rel="noopener">${text.label}</a>`;
+
+  assert.equal(
+    // No parens in the payload: the link regex itself stops at the first
+    // `)`, which is a separate, pre-existing limitation this test does not
+    // exercise.
+    formatInline("[click here](javascript:location='https://evil.example/')"),
+    'click here',
+    'a javascript: URL must never become an href',
+  );
+  assert.equal(
+    formatInline('[click here](data:text/html;base64,PHNjcmlwdD4=)'),
+    'click here',
+    'a data: URL must never become an href',
+  );
+  assert.equal(
+    formatInline('[click here](//evil.example/phish)'),
+    'click here',
+    'a protocol-relative URL is another origin, not a path',
+  );
+  assert.equal(
+    formatInline('[the item](/item/x)'),
+    link({ url: '/item/x', label: 'the item' }),
+    'a single leading slash is a same-site path',
+  );
+  assert.equal(
+    formatInline('[RustConf](https://rustconf.example/schedule)'),
+    link({ url: 'https://rustconf.example/schedule', label: 'RustConf' }),
+    'an https URL renders normally',
+  );
 });

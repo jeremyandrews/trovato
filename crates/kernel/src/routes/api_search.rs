@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use uuid::Uuid;
 
+use crate::content::ItemService;
 use crate::content::page_meta::{text_of, truncate_on_word};
 use crate::error::AppError;
 use crate::models::{Item, SiteConfig, UrlAlias};
@@ -122,9 +123,12 @@ struct FollowupRequest {
 }
 
 /// One search result, named only by the URL the server resolves it from.
+///
+/// Public so an integration test can build a [`build_results_context`] call
+/// directly, the way it builds the request body for the real endpoint.
 #[derive(Debug, Deserialize)]
-struct ResultRef {
-    url: String,
+pub struct ResultRef {
+    pub url: String,
 }
 
 /// A conversation message. `role` must be `user` or `assistant`
@@ -312,7 +316,7 @@ async fn summarize(
         return refusal;
     }
 
-    let context_text = build_results_context(&state, &viewer, &settings, &body.results).await;
+    let context_text = build_results_context(state.db(), state.items(), &viewer, &settings, &body.results).await;
     if context_text.is_empty() {
         // Nothing the caller named resolved to anything they may see: answer
         // with an empty summary rather than ask the provider to summarize
@@ -391,7 +395,7 @@ async fn followup(
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let results_context = build_results_context(&state, &viewer, &settings, &body.results).await;
+    let results_context = build_results_context(state.db(), state.items(), &viewer, &settings, &body.results).await;
     if !results_context.is_empty() {
         user_prompt.push_str(&format!(
             "\n\nAdditional search results for this follow-up:\n{results_context}",
@@ -525,27 +529,33 @@ fn item_context_text(item: &Item, max_chars: usize) -> String {
 /// `ai_summary_max_chars`. A URL that does not resolve, or resolves to an item
 /// the viewer may not view at all, is dropped silently — the caller gets
 /// context built from whatever is left, including none of it.
-async fn build_results_context(
-    state: &AppState,
+///
+/// Takes `pool` and `items` rather than the whole [`AppState`], the way
+/// [`crate::services::ai_chat::AiChatService::search_for_context`] takes its
+/// `ItemService`: a test can hand this a service whose dispatcher loads
+/// `trovato_field_access_ref`, to assert a denied field never reaches a
+/// prompt, without a real field-access plugin wired into the whole app. `pub`
+/// for exactly that: `search_ai_lockdown_test` calls it directly.
+pub async fn build_results_context(
+    pool: &sqlx::PgPool,
+    items: &ItemService,
     viewer: &UserContext,
     settings: &SearchSettings,
     results: &[ResultRef],
 ) -> String {
-    let pool = state.db();
     let top_n = settings.ai_summary_top_n as usize;
     let max_chars = settings.ai_summary_max_chars as usize;
 
     let mut candidates = Vec::new();
     for result in results.iter().take(top_n) {
         if let Some(id) = resolve_result_url(pool, &result.url).await
-            && let Ok(Some(item)) = state.items().load(id).await
+            && let Ok(Some(item)) = items.load(id).await
         {
             candidates.push(item);
         }
     }
 
-    let visible = state
-        .items()
+    let visible = items
         .filter_page_for_view(candidates, viewer, "view", top_n)
         .await;
 
