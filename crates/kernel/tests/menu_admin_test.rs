@@ -53,15 +53,19 @@ async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-/// Pull the CSRF token out of a rendered form.
-fn csrf_from(html: &str) -> String {
-    let needle = r#"name="_token" value=""#;
-    let start = html
-        .find(needle)
-        .map(|i| i + needle.len())
-        .expect("a form on this page must carry a CSRF token");
-    let end = html[start..].find('"').expect("token must be terminated");
-    html[start..start + end].to_string()
+/// The id of the add and edit form.
+const LINK_FORM: &str = "menu_link_form";
+
+/// The id of the form that confirms a link's deletion.
+const DELETE_FORM: &str = "menu_link_delete_form";
+
+/// The CSRF token and the build id of the pipeline form `form_id` on a
+/// rendered page: what a browser posts back with the form's fields.
+fn pipeline_fields(html: &str, form_id: &str) -> (String, String) {
+    let form = common::form_in(html, form_id)
+        .unwrap_or_else(|| panic!("the page must carry the form {form_id}"));
+    let token = common::input_value_in(form, "_token").expect("the form carries a CSRF token");
+    (token, common::form_build_id(html, form_id))
 }
 
 /// GET a page and return (cookies, body), carrying any refreshed session cookie.
@@ -135,11 +139,12 @@ async fn create_link(
 ) -> Uuid {
     let (cookies, form) =
         get_page(app, cookies, &format!("/admin/structure/menus/{menu}/add")).await;
-    let token = csrf_from(&form);
+    let (token, build) = pipeline_fields(&form, LINK_FORM);
     let parent_field = parent.map(|p| p.to_string()).unwrap_or_default();
     let weight_field = weight.to_string();
     let mut fields = vec![
         ("_token", token.as_str()),
+        ("_form_build_id", build.as_str()),
         ("title", title),
         ("path", path),
         ("parent_id", parent_field.as_str()),
@@ -357,13 +362,14 @@ fn editing_a_link_changes_its_parent_in_both_directions() {
 
         // Top level -> under root.
         let (cookies, form) = get_page(app, &cookies, &edit).await;
-        let token = csrf_from(&form);
+        let (token, build) = pipeline_fields(&form, LINK_FORM);
         let response = post_form(
             app,
             &cookies,
             &edit,
             &[
                 ("_token", &token),
+                ("_form_build_id", &build),
                 ("title", "Mover"),
                 ("path", &format!("/{menu}/mover")),
                 ("parent_id", &root.to_string()),
@@ -382,13 +388,14 @@ fn editing_a_link_changes_its_parent_in_both_directions() {
 
         // Under root -> back to top level, by submitting an empty parent.
         let (cookies, form) = get_page(app, &cookies, &edit).await;
-        let token = csrf_from(&form);
+        let (token, build) = pipeline_fields(&form, LINK_FORM);
         let response = post_form(
             app,
             &cookies,
             &edit,
             &[
                 ("_token", &token),
+                ("_form_build_id", &build),
                 ("title", "Mover"),
                 ("path", &format!("/{menu}/mover")),
                 ("parent_id", ""),
@@ -451,13 +458,14 @@ fn changing_a_weight_reorders_siblings_in_the_listing() {
         // Push Alpha below Beta.
         let edit = format!("/admin/structure/menus/{menu}/{first}/edit");
         let (cookies, form) = get_page(app, &cookies, &edit).await;
-        let token = csrf_from(&form);
+        let (token, build) = pipeline_fields(&form, LINK_FORM);
         let response = post_form(
             app,
             &cookies,
             &edit,
             &[
                 ("_token", &token),
+                ("_form_build_id", &build),
                 ("title", "Alpha"),
                 ("path", &format!("/{menu}/alpha")),
                 ("parent_id", ""),
@@ -478,6 +486,72 @@ fn changing_a_weight_reorders_siblings_in_the_listing() {
 // =============================================================================
 // Validation
 // =============================================================================
+
+/// The add form is a pipeline form: a submission without its build id is
+/// refused as expired, and a refused field is marked and explained beside it.
+#[test]
+fn the_link_form_is_a_pipeline_form_and_marks_the_field_it_refuses() {
+    run_test(async {
+        let app = shared_app().await;
+        let cookies = admin_session(app).await;
+        let menu = fresh_menu();
+        let add = format!("/admin/structure/menus/{menu}/add");
+
+        let (cookies, form) = get_page(app, &cookies, &add).await;
+        assert!(
+            common::form_in(&form, LINK_FORM).is_some(),
+            "the add form must be built by the pipeline"
+        );
+        let (token, build) = pipeline_fields(&form, LINK_FORM);
+
+        let response = post_form(
+            app,
+            &cookies,
+            &add,
+            &[
+                ("_token", &token),
+                ("_form_build_id", &build),
+                ("title", "Off site"),
+                ("path", "https://example.com/"),
+                ("weight", "0"),
+            ],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        let form = common::form_in(&html, LINK_FORM).expect("the form is shown again");
+        assert!(
+            form.contains(r#"id="path-error""#)
+                && form.contains(r#"aria-invalid="true""#)
+                && form.contains("Path must be local, not a full URL."),
+            "the refusal must be on the path field, got: {form}"
+        );
+
+        // Without its build id a submission is refused as expired. The token
+        // is the one the form was shown again with: each is used once.
+        let (token, _) = pipeline_fields(&html, LINK_FORM);
+        let response = post_form(
+            app,
+            &cookies,
+            &add,
+            &[
+                ("_token", &token),
+                ("title", "No build id"),
+                ("path", &format!("/{menu}/no-build")),
+            ],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(body_text(response).await.contains("expired"));
+
+        let landed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM menu_link WHERE menu_name = $1")
+            .bind(&menu)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(landed, 0, "no refused link may have been written");
+    });
+}
 
 /// A cycle is refused, and the link keeps the parent it had.
 #[test]
@@ -524,13 +598,14 @@ fn a_link_cannot_be_made_its_own_descendant() {
         // Try to make the root a child of its own grandchild.
         let edit = format!("/admin/structure/menus/{menu}/{root}/edit");
         let (cookies, form) = get_page(app, &cookies, &edit).await;
-        let token = csrf_from(&form);
+        let (token, build) = pipeline_fields(&form, LINK_FORM);
         let response = post_form(
             app,
             &cookies,
             &edit,
             &[
                 ("_token", &token),
+                ("_form_build_id", &build),
                 ("title", "Root"),
                 ("path", &format!("/{menu}/root")),
                 ("parent_id", &grandchild.to_string()),
@@ -631,13 +706,14 @@ fn malformed_input_is_rejected_with_a_reason() {
 
         for (bad_path, title, expected) in cases {
             let (fresh_cookies, form) = get_page(app, &cookies, &add).await;
-            let token = csrf_from(&form);
+            let (token, build) = pipeline_fields(&form, LINK_FORM);
             let response = post_form(
                 app,
                 &fresh_cookies,
                 &add,
                 &[
                     ("_token", &token),
+                    ("_form_build_id", &build),
                     ("title", title),
                     ("path", bad_path),
                     ("parent_id", ""),
@@ -676,13 +752,14 @@ fn a_link_without_a_title_is_rejected() {
         let add = format!("/admin/structure/menus/{menu}/add");
 
         let (cookies, form) = get_page(app, &cookies, &add).await;
-        let token = csrf_from(&form);
+        let (token, build) = pipeline_fields(&form, LINK_FORM);
         let response = post_form(
             app,
             &cookies,
             &add,
             &[
                 ("_token", &token),
+                ("_form_build_id", &build),
                 ("title", "   "),
                 ("path", &format!("/{menu}/untitled")),
                 ("parent_id", ""),
@@ -719,13 +796,14 @@ fn a_parent_from_another_menu_is_refused() {
 
         let add = format!("/admin/structure/menus/{here}/add");
         let (cookies, form) = get_page(app, &cookies, &add).await;
-        let token = csrf_from(&form);
+        let (token, build) = pipeline_fields(&form, LINK_FORM);
         let response = post_form(
             app,
             &cookies,
             &add,
             &[
                 ("_token", &token),
+                ("_form_build_id", &build),
                 ("title", "Adopted"),
                 ("path", &format!("/{here}/adopted")),
                 ("parent_id", &foreign.to_string()),
@@ -797,13 +875,25 @@ fn deleting_a_link_promotes_its_children_to_its_own_parent() {
             html.contains("promotes those children"),
             "the listing must say what happens to children"
         );
-        let token = csrf_from(&html);
+        // The row's Delete is a link to a page that asks first, saying what
+        // happens to the link's child.
+        let delete = format!("/admin/structure/menus/{menu}/{middle}/delete");
+        assert!(
+            html.contains(&format!(r#"href="{delete}""#)),
+            "the row must link to its delete confirmation"
+        );
+        let (cookies, confirm) = get_page(app, &cookies, &delete).await;
+        assert!(
+            confirm.contains("Its 1 child link will be promoted to its parent"),
+            "the confirmation must say what happens to the child, got: {confirm}"
+        );
+        let (token, build) = pipeline_fields(&confirm, DELETE_FORM);
 
         let response = post_form(
             app,
             &cookies,
-            &format!("/admin/structure/menus/{menu}/{middle}/delete"),
-            &[("_token", &token)],
+            &delete,
+            &[("_token", &token), ("_form_build_id", &build)],
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -841,10 +931,10 @@ fn a_plugin_owned_link_is_listed_read_only_and_refuses_edits() {
         let cookies = admin_session(app).await;
         let menu = fresh_menu();
 
-        // A core link as well as the plugin-owned one. Two reasons: a listing of
-        // only plugin-owned rows renders no form and so carries no CSRF token to
-        // read, and a mixed menu is the case worth asserting on anyway.
-        create_link(
+        // A core link as well as the plugin-owned one. Two reasons: only a core
+        // link has a delete confirmation whose form can be posted at the
+        // plugin's, and a mixed menu is the case worth asserting on anyway.
+        let editable = create_link(
             app,
             &cookies,
             &menu,
@@ -900,12 +990,34 @@ fn a_plugin_owned_link_is_listed_read_only_and_refuses_edits() {
             "editing a plugin-owned link must be refused"
         );
 
-        let token = csrf_from(&html);
+        let response = app
+            .request_with_cookies(
+                Request::get(format!("/admin/structure/menus/{menu}/{id}/delete"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "no delete confirmation may be offered for a plugin-owned link"
+        );
+
+        // A valid delete form, built for the core link, still cannot delete
+        // the plugin's.
+        let (cookies, confirm) = get_page(
+            app,
+            &cookies,
+            &format!("/admin/structure/menus/{menu}/{editable}/delete"),
+        )
+        .await;
+        let (token, build) = pipeline_fields(&confirm, DELETE_FORM);
         let response = post_form(
             app,
             &cookies,
             &format!("/admin/structure/menus/{menu}/{id}/delete"),
-            &[("_token", &token)],
+            &[("_token", &token), ("_form_build_id", &build)],
         )
         .await;
         assert_eq!(
@@ -996,7 +1108,7 @@ fn a_new_link_appears_in_the_rendered_navigation_without_a_restart() {
         // Hiding it takes it back out, again without a restart.
         let edit = format!("/admin/structure/menus/main/{id}/edit");
         let (cookies, form) = get_page(app, &cookies, &edit).await;
-        let token = csrf_from(&form);
+        let (token, build) = pipeline_fields(&form, LINK_FORM);
         let path: String = sqlx::query_scalar("SELECT path FROM menu_link WHERE id = $1")
             .bind(id)
             .fetch_one(&app.db)
@@ -1008,6 +1120,7 @@ fn a_new_link_appears_in_the_rendered_navigation_without_a_restart() {
             &edit,
             &[
                 ("_token", &token),
+                ("_form_build_id", &build),
                 ("title", &marker),
                 ("path", &path),
                 ("parent_id", ""),

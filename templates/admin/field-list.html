@@ -1,6 +1,5 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/list.html" as list %}
-{% import "admin/macros/form.html" as form %}
 
 {% block page_title %}{{ t(s="Manage fields: {type}", type=content_type.label) }}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="The fields every item of this content type has, besides its title. A field's machine name and type are fixed once it is added.") }}</p>{% endblock page_intro %}
@@ -11,7 +10,6 @@
 {% endblock page_actions %}
 
 {% block content %}
-{% set errs = errors | default(value=[]) %}
 {% if field_indexes_building | default(value=false) %}<meta http-equiv="refresh" content="5">{% endif %}
 
 <div class="admin-card" id="fields-wrapper">
@@ -63,7 +61,7 @@
                     </td>
                     <td class="operations">
                         <a href="/admin/structure/types/{{ content_type.machine_name }}/fields/{{ field.field_name }}/edit">{{ t(s="Edit {name}", name=field.label) }}</a>
-                        {{ list::delete_button(action="/admin/structure/types/" ~ content_type.machine_name ~ "/fields/" ~ field.field_name ~ "/delete", label=t(s="Delete {name}", name=field.label), confirm_text=t(s="Are you sure you want to delete the {name} field?", name=field.label), csrf_token=csrf_token) }}
+                        <a class="link-button link-button--danger" href="/admin/structure/types/{{ content_type.machine_name }}/fields/{{ field.field_name }}/delete">{{ t(s="Delete {name}", name=field.label) }}</a>
                     </td>
                 </tr>
                 {% endfor %}
@@ -75,33 +73,9 @@
     {% endif %}
 </div>
 
-<section class="admin-card" aria-labelledby="add-field-heading">
+<section class="admin-card" id="add-field-form" aria-labelledby="add-field-heading">
     <h2 id="add-field-heading">{{ t(s="Add a new field") }}</h2>
-    <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/fields/add" id="add-field-form" novalidate>
-        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
-
-        {{ form::error_summary(errors=errs) }}
-
-        <div class="inline-fields">
-            {{ form::field(name="label", id="new_field_label", label=t(s="Label"), value=values.label | default(value=""), required=true, errors=errs, attrs='data-machine-name-source="new_field_name" data-machine-name-prefix="field_" data-machine-name-max="32"') }}
-
-            {{ form::field(name="name", id="new_field_name", label=t(s="Machine name"), value=values.name | default(value=""), required=true, errors=errs, attrs='pattern="[a-z][a-z0-9_]*" spellcheck="false" autocapitalize="none"') }}
-
-            {% if values.field_type is defined and values.field_type %}{% set selected_type = values.field_type %}{% else %}{% set selected_type = "" %}{% endif %}
-            {{ form::select(name="field_type", id="new_field_type", label=t(s="Type"), options=field_type_options, value=selected_type, empty=t(s="- Select -"), translate_options=true, required=true, errors=errs) }}
-
-            {% if values.category is defined and values.category %}{% set selected_category = values.category %}{% else %}{% set selected_category = "" %}{% endif %}
-            {{ form::select(name="category", id="new_field_category", label=t(s="Category"), options=category_options, value=selected_category, empty=t(s="- None -"), hint=t(s="Required for a category reference: the field holds tags of this category."), errors=errs) }}
-
-            <div class="inline-fields__submit">
-                <button type="submit" class="button button--primary"
-                        data-ajax-trigger="add_field"
-                        data-ajax-wrapper="#fields-wrapper">
-                    {{ t(s="Add field") }}
-                </button>
-            </div>
-        </div>
-    </form>
+    {{ add_field_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </section>
 
 {# Machine name auto-generation handled by admin-helpers.js via data attributes on the label input #}

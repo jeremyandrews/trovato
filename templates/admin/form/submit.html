@@ -1,12 +1,16 @@
 {%- import "admin/macros/form.html" as f -%}
 {%- import "admin/macros/builder.html" as b -%}
 {#- The form builder's admin template: maps the element onto the field macro
-    every admin form uses (admin/macros/form.html). -#}
+    every admin form uses (admin/macros/form.html). The button is primary
+    unless the element's `class` attribute names its style (`button--danger`);
+    its suffix (a Cancel link) sits beside it. -#}
 {%- if element.title %}{% set label = t(s=element.title) %}{% else %}{% set label = "" %}{% endif -%}
 {%- if element.description %}{% set hint = t(s=element.description) %}{% else %}{% set hint = "" %}{% endif -%}
 {%- set attrs = b::attrs(element=element) -%}
 {%- if errors is defined %}{% set errs = errors %}{% else %}{% set errs = [] %}{% endif -%}
 {%- if element.default_value is defined %}{% set dv = element.default_value %}{% else %}{% set dv = "" %}{% endif -%}
 <div class="form-actions">
-    <button type="submit" id="{{ name }}" name="{{ name }}" class="form-submit button button--primary"{% if element.disabled %} disabled{% endif %}{{ attrs | safe }}>{{ t(s=element.value | default(value="Submit")) }}</button> {# SAFE: attrs is admin/macros/builder.html output, every value escaped #}
+    <button type="submit" id="{{ name }}" name="{{ name }}" class="form-submit button {% if element.attributes and element.attributes.class %}{{ element.attributes.class }}{% else %}button--primary{% endif %}"{% if element.disabled %} disabled{% endif %}{{ attrs | safe }}>{{ t(s=element.value | default(value="Submit")) }}</button> {# SAFE: attrs is admin/macros/builder.html output, every value escaped #}
+    {%- if element.suffix %}
+    {{ element.suffix | safe }}{% endif %} {# SAFE: kernel FormBuilder-generated HTML — prefix/suffix are kernel-controlled strings #}
 </div>

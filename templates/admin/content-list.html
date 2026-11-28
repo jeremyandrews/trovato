@@ -25,79 +25,62 @@
 {% if items %}
 <div class="admin-card">
     {{ list::count(list=list) }}
-    <form method="post" action="/admin/content/bulk?confirm=delete" id="bulk-form" novalidate>
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        {% if bulk_options %}
-        <div class="bulk-actions">
-            {{ form::select(name="action", id="bulk-action", label=t(s="Bulk action"), options=bulk_options, empty=t(s="- Bulk action -"), translate_options=true, wrapper="bulk-actions__field") }}
-            {% if stages %}
-            {#- The target of "Move selected to stage"; the other actions ignore
-                it. Each item's move is decided by the editorial workflow. -#}
-            {{ form::select(name="stage", id="bulk-stage", label=t(s="Target stage"), options=stage_options, empty=t(s="- Target stage -"), wrapper="bulk-actions__field") }}
-            {% endif %}
-            <button type="submit" class="button button--secondary button--small">{{ t(s="Apply") }}</button>
-            <p class="bulk-actions__count" data-selected-count role="status" aria-live="polite"></p>
-        </div>
-        {% endif %}
-        <div class="table-scroll" role="region" aria-labelledby="content-caption" tabindex="0">
-            <table class="table table--stack">
-                <caption id="content-caption">{{ t(s="Content items") }}</caption>
-                <thead>
-                    <tr>
-                        <th scope="col" class="th-check"><input type="checkbox" id="select-all" data-select-all><label class="visually-hidden" for="select-all">{{ t(s="Select all items") }}</label></th>
-                        {{ list::sort_th(label=t(s="Title"), key="title", list=list) }}
-                        {{ list::sort_th(label=t(s="Type"), key="type", list=list) }}
-                        <th scope="col">{{ t(s="Author") }}</th>
-                        {{ list::sort_th(label=t(s="Status"), key="status", list=list) }}
-                        {{ list::sort_th(label=t(s="Updated"), key="changed", list=list) }}
-                        <th scope="col" class="operations">{{ t(s="Operations") }}</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for item in items %}
-                    {% set author = authors[item.author_id] | default(value="") %}
-                    {% set ops = operations[item.id] %}
-                    <tr>
-                        <td class="th-check"><input type="checkbox" name="ids[]" value="{{ item.id }}" id="select-{{ item.id }}" data-select-row><label class="visually-hidden" for="select-{{ item.id }}">{{ t(s="Select {title}", title=item.title) }}</label></td>
-                        <th scope="row">
-                            <a href="{% if ops.edit == "admin" %}/admin/content/{{ item.id }}/edit{% elif ops.edit == "item" %}/item/{{ item.id }}/edit{% else %}/item/{{ item.id }}{% endif %}">{{ item.title }}</a>
-                        </th>
-                        <td>{{ item.type }}</td>
-                        <td>{% if author %}{{ author }}{% else %}{{ t(s="Unknown") }}{% endif %}</td>
-                        <td>
-                            {% if item.status == 1 %}
-                            <span class="status status--published">{{ t(s="Published") }}</span>
-                            {% else %}
-                            <span class="status status--unpublished">{{ t(s="Unpublished") }}</span>
-                            {% endif %}
-                        </td>
-                        <td>{{ item.changed | date(format="%Y-%m-%d %H:%M") }}</td>
-                        <td class="operations">
-                            {% if ops.edit %}
-                            <a href="{% if ops.edit == "admin" %}/admin/content/{{ item.id }}/edit{% else %}/item/{{ item.id }}/edit{% endif %}">{{ t(s="Edit {title}", title=item.title) }}</a>
-                            <a href="/item/{{ item.id }}/revisions">{{ t(s="Revisions of {title}", title=item.title) }}</a>
-                            {% endif %}
-                            {% if ops.delete %}
-                            <button type="submit" form="delete-{{ item.id }}" class="link-button link-button--danger">{{ t(s="Delete {title}", title=item.title) }}</button>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </form>
-    {# Each row's Delete button submits one of these through its form
-       attribute. A form nested in #bulk-form would close it early and add a
-       second _token to every bulk submission. Each asks first on the
-       confirmation page (routes::admin_confirm). #}
-    {% for item in items %}{% if operations[item.id].delete %}
-    <form id="delete-{{ item.id }}" method="post" action="/admin/content/{{ item.id }}/delete?confirm" novalidate hidden>
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <input type="hidden" name="_confirm" value="{{ t(s='Delete {title}? This cannot be undone.', title=item.title) }}">
-        <input type="hidden" name="_confirm_label" value="{{ t(s='Delete {title}', title=item.title) }}">
-    </form>
-    {% endif %}{% endfor %}
+    {#- The bulk form (routes::admin_content::bulk_form) stands before the
+        table; each row's checkbox joins it through its form attribute. A bulk
+        delete asks first on the confirmation page (routes::admin_confirm). -#}
+    {% if bulk_form %}
+    <div class="bulk-actions">
+        {{ bulk_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+        <p class="bulk-actions__count" data-selected-count role="status" aria-live="polite"></p>
+    </div>
+    {% endif %}
+    <div class="table-scroll" role="region" aria-labelledby="content-caption" tabindex="0">
+        <table class="table table--stack">
+            <caption id="content-caption">{{ t(s="Content items") }}</caption>
+            <thead>
+                <tr>
+                    <th scope="col" class="th-check"><input type="checkbox" id="select-all" form="{{ bulk_form_id }}" data-select-all><label class="visually-hidden" for="select-all">{{ t(s="Select all items") }}</label></th>
+                    {{ list::sort_th(label=t(s="Title"), key="title", list=list) }}
+                    {{ list::sort_th(label=t(s="Type"), key="type", list=list) }}
+                    <th scope="col">{{ t(s="Author") }}</th>
+                    {{ list::sort_th(label=t(s="Status"), key="status", list=list) }}
+                    {{ list::sort_th(label=t(s="Updated"), key="changed", list=list) }}
+                    <th scope="col" class="operations">{{ t(s="Operations") }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                {% set author = authors[item.author_id] | default(value="") %}
+                {% set ops = operations[item.id] %}
+                <tr>
+                    <td class="th-check"><input type="checkbox" name="ids[]" value="{{ item.id }}" id="select-{{ item.id }}" form="{{ bulk_form_id }}" data-select-row><label class="visually-hidden" for="select-{{ item.id }}">{{ t(s="Select {title}", title=item.title) }}</label></td>
+                    <th scope="row">
+                        <a href="{% if ops.edit == "admin" %}/admin/content/{{ item.id }}/edit{% elif ops.edit == "item" %}/item/{{ item.id }}/edit{% else %}/item/{{ item.id }}{% endif %}">{{ item.title }}</a>
+                    </th>
+                    <td>{{ item.type }}</td>
+                    <td>{% if author %}{{ author }}{% else %}{{ t(s="Unknown") }}{% endif %}</td>
+                    <td>
+                        {% if item.status == 1 %}
+                        <span class="status status--published">{{ t(s="Published") }}</span>
+                        {% else %}
+                        <span class="status status--unpublished">{{ t(s="Unpublished") }}</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ item.changed | date(format="%Y-%m-%d %H:%M") }}</td>
+                    <td class="operations">
+                        {% if ops.edit %}
+                        <a href="{% if ops.edit == "admin" %}/admin/content/{{ item.id }}/edit{% else %}/item/{{ item.id }}/edit{% endif %}">{{ t(s="Edit {title}", title=item.title) }}</a>
+                        <a href="/item/{{ item.id }}/revisions">{{ t(s="Revisions of {title}", title=item.title) }}</a>
+                        {% endif %}
+                        {% if ops.delete %}
+                        <a class="link-button link-button--danger" href="/admin/content/{{ item.id }}/delete">{{ t(s="Delete {title}", title=item.title) }}</a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
     {{ list::pager(list=list, action="/admin/content", label=t(s="Pages of content")) }}
 </div>
 {% elif list.filtered %}

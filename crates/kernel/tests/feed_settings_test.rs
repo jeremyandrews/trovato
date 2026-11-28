@@ -26,16 +26,6 @@ fn admin() -> UserContext {
     UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
 
-fn token_in(html: &str) -> Option<String> {
-    let at = html.find(r#"name="_token""#)?;
-    let start = html[..at].rfind('<')?;
-    let end = at + html[at..].find('>')?;
-    let tag = &html[start..end];
-    let vat = tag.find(r#"value=""#)? + 7;
-    let vend = tag[vat..].find('"')? + vat;
-    Some(tag[vat..vend].to_string())
-}
-
 async fn body_of(response: axum::response::Response) -> String {
     let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
         .await
@@ -56,10 +46,10 @@ async fn save(app: &TestApp, cookies: &str, query: &GatherQuery, display: &Value
             cookies,
         )
         .await;
-    let token = token_in(&body_of(edit).await).expect("the form has a token");
+    let form = body_of(edit).await;
     let body = format!(
-        "_token={}&_form_build_id=x&query_id={id}&label=Feed%20settings&description=&definition_json={}&display_json={}",
-        urlencoding::encode(&token),
+        "{}&query_id={id}&label=Feed%20settings&description=&definition_json={}&display_json={}",
+        common::form_fields(&form, "gather-form"),
         urlencoding::encode(&serde_json::to_string(&query.definition).unwrap()),
         urlencoding::encode(&display.to_string()),
     );

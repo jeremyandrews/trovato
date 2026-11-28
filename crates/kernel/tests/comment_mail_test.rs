@@ -33,6 +33,27 @@ async fn text(response: axum::response::Response) -> String {
 }
 
 /// A page's CSRF token, carrying the session cookies forward.
+/// The moderation list's row action form: the session cookies to go on with
+/// and its `_token` and `_form_build_id`, ready to post.
+async fn moderation_form(app: &TestApp, cookies: &str) -> (String, String) {
+    let response = app
+        .request_with_cookies(
+            Request::get("/admin/content/comments")
+                .body(Body::empty())
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let fresh = extract_cookies(&response);
+    let cookies = if fresh.is_empty() {
+        cookies.to_string()
+    } else {
+        fresh
+    };
+    let html = text(response).await;
+    (cookies, common::form_fields(&html, "comment_actions_form"))
+}
+
 async fn csrf(app: &TestApp, cookies: &str, page: &str) -> (String, String) {
     let response = app
         .request_with_cookies(Request::get(page).body(Body::empty()).unwrap(), cookies)
@@ -176,15 +197,12 @@ fn a_held_comment_notifies_once_when_approved_and_never_before() {
             )
             .await;
         for action in ["approve", "unpublish", "approve"] {
-            let (cookies, token) = csrf(&app, &admin_cookies, "/admin/content/comments").await;
+            let (cookies, fields) = moderation_form(&app, &admin_cookies).await;
             let response = app
                 .request_with_cookies(
                     Request::post(format!("/admin/content/comments/{comment}/{action}"))
                         .header("content-type", "application/x-www-form-urlencoded")
-                        .body(Body::from(format!(
-                            "_token={}",
-                            urlencoding::encode(&token)
-                        )))
+                        .body(Body::from(fields))
                         .unwrap(),
                     &cookies,
                 )
@@ -452,15 +470,12 @@ fn the_author_notice_follows_the_site_setting_on_both_paths() {
                 .await
                 .unwrap()
                 .id;
-            let (cookies, token) = csrf(&app, &admin_cookies, "/admin/content/comments").await;
+            let (cookies, fields) = moderation_form(&app, &admin_cookies).await;
             let response = app
                 .request_with_cookies(
                     Request::post(format!("/admin/content/comments/{held}/approve"))
                         .header("content-type", "application/x-www-form-urlencoded")
-                        .body(Body::from(format!(
-                            "_token={}",
-                            urlencoding::encode(&token)
-                        )))
+                        .body(Body::from(fields))
                         .unwrap(),
                     &cookies,
                 )
@@ -487,10 +502,13 @@ fn the_author_notice_follows_the_site_setting_on_both_paths() {
             page.contains("E-mail content authors about new comments"),
             "the setting is on the comment settings form"
         );
-        assert!(
-            page.contains(r#"name="notify_authors" value="1" class="form-checkbox" checked"#),
-            "and ticked while on"
-        );
+        // The checkbox's own tag, from `<input` to `>`: its hint now sits
+        // between its class and `checked`.
+        let at = page
+            .find(r#"name="notify_authors" value="1" class="form-checkbox""#)
+            .expect("the notify_authors checkbox");
+        let tag = &page[at..at + page[at..].find('>').expect("the tag ends")];
+        assert!(tag.contains(" checked"), "and ticked while on: {tag}");
         sink.stop().await;
     });
 }

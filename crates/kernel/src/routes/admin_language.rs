@@ -207,11 +207,12 @@ async fn save_settings(
         Ok(user) => user,
         Err(refusal) => return refusal,
     };
-    match admin_form::check(&state, &session, &user, &posted, SETTINGS_FORM_ID, vec![]).await {
-        Ok(()) => {}
-        Err(Ok(errors)) => return render_list(&state, &session, &user, &errors).await,
-        Err(Err(response)) => return response,
-    }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, SETTINGS_FORM_ID, vec![]).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => return render_list(&state, &session, &user, &errors).await,
+            Err(Err(response)) => return response,
+        };
     let on = posted.contains("prefix_default");
     if let Err(e) = SiteConfig::set(state.db(), PREFIX_DEFAULT_KEY, serde_json::json!(on)).await {
         tracing::error!(error = %e, "failed to save the default language prefix setting");
@@ -219,6 +220,7 @@ async fn save_settings(
     }
     tracing::info!(log_type = "config", user_id = %user.id, prefix_default = on, "language settings saved");
     languages_changed(&state).await;
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
     let _ = session
         .insert(FLASH_KEY, "The configuration options have been saved.")
         .await;
@@ -453,23 +455,24 @@ async fn add_submit(
         }
     }
     let action = format!("{BASE}/add");
-    match admin_form::check(&state, &session, &user, &posted, LANGUAGE_FORM_ID, errors).await {
-        Ok(()) => {}
-        Err(Ok(errors)) => {
-            let form = add_language_form(&values);
-            return render_form(
-                &state,
-                &user,
-                &session,
-                "Add language",
-                &action,
-                form,
-                &errors,
-            )
-            .await;
-        }
-        Err(Err(response)) => return response,
-    }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, LANGUAGE_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                let form = add_language_form(&values);
+                return render_form(
+                    &state,
+                    &user,
+                    &session,
+                    "Add language",
+                    &action,
+                    form,
+                    &errors,
+                )
+                .await;
+            }
+            Err(Err(response)) => return response,
+        };
     let input = CreateLanguage {
         id: code.clone(),
         label: label.clone(),
@@ -501,6 +504,7 @@ async fn add_submit(
     }
     tracing::info!(log_type = "config", user_id = %user.id, language = %code, "language added");
     languages_changed(&state).await;
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
     let _ = session
         .insert(FLASH_KEY, format!("The language {label} has been created."))
         .await;
@@ -575,23 +579,24 @@ async fn edit_submit(
     }
     let weight = parse_weight(&values[2], &mut errors);
     let action = format!("{BASE}/{code}/edit");
-    match admin_form::check(&state, &session, &user, &posted, LANGUAGE_FORM_ID, errors).await {
-        Ok(()) => {}
-        Err(Ok(errors)) => {
-            let form = edit_language_form(&code, &values);
-            return render_form(
-                &state,
-                &user,
-                &session,
-                "Edit language",
-                &action,
-                form,
-                &errors,
-            )
-            .await;
-        }
-        Err(Err(response)) => return response,
-    }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, LANGUAGE_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                let form = edit_language_form(&code, &values);
+                return render_form(
+                    &state,
+                    &user,
+                    &session,
+                    "Edit language",
+                    &action,
+                    form,
+                    &errors,
+                )
+                .await;
+            }
+            Err(Err(response)) => return response,
+        };
     let input = CreateLanguage {
         id: code.clone(),
         label: values[0].clone(),
@@ -617,6 +622,7 @@ async fn edit_submit(
     }
     tracing::info!(log_type = "config", user_id = %user.id, language = %code, "language saved");
     languages_changed(&state).await;
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
     let _ = session
         .insert(
             FLASH_KEY,
@@ -691,11 +697,14 @@ async fn delete_submit(
         Ok(language) => language,
         Err(response) => return response,
     };
-    match admin_form::check(&state, &session, &user, &posted, DELETE_FORM_ID, vec![]).await {
-        Ok(()) => {}
-        Err(Ok(errors)) => return render_delete(&state, &session, &user, &language, &errors).await,
-        Err(Err(response)) => return response,
-    }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, DELETE_FORM_ID, vec![]).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                return render_delete(&state, &session, &user, &language, &errors).await;
+            }
+            Err(Err(response)) => return response,
+        };
     // The model refuses the default language and a language anything is
     // written in, in the same transaction as the delete.
     if let Err(e) = Language::delete(state.db(), &code).await {
@@ -706,6 +715,7 @@ async fn delete_submit(
     }
     tracing::info!(log_type = "config", user_id = %user.id, language = %code, "language deleted");
     languages_changed(&state).await;
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
     let _ = session
         .insert(
             FLASH_KEY,

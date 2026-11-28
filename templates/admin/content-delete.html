@@ -1,0 +1,14 @@
+{% extends "page--admin.html" %}
+
+{#- Confirm deleting one item: what the content list's Delete link opens
+    (routes::admin_content::delete_content_form). `form` is the delete form,
+    its Cancel link back to the list beside the button. -#}
+
+{% block page_title %}{{ t(s="Delete {title}", title=item.title) }}{% endblock page_title %}
+
+{% block content %}
+<div class="admin-card">
+    <p>{{ t(s="Delete {title}? This cannot be undone.", title=item.title) }}</p>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+</div>
+{% endblock content %}

@@ -50,7 +50,7 @@
                     <a href="/admin/structure/categories/{{ cat.id }}/tags">{{ t(s="List tags in {name}", name=cat.label) }}</a>
                     {% if administers %}
                     <a href="/admin/structure/categories/{{ cat.id }}/edit">{{ t(s="Edit {name}", name=cat.label) }}</a>
-                    {{ list::delete_button(action="/admin/structure/categories/" ~ cat.id ~ "/delete", label=t(s="Delete {name}", name=cat.label), confirm_text=t(s="Are you sure you want to delete this category and all its tags?"), csrf_token=csrf_token) }}
+                    <a class="link-button link-button--danger" href="/admin/structure/categories/{{ cat.id }}/delete">{{ t(s="Delete {name}", name=cat.label) }}</a>
                     {% endif %}
                 </td>
             </tr>

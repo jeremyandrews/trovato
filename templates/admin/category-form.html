@@ -1,32 +1,11 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
-{% block page_title %}{% if editing %}{{ t(s="Edit category {name}", name=values.label | default(value="")) }}{% else %}{{ t(s="Add category") }}{% endif %}{% endblock page_title %}
+{% block page_title %}{% if editing %}{{ t(s="Edit category {name}", name=label) }}{% else %}{{ t(s="Add category") }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="A category is a vocabulary of tags for classifying content.") }}</p>{% endblock page_intro %}
 
 {% block content %}
-{% set errs = errors | default(value=[]) %}
 <div class="admin-card">
-    <form id="category-form" method="post" action="{{ action }}" novalidate>
-        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
-
-        {{ form::error_summary(errors=errs) }}
-
-        {{ form::field(name="label", label=t(s="Name"), value=values.label | default(value=""), hint=t(s="The human-readable name of this category."), required=true, errors=errs, width="30", attrs='data-machine-name-source="id"') }}
-
-        {{ form::field(name="id", label=t(s="Machine name"), value=values.id | default(value=""), hint=t(s="A unique machine-readable name. Can only contain lowercase letters, numbers, and underscores."), required=true, errors=errs, width="30", readonly=editing, attrs='pattern="[a-z][a-z0-9_]*" spellcheck="false" autocapitalize="none"') }}
-
-        {{ form::textarea(name="description", label=t(s="Description"), value=values.description | default(value=""), rows=3, errors=errs) }}
-
-        {% if values.hierarchy is defined and values.hierarchy %}{% set hierarchy = values.hierarchy %}{% else %}{% set hierarchy = "0" %}{% endif %}
-        {{ form::select(name="hierarchy", label=t(s="Hierarchy type"), options=hierarchy_options, value=hierarchy, translate_options=true, hint=t(s="Whether tags can have parent tags."), errors=errs) }}
-
-        {% if editing %}
-        {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/structure/categories") }}
-        {% else %}
-        {{ form::actions(submit_label=t(s="Create category"), cancel_url="/admin/structure/categories") }}
-        {% endif %}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 
 {# Machine name auto-generation handled by admin-helpers.js via data attributes on the label input #}

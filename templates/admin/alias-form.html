@@ -1,29 +1,10 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
-{% block page_title %}{% if editing %}{{ t(s="Edit URL alias {alias}", alias=values.alias | default(value="")) }}{% else %}{{ t(s="Add URL alias") }}{% endif %}{% endblock page_title %}
+{% block page_title %}{% if editing %}{{ t(s="Edit URL alias {alias}", alias=alias) }}{% else %}{{ t(s="Add URL alias") }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="A URL alias gives an item or page a readable address that visitors can use in place of its internal path.") }}</p>{% endblock page_intro %}
 
 {% block content %}
-{% set errs = errors | default(value=[]) %}
 <div class="admin-card">
-    <form id="alias-form" method="post" action="{{ action }}" novalidate>
-        {{ form::csrf(csrf_token=csrf_token) }}
-
-        {{ form::error_summary(errors=errs) }}
-
-        {{ form::field(name="source", label=t(s="Source path"), value=values.source | default(value=""), hint=t(s="The internal path (e.g., /item/uuid)"), required=true, errors=errs, width="30", attrs='spellcheck="false" autocapitalize="none"') }}
-
-        {{ form::field(name="alias", label=t(s="Alias path"), value=values.alias | default(value=""), hint=t(s="The human-readable URL (e.g., /about-us)"), required=true, errors=errs, width="30", attrs='spellcheck="false" autocapitalize="none"') }}
-
-        {% if values.language is defined and values.language %}{% set language = values.language %}{% else %}{% set language = "en" %}{% endif %}
-        {{ form::field(name="language", label=t(s="Language"), value=language, hint=t(s="Language code for this alias (e.g., en, es, fr)"), errors=errs, width="10", attrs='spellcheck="false" autocapitalize="none"') }}
-
-        {% if editing %}
-        {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/structure/aliases") }}
-        {% else %}
-        {{ form::actions(submit_label=t(s="Create alias"), cancel_url="/admin/structure/aliases") }}
-        {% endif %}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}

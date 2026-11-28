@@ -238,15 +238,8 @@ async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-fn csrf_from(html: &str) -> String {
-    let needle = r#"name="_token" value=""#;
-    let start = html
-        .find(needle)
-        .map(|i| i + needle.len())
-        .expect("a CSRF token");
-    let end = html[start..].find('"').expect("token terminated");
-    html[start..start + end].to_string()
-}
+/// The tile form's id (`routes::tile_admin`).
+const TILE_FORM_ID: &str = "tile_form";
 
 /// Submit the add-tile form for a `custom_html` tile, `audience` as chosen
 /// ("", "anonymous" or "authenticated").
@@ -265,9 +258,8 @@ async fn submit_tile_form(
         )
         .await;
     assert_eq!(form_page.status(), StatusCode::OK);
-    let token = csrf_from(&body_text(form_page).await);
+    let pipeline = common::form_fields(&body_text(form_page).await, TILE_FORM_ID);
     let fields = [
-        ("_token", token.as_str()),
         ("machine_name", machine_name),
         ("label", "Audience form tile"),
         ("region", "sidebar"),
@@ -277,9 +269,12 @@ async fn submit_tile_form(
         ("weight", "0"),
         ("audience", audience),
     ];
-    let body = fields
-        .iter()
-        .map(|(k, v)| format!("{k}={}", urlencoding::encode(v)))
+    let body = std::iter::once(pipeline)
+        .chain(
+            fields
+                .iter()
+                .map(|(k, v)| format!("{k}={}", urlencoding::encode(v))),
+        )
         .collect::<Vec<_>>()
         .join("&");
     app.request_with_cookies(
@@ -371,8 +366,17 @@ fn the_tile_form_refuses_an_unknown_audience_value() {
         let response = submit_tile_form(app, &cookies, &machine, "everyone-but-tuesdays").await;
         assert_eq!(
             response.status(),
-            StatusCode::BAD_REQUEST,
-            "an error page, not a redirect"
+            StatusCode::OK,
+            "the form again, not a redirect"
+        );
+        let html = body_text(response).await;
+        let form = common::form_in(&html, TILE_FORM_ID).expect("the tile form again");
+        let select = &form[form.find(r#"id="audience""#).expect("the audience select")..];
+        let select = &select[..select.find('>').unwrap()];
+        assert!(select.contains(r#"aria-invalid="true""#), "{select}");
+        assert!(
+            form.contains("Show to must be Everyone"),
+            "the refusal says why: {form}"
         );
 
         let stored: Option<Uuid> =
@@ -409,9 +413,8 @@ fn editing_the_audience_preserves_an_existing_paths_rule() {
                 &cookies,
             )
             .await;
-        let token = csrf_from(&body_text(edit_page).await);
+        let pipeline = common::form_fields(&body_text(edit_page).await, TILE_FORM_ID);
         let fields = [
-            ("_token", token.as_str()),
             ("machine_name", machine.as_str()),
             ("label", "Audience form tile"),
             ("region", "sidebar"),
@@ -421,9 +424,12 @@ fn editing_the_audience_preserves_an_existing_paths_rule() {
             ("weight", "0"),
             ("audience", "authenticated"),
         ];
-        let body = fields
-            .iter()
-            .map(|(k, v)| format!("{k}={}", urlencoding::encode(v)))
+        let body = std::iter::once(pipeline)
+            .chain(
+                fields
+                    .iter()
+                    .map(|(k, v)| format!("{k}={}", urlencoding::encode(v))),
+            )
             .collect::<Vec<_>>()
             .join("&");
         let response = app
@@ -498,5 +504,158 @@ fn updating_a_tiles_audience_preserves_its_other_visibility_rules() {
                 .expect("read tile");
         assert_eq!(stored["audience"], serde_json::json!("authenticated"));
         assert_eq!(stored["paths"], serde_json::json!(["/conferences*"]));
+    });
+}
+
+// -----------------------------------------------------------------------------
+// B83c: the tile screens on the form pipeline (`routes::tile_admin`): the add
+// and edit form `tile_form`, and the delete confirmation `tile_delete_form`
+// the listing's Delete links open.
+// -----------------------------------------------------------------------------
+
+/// The delete confirmation's form id (`routes::tile_admin`).
+const TILE_DELETE_FORM_ID: &str = "tile_delete_form";
+
+async fn get_page(app: &TestApp, cookies: &str, uri: &str) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(Request::get(uri).body(Body::empty()).unwrap(), cookies)
+        .await;
+    let status = response.status();
+    (status, body_text(response).await)
+}
+
+async fn post_page(app: &TestApp, cookies: &str, uri: &str, body: String) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::post(uri)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, body_text(response).await)
+}
+
+#[test]
+fn b83c_the_tile_form_is_a_pipeline_form_and_refuses_a_post_without_its_build_id() {
+    run_test(async {
+        let app = shared_app().await;
+        let cookies = admin_session(app).await;
+
+        let (status, html) = get_page(app, &cookies, "/admin/structure/tiles/add").await;
+        assert_eq!(status, StatusCode::OK);
+        let form = common::form_in(&html, TILE_FORM_ID).expect("the add form is the pipeline form");
+        // With no audience stored, Show to starts at Everyone (B174).
+        assert!(
+            form.contains(r#"<option value="" selected>"#) && form.contains("Everyone</option>"),
+            "{form}"
+        );
+        // admin-helpers.js shows one type's settings by these ids.
+        for id in [
+            r#"id="tile_type""#,
+            r#"id="fields-custom_html""#,
+            r#"id="fields-menu""#,
+            r#"id="fields-gather_query""#,
+            r#"id="fields-chat""#,
+        ] {
+            assert!(form.contains(id), "{id}: {form}");
+        }
+
+        let machine = format!("b83c_tile_{}", stamp());
+        forget_tile(app, &machine);
+        let token = common::input_value_in(form, "_token").expect("a token");
+        let body = format!(
+            "_token={}&machine_name={machine}&label=B83c&region=sidebar&tile_type=custom_html&body=b&format=plain_text&weight=0",
+            urlencoding::encode(&token)
+        );
+        let (status, text) = post_page(app, &cookies, "/admin/structure/tiles/add", body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("The form has expired"), "{text}");
+        let stored: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM tile WHERE machine_name = $1")
+                .bind(&machine)
+                .fetch_optional(&app.db)
+                .await
+                .unwrap();
+        assert!(stored.is_none(), "an expired form saves nothing");
+    });
+}
+
+#[test]
+fn b83c_the_tile_form_shows_a_bad_machine_name_on_its_field() {
+    run_test(async {
+        let app = shared_app().await;
+        let cookies = admin_session(app).await;
+        let (_, html) = get_page(app, &cookies, "/admin/structure/tiles/add").await;
+        let body = format!(
+            "{}&machine_name=Not%20Valid&label=B83c&region=sidebar&tile_type=custom_html&body=b&format=plain_text&weight=0",
+            common::form_fields(&html, TILE_FORM_ID)
+        );
+        let (status, html) = post_page(app, &cookies, "/admin/structure/tiles/add", body).await;
+        assert_eq!(status, StatusCode::OK, "the form again: {html}");
+        let form = common::form_in(&html, TILE_FORM_ID).expect("the tile form again");
+        let field = &form[form.find(r#"id="machine_name""#).expect("the field")..];
+        let field = &field[..field.find('>').unwrap()];
+        assert!(field.contains(r#"aria-invalid="true""#), "{field}");
+        assert!(
+            field.contains(r#"value="Not Valid""#),
+            "the value typed is kept: {field}"
+        );
+        assert!(form.contains("Invalid machine name."), "{form}");
+    });
+}
+
+#[test]
+fn b83c_a_tile_is_deleted_through_its_confirmation_form() {
+    run_test(async {
+        let app = shared_app().await;
+        let cookies = admin_session(app).await;
+        let machine = format!("b83c_del_{}", stamp());
+        let id = tile(app, &machine, serde_json::json!({})).await;
+        let delete = format!("/admin/structure/tiles/{id}/delete");
+
+        let (_, list) = get_page(
+            app,
+            &cookies,
+            &format!("/admin/structure/tiles?q={machine}"),
+        )
+        .await;
+        assert!(
+            list.contains(&format!(
+                r#"<a class="link-button link-button--danger" href="{delete}">"#
+            )),
+            "the listing links to the confirmation: {list}"
+        );
+
+        let (status, page) = get_page(app, &cookies, &delete).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(page.contains("Delete this tile?"), "{page}");
+        let form = common::form_in(&page, TILE_DELETE_FORM_ID).expect("the delete form");
+        assert!(form.contains("button--danger"), "{form}");
+
+        // Without its build id the post is refused and the tile stays.
+        let token = common::input_value_in(form, "_token").expect("a token");
+        let (status, _) = post_page(
+            app,
+            &cookies,
+            &delete,
+            format!("_token={}", urlencoding::encode(&token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(Tile::find_by_id(&app.db, id).await.unwrap().is_some());
+
+        let (_, page) = get_page(app, &cookies, &delete).await;
+        let (status, _) = post_page(
+            app,
+            &cookies,
+            &delete,
+            common::form_fields(&page, TILE_DELETE_FORM_ID),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert!(Tile::find_by_id(&app.db, id).await.unwrap().is_none());
     });
 }

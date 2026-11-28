@@ -591,3 +591,276 @@ fn a_published_comment_is_still_readable_by_id() {
         set_default_status(app, None).await;
     });
 }
+
+// =============================================================================
+// B83c: the comment admin forms on the form pipeline: the moderation list's
+// row actions and settings (`/admin/content/comments`), the edit form
+// (`/admin/content/comments/{id}/edit`) and the delete confirmation
+// (`/admin/content/comments/{id}/delete`)
+// =============================================================================
+
+/// GET `uri`: the session cookies to go on with and the page.
+async fn admin_page(app: &TestApp, cookies: &str, uri: &str) -> (String, String) {
+    let response = app
+        .request_with_cookies(Request::get(uri).body(Body::empty()).unwrap(), cookies)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK, "GET {uri}");
+    let fresh = extract_cookies(&response);
+    let cookies = if fresh.is_empty() {
+        cookies.to_string()
+    } else {
+        fresh
+    };
+    let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .expect("read body");
+    (cookies, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// POST `body` to `uri` as a form: the status and the page.
+async fn admin_post(app: &TestApp, cookies: &str, uri: &str, body: String) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::post(uri)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .expect("read body");
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// `_token=…` alone for the form `form_id` on `html`: a submission without
+/// its build id.
+fn token_only(html: &str, form_id: &str) -> String {
+    let form = common::form_in(html, form_id).expect("the form");
+    let token = common::input_value_in(form, "_token").expect("a token");
+    format!("_token={}", urlencoding::encode(&token))
+}
+
+/// An administrator's cookies and a held comment to act on.
+async fn admin_and_comment(app: &TestApp) -> (String, Uuid) {
+    ensure_item_type(app).await;
+    let name = format!("b83c_mod_{}", Uuid::now_v7().simple());
+    let cookies = app
+        .create_and_login_admin(&name, "test-password-123", &format!("{name}@example.com"))
+        .await;
+    let item_id = create_item(app, Uuid::nil()).await;
+    let comment = app
+        .state
+        .comments()
+        .create(
+            trovato_kernel::models::CreateComment {
+                item_id,
+                parent_id: None,
+                author_id: Uuid::nil(),
+                subject: Some(format!("B83c subject {}", Uuid::now_v7().simple())),
+                body: "B83c body".to_string(),
+                body_format: None,
+                status: Some(CommentStatus::Pending.as_i16()),
+            },
+            &admin(),
+        )
+        .await
+        .expect("create comment");
+    (cookies, comment.id)
+}
+
+async fn stored_status(app: &TestApp, id: Uuid) -> Option<i16> {
+    sqlx::query_scalar("SELECT status FROM comment WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&app.db)
+        .await
+        .expect("read comment")
+}
+
+/// The list's row buttons belong to one pipeline form; the settings form is
+/// one too, and shows an unknown default status as an error on its field.
+#[test]
+fn the_moderation_list_forms_are_pipeline_forms() {
+    run_test(async {
+        let app = shared_app().await;
+        common::hold_until_cleanup(DEFAULT_STATUS.lock().await);
+        let (cookies, id) = admin_and_comment(app).await;
+
+        let (cookies, list) = admin_page(app, &cookies, "/admin/content/comments").await;
+        assert!(common::form_in(&list, "comment_actions_form").is_some());
+        assert!(list.contains(&format!(
+            r#"form="comment_actions_form" formaction="/admin/content/comments/{id}/approve""#
+        )));
+        assert!(list.contains(&format!(r#"href="/admin/content/comments/{id}/delete""#)));
+        assert!(common::form_in(&list, "comment_settings_form").is_some());
+
+        let approve = format!("/admin/content/comments/{id}/approve");
+        let (status, text) = admin_post(
+            app,
+            &cookies,
+            &approve,
+            token_only(&list, "comment_actions_form"),
+        )
+        .await;
+        assert_ne!(status, StatusCode::SEE_OTHER);
+        assert!(text.contains("The form has expired"), "{text}");
+        assert_eq!(
+            stored_status(app, id).await,
+            Some(CommentStatus::Pending.as_i16())
+        );
+
+        // Each token is single use: the refused post spent this one.
+        let (cookies, list) = admin_page(app, &cookies, "/admin/content/comments").await;
+        let (status, _) = admin_post(
+            app,
+            &cookies,
+            &approve,
+            common::form_fields(&list, "comment_actions_form"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            stored_status(app, id).await,
+            Some(CommentStatus::Published.as_i16())
+        );
+
+        let (cookies, list) = admin_page(app, &cookies, "/admin/content/comments").await;
+        let settings = "/admin/content/comments/settings";
+        let (status, text) = admin_post(
+            app,
+            &cookies,
+            settings,
+            format!(
+                "{}&default_status=pending",
+                token_only(&list, "comment_settings_form")
+            ),
+        )
+        .await;
+        assert_ne!(status, StatusCode::SEE_OTHER);
+        assert!(text.contains("The form has expired"), "{text}");
+
+        let (cookies, list) = admin_page(app, &cookies, "/admin/content/comments").await;
+        let (status, text) = admin_post(
+            app,
+            &cookies,
+            settings,
+            format!(
+                "{}&default_status=sometimes",
+                common::form_fields(&list, "comment_settings_form")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let form = common::form_in(&text, "comment_settings_form").expect("the form, again");
+        assert!(form.contains(r#"aria-invalid="true""#), "{form}");
+        assert!(form.contains("Unknown comment status"));
+    });
+}
+
+/// The edit form is a pipeline form: without its build id it is refused, and
+/// an over long subject is shown on its field with nothing saved.
+#[test]
+fn the_comment_edit_form_is_a_pipeline_form() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, id) = admin_and_comment(app).await;
+        let uri = format!("/admin/content/comments/{id}/edit");
+
+        let (cookies, page) = admin_page(app, &cookies, &uri).await;
+        let form = common::form_in(&page, "comment_edit_form").expect("the pipeline form");
+        assert!(form.contains("B83c body"));
+        assert!(form.contains(r#"href="/admin/content/comments""#), "Cancel");
+
+        let (status, text) = admin_post(
+            app,
+            &cookies,
+            &uri,
+            format!(
+                "{}&body=Changed&status=1",
+                token_only(&page, "comment_edit_form")
+            ),
+        )
+        .await;
+        assert_ne!(status, StatusCode::SEE_OTHER);
+        assert!(text.contains("The form has expired"), "{text}");
+
+        let (cookies, page) = admin_page(app, &cookies, &uri).await;
+        let (status, text) = admin_post(
+            app,
+            &cookies,
+            &uri,
+            format!(
+                "{}&subject={}&body=Changed&status=1",
+                common::form_fields(&page, "comment_edit_form"),
+                "s".repeat(256)
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let form = common::form_in(&text, "comment_edit_form").expect("the form, again");
+        assert!(form.contains(r#"aria-invalid="true""#), "{form}");
+        assert!(form.contains("Subject cannot exceed 255 characters"));
+        assert!(form.contains("Changed"), "what was typed is kept");
+        assert_eq!(
+            stored_status(app, id).await,
+            Some(CommentStatus::Pending.as_i16()),
+            "nothing is saved"
+        );
+
+        let (cookies, page) = admin_page(app, &cookies, &uri).await;
+        let (status, _) = admin_post(
+            app,
+            &cookies,
+            &uri,
+            format!(
+                "{}&subject=&body=Changed&status=1",
+                common::form_fields(&page, "comment_edit_form")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            stored_status(app, id).await,
+            Some(CommentStatus::Published.as_i16())
+        );
+    });
+}
+
+/// A comment is deleted from its confirmation page's pipeline form.
+#[test]
+fn a_comment_is_deleted_from_its_confirmation_page() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, id) = admin_and_comment(app).await;
+        let uri = format!("/admin/content/comments/{id}/delete");
+
+        let (cookies, page) = admin_page(app, &cookies, &uri).await;
+        let form = common::form_in(&page, "comment_delete_form").expect("the delete form");
+        assert!(form.contains("button--danger"));
+        assert!(page.contains("Are you sure you want to delete this comment?"));
+
+        let (status, text) = admin_post(
+            app,
+            &cookies,
+            &uri,
+            token_only(&page, "comment_delete_form"),
+        )
+        .await;
+        assert_ne!(status, StatusCode::SEE_OTHER);
+        assert!(text.contains("The form has expired"), "{text}");
+        assert!(stored_status(app, id).await.is_some());
+
+        let (cookies, page) = admin_page(app, &cookies, &uri).await;
+        let (status, _) = admin_post(
+            app,
+            &cookies,
+            &uri,
+            common::form_fields(&page, "comment_delete_form"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(stored_status(app, id).await, None);
+    });
+}

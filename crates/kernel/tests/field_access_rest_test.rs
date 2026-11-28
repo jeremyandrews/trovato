@@ -409,13 +409,6 @@ async fn revision_ids(app: &common::TestApp, id: Uuid) -> Vec<Uuid> {
         .expect("read revision ids")
 }
 
-/// Pull the value of the `_token` input out of a rendered page.
-fn form_token(html: &str) -> String {
-    let marker = "name=\"_token\" value=\"";
-    let start = html.find(marker).expect("a form token on the page") + marker.len();
-    html[start..].split('"').next().expect("token").to_string()
-}
-
 const EDITOR_PERMS: &[&str] = &["view any content", "edit any content"];
 
 #[test]
@@ -508,15 +501,22 @@ fn an_editor_reads_who_changed_it_previews_compares_and_reverts() {
             );
         }
 
-        // Revert to the first, with the form token the history page carries.
+        // Revert to the first, with the revert form the history page carries:
+        // each row's Revert button joins it and names its own revision.
         let (_, html) = get_as(app, &history, &cookies, "revhist-editor").await;
-        let token = form_token(&html);
+        assert!(
+            html.contains(&format!(
+                r#"form="revision_revert_form" formaction="/item/{id}/revert/{first}""#
+            )),
+            "the first revision's Revert joins the revert form"
+        );
+        let fields = common::form_fields(&html, "revision_revert_form");
         let response = app
             .request_with_cookies(
                 Request::post(format!("/item/{id}/revert/{first}"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("x-forwarded-for", common::test_ip_for("revhist-editor"))
-                    .body(Body::from(format!("_token={token}")))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &cookies,
             )
