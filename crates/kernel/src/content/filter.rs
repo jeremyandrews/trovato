@@ -320,7 +320,9 @@ const TRUSTED_STYLE_PROPERTIES: &[&str] = &[
 /// Substrings that make a `style` declaration's value dangerous no matter
 /// which allowlisted property carries it: ammonia's `filter_style_properties`
 /// only filters by property name, so this is the value-level backstop
-/// (checked case-insensitively).
+/// (checked case-insensitively, and with internal whitespace removed first so
+/// `url (...)` or `javascript :` cannot dodge the check by splitting the
+/// keyword from its delimiter).
 const DANGEROUS_STYLE_VALUE_PATTERNS: &[&str] = &["url(", "expression(", "javascript:", "\\", "/*"];
 
 /// Drops any declaration from a `style` attribute value whose value contains
@@ -336,10 +338,14 @@ fn strip_dangerous_style_values(value: &str) -> String {
         .filter(|decl| !decl.is_empty())
         .filter(|decl| {
             let value_part = decl.split_once(':').map_or(*decl, |(_, v)| v);
-            let lower = value_part.to_ascii_lowercase();
+            let normalized: String = value_part
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .flat_map(char::to_lowercase)
+                .collect();
             !DANGEROUS_STYLE_VALUE_PATTERNS
                 .iter()
-                .any(|pattern| lower.contains(pattern))
+                .any(|pattern| normalized.contains(pattern))
         })
         .collect::<Vec<_>>()
         .join("; ")
@@ -378,8 +384,6 @@ static TRUSTED_HTML_BUILDER: std::sync::LazyLock<ammonia::Builder<'static>> =
                 "table",
                 ["border", "cellpadding", "cellspacing", "width", "bgcolor"],
             )
-            .add_tag_attributes("td", ["valign", "width", "height", "bgcolor", "nowrap"])
-            .add_tag_attributes("th", ["valign", "width", "height", "bgcolor", "nowrap"])
             .filter_style_properties(TRUSTED_STYLE_PROPERTIES.iter().copied().collect())
             .attribute_filter(|_element, attribute, value| {
                 if attribute == "style" {
@@ -389,6 +393,9 @@ static TRUSTED_HTML_BUILDER: std::sync::LazyLock<ammonia::Builder<'static>> =
                 }
             })
             .link_rel(Some("noopener noreferrer"));
+        for tag in ["td", "th"] {
+            builder.add_tag_attributes(tag, ["valign", "width", "height", "bgcolor", "nowrap"]);
+        }
         builder
     });
 
@@ -1006,7 +1013,7 @@ mod tests {
         assert!(img.contains(r#"align="left""#));
 
         let table = filter.process(
-            r#"<table border="1" cellpadding="2" cellspacing="3" width="100%" align="center" bgcolor="white"><tr><td align="left" valign="top" width="50" height="20" bgcolor="silver" nowrap style="color: red; text-align: center">Cell</td></tr></table>"#,
+            r#"<table border="1" cellpadding="2" cellspacing="3" width="100%" align="center" bgcolor="white"><tr><th valign="middle" width="30" height="15" bgcolor="gray" nowrap>Head</th><td align="left" valign="top" width="50" height="20" bgcolor="silver" nowrap style="color: red; text-align: center">Cell</td></tr></table>"#,
         );
         assert!(table.contains(r#"border="1""#));
         assert!(table.contains(r#"cellpadding="2""#));
@@ -1014,12 +1021,35 @@ mod tests {
         assert!(table.contains(r#"width="100%""#));
         assert!(table.contains(r#"align="center""#));
         assert!(table.contains(r#"bgcolor="white""#));
-        assert!(table.contains(r#"valign="top""#));
-        assert!(table.contains(r#"height="20""#));
-        assert!(table.contains(r#"bgcolor="silver""#));
+        assert!(table.contains(r#"valign="middle""#), "th valign: {table}");
+        assert!(table.contains(r#"width="30""#), "th width: {table}");
+        assert!(table.contains(r#"height="15""#), "th height: {table}");
+        assert!(table.contains(r#"bgcolor="gray""#), "th bgcolor: {table}");
+        assert!(table.contains(r#"valign="top""#), "td valign: {table}");
+        assert!(table.contains(r#"width="50""#), "td width: {table}");
+        assert!(table.contains(r#"height="20""#), "td height: {table}");
+        assert!(table.contains(r#"bgcolor="silver""#), "td bgcolor: {table}");
         assert!(table.contains("nowrap"));
         assert!(table.contains("color:red"));
         assert!(table.contains("text-align:center"));
+    }
+
+    // B308: an empty style attribute is harmless and does not panic
+    #[test]
+    fn trusted_html_keeps_empty_style_attribute() {
+        let filter = TrustedHtmlFilter;
+        let output = filter.process(r#"<p style="">Text</p>"#);
+        assert!(output.contains("Text"));
+    }
+
+    // B308: a declaration with only whitespace between `url` and `(` is still
+    // caught by the value backstop, not just an exact `url(` substring
+    #[test]
+    fn strip_dangerous_style_values_catches_whitespace_obfuscation() {
+        let output = strip_dangerous_style_values("color: url (evil.png)");
+        assert_eq!(output, "");
+        let output = strip_dangerous_style_values("color: javascript : alert(1)");
+        assert_eq!(output, "");
     }
 
     // SECURITY REGRESSION TEST — B151: every on* handler is stripped

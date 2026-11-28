@@ -170,7 +170,7 @@ fn a_full_html_body_renders_cleaned_on_the_item_page() {
 /// hold: a coloured interview question, a named anchor, a table laid out
 /// with presentation attributes and an inline `style`, plus a dangerous
 /// style value riding along on an otherwise allowlisted property.
-const LEGACY_PAYLOAD: &str = r#"<font color="red" face="Arial" size="4">Q:</font> <a name="q1">anchor</a><table border="1" cellpadding="2" cellspacing="3" width="100%" bgcolor="white"><tr><td align="left" valign="top" bgcolor="silver" nowrap style="color: red; text-align: center; position: fixed; background: url(javascript:alert(1))">Cell</td></tr></table>"#;
+const LEGACY_PAYLOAD: &str = r#"<font color="red" face="Arial" size="4">Q:</font> <a name="q1">anchor</a><table border="1" cellpadding="2" cellspacing="3" width="100%" bgcolor="white"><tr><td align="left" valign="top" bgcolor="silver" nowrap style="color: red; text-align: center; position: fixed; text-decoration: url(javascript:alert(1))">Cell</td></tr></table>"#;
 
 // B308: legacy presentational markup survives full_html end to end, and a
 // dangerous style value is still stripped even riding on a safe property.
@@ -216,7 +216,10 @@ fn a_full_html_body_keeps_legacy_markup_and_safe_style() {
             "style text-align: {html}"
         );
         assert!(!html.contains("position"), "position survived: {html}");
-        assert!(!html.contains("background"), "background survived: {html}");
+        assert!(
+            !html.contains("text-decoration"),
+            "dangerous-value declaration survived: {html}"
+        );
         assert!(!html.contains("url("), "url( survived: {html}");
         assert!(
             !html.contains("javascript:"),
