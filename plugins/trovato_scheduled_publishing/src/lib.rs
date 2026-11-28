@@ -240,8 +240,8 @@ fn date(fields: Option<&serde_json::Value>, field: &str) -> Option<i64> {
     as_unix_seconds(fields?.get(field)?)
 }
 
-/// [`date`], out of [`host::get_item`]'s typed `Item` (its `fields` is
-/// already a map, not a `Value`).
+/// [`date`], out of a `fields` map ([`read_item`]'s shape), rather than a
+/// `serde_json::Value` object.
 fn item_date(fields: &std::collections::HashMap<String, serde_json::Value>, field: &str) -> Option<i64> {
     as_unix_seconds(fields.get(field)?)
 }
@@ -383,12 +383,18 @@ pub fn tap_timer(input: TimerInput) -> serde_json::Value {
 // through `tap_form_alter` under a name no type declares never reaches
 // `item.fields` that way. Taking the values from `tap_form_submit` instead
 // (posted, after the save, filtered to what the form rendered rather than to
-// the type's schema) and writing them with the same single-key raw SQL merge
-// this plugin's own `RESTORE_PUBLISH`/`RESTORE_UNPUBLISH` already use avoids
-// that gap with no kernel change: `host::save_item` with a partial `fields`
-// object would have silently wiped every other field (`gate_field_writes`
-// starts from the *submitted* object, not the stored one), which is why that
-// is not what this does.
+// the type's schema) and writing them through `host::save_item`, with no
+// kernel change, closes that gap — but only with the item's *complete*
+// current `fields`, read once just before the write and changed in just the
+// two schedule keys: `host::save_item` with a *partial* `fields` object would
+// silently wipe every other field (`gate_field_writes` starts from the
+// *submitted* object, not the stored one). A single-key raw SQL merge (this
+// plugin's own cron path uses one, for its claim-and-restore dance) would
+// dodge that trap too, but would not invalidate the item cache the way a real
+// `ItemService` write does, so a raw-written date would not reliably show
+// back on the edit form, or reach `tap_item_update`'s `sync_timers`, until
+// some unrelated save happened to refresh it — `tap_form_submit`, below, has
+// the detail.
 //
 // The one kernel seam this needed: `tap_form_validate`'s dispatched input
 // gained `item_id` (it carried only `form_id`/`values`), and a new
@@ -447,30 +453,55 @@ fn item_id_from_action(action: &str) -> Option<String> {
     is_uuid(candidate).then(|| candidate.to_string())
 }
 
-/// The signed-in user's time zone: `users.timezone`, checked against
-/// Postgres, else UTC when it is empty or Postgres does not know it. No
-/// site-wide default time zone exists in this codebase to fall back to
-/// first. Mirrors `routes/admin_timers.rs`'s `viewer_zone` (B278), from
-/// inside a plugin rather than the kernel.
+/// One item's `fields` and `status`, read straight off the `item` table
+/// (`host::query_raw`), not through `host::get_item`.
+///
+/// `host::get_item` decides the call as the acting user and answers a
+/// denied **view** the same as a missing item — but an editor often holds
+/// `edit` on their own unpublished draft without separately holding `view
+/// own unpublished content`, a different permission axis, and every caller
+/// here (`tap_form_alter`, `tap_form_validate`, `tap_form_submit`) only ever
+/// reads an item the kernel's own route has *already* decided this request
+/// may edit (the form would not have built, or the save would not have
+/// happened, otherwise). Reading past `get_item`'s view gate is therefore not
+/// a new read this user was not already allowed, and the alternative —
+/// `get_item` wrongly answering "no such item" for the very item being
+/// edited — would hide an already-stored schedule from the reopened form,
+/// mis-score "already published" in validation, and silently drop a write in
+/// `tap_form_submit`. `item` is not a protected table (`db_policy.rs`), so
+/// `query_raw` carries it.
+fn read_item(item_id: &str) -> Option<(std::collections::HashMap<String, serde_json::Value>, i64)> {
+    let json = host::query_raw(
+        "SELECT fields, status FROM item WHERE id = $1::uuid",
+        &[serde_json::json!(item_id)],
+    )
+    .ok()?;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&json).ok()?;
+    let row = rows.first()?;
+    let fields = serde_json::from_value(row.get("fields")?.clone()).ok()?;
+    let status = row.get("status")?.as_i64()?;
+    Some((fields, status))
+}
+
+/// The signed-in user's time zone: `host::load_users` (`users` is a
+/// protected table, off limits to `query_raw` — see
+/// `crates/kernel/src/plugin/db_policy.rs`'s `PROTECTED_TABLES` — so this is
+/// the one sanctioned way to read it), checked against Postgres, else UTC
+/// when it is unset or empty or Postgres does not know it. No site-wide
+/// default time zone exists in this codebase to fall back to first. The
+/// Postgres check mirrors `routes/admin_timers.rs`'s `viewer_zone` (B278),
+/// from inside a plugin rather than the kernel.
 fn viewer_zone() -> String {
     let uid = host::current_user_id();
     if uid.is_empty() {
         return "UTC".to_string();
     }
-    let zone = host::query_raw(
-        "SELECT timezone FROM users WHERE id = $1::uuid",
-        &[serde_json::json!(uid)],
-    )
-    .ok()
-    .and_then(|json| serde_json::from_str::<Vec<serde_json::Value>>(&json).ok())
-    .and_then(|rows| rows.into_iter().next())
-    .and_then(|row| {
-        row.get("timezone")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-    })
-    .map(|z| z.trim().to_string())
-    .filter(|z| !z.is_empty());
+    let zone = host::load_users(&[uid.as_str()])
+        .ok()
+        .and_then(|users| users.into_iter().next())
+        .and_then(|u| u.timezone)
+        .map(|z| z.trim().to_string())
+        .filter(|z| !z.is_empty());
     let Some(zone) = zone else {
         return "UTC".to_string();
     };
@@ -828,8 +859,8 @@ pub fn tap_form_alter(mut form: serde_json::Value) -> serde_json::Value {
         .unwrap_or_default()
         .to_string();
     let existing_fields = item_id_from_action(&action)
-        .and_then(|id| host::get_item(&id).ok().flatten())
-        .map(|item| item.fields);
+        .and_then(|id| read_item(&id))
+        .map(|(fields, _status)| fields);
     let stored_publish = existing_fields
         .as_ref()
         .and_then(|f| item_date(f, "field_publish_on"));
@@ -898,14 +929,14 @@ pub fn tap_form_validate(input: serde_json::Value) -> serde_json::Value {
     }
 
     let item_id = input.get("item_id").and_then(|v| v.as_str());
-    let existing = item_id.and_then(|id| host::get_item(id).ok().flatten());
-    let current_status = existing.as_ref().map_or(0, |i| i64::from(i.status));
+    let existing = item_id.and_then(read_item);
+    let current_status = existing.as_ref().map_or(0, |(_, status)| *status);
     let stored_publish = existing
         .as_ref()
-        .and_then(|i| item_date(&i.fields, "field_publish_on"));
+        .and_then(|(fields, _)| item_date(fields, "field_publish_on"));
     let stored_unpublish = existing
         .as_ref()
-        .and_then(|i| item_date(&i.fields, "field_unpublish_on"));
+        .and_then(|(fields, _)| item_date(fields, "field_unpublish_on"));
 
     let zone = (!is_json).then(viewer_zone);
     let publish = resolve(raw_publish.as_ref(), zone.as_deref());
@@ -931,46 +962,22 @@ pub fn tap_form_validate(input: serde_json::Value) -> serde_json::Value {
     serde_json::json!({"errors": out})
 }
 
-/// Set or clear one stored schedule key, by the single-key raw SQL merge
-/// this plugin's own `RESTORE_PUBLISH`/`RESTORE_UNPUBLISH` already use —
-/// never `host::save_item` with a partial `fields` object, which would wipe
-/// every other field the item holds (see the module doc, above).
-fn write_schedule_field(item_id: &str, field: &'static str, resolved: &Resolved) {
-    let written = match resolved {
-        Resolved::At(secs) => host::execute_raw(
-            match field {
-                "field_publish_on" => {
-                    "UPDATE item SET fields = fields || jsonb_build_object('field_publish_on', \
-                     $2::bigint) WHERE id = $1::uuid"
-                }
-                _ => {
-                    "UPDATE item SET fields = fields || jsonb_build_object('field_unpublish_on', \
-                     $2::bigint) WHERE id = $1::uuid"
-                }
-            },
-            &[serde_json::json!(item_id), serde_json::json!(secs)],
-        ),
-        Resolved::Clear => host::execute_raw(
-            match field {
-                "field_publish_on" => "UPDATE item SET fields = fields - 'field_publish_on' \
-                                        WHERE id = $1::uuid",
-                _ => "UPDATE item SET fields = fields - 'field_unpublish_on' WHERE id = $1::uuid",
-            },
-            &[serde_json::json!(item_id)],
-        ),
-        // Unset: this input was not rendered (no permission) or not named
-        // (the JSON path, which did not touch it): leave the stored value
-        // exactly as it is. Gap/Unreadable: `tap_form_validate` already
-        // refused this before the save could happen; reaching here with one
-        // would be a defect elsewhere, not something to write.
-        Resolved::Unset | Resolved::Gap | Resolved::Unreadable => return,
-    };
-    if let Err(code) = written {
-        host::log(
-            "error",
-            "trovato_scheduled_publishing",
-            &format!("could not write {field} on item {item_id}: host error {code}"),
-        );
+/// Apply one resolved schedule value to a clone of the item's current
+/// `fields`: set it, clear it, or (`Unset`/`Gap`/`Unreadable`) leave it
+/// exactly as it is.
+fn apply_resolved(
+    fields: &mut std::collections::HashMap<String, serde_json::Value>,
+    key: &'static str,
+    resolved: &Resolved,
+) {
+    match resolved {
+        Resolved::At(secs) => {
+            fields.insert(key.to_string(), serde_json::json!(secs));
+        }
+        Resolved::Clear => {
+            fields.remove(key);
+        }
+        Resolved::Unset | Resolved::Gap | Resolved::Unreadable => {}
     }
 }
 
@@ -978,14 +985,28 @@ fn write_schedule_field(item_id: &str, field: &'static str, resolved: &Resolved)
 /// JSON item API needs no help — its own `field_publish_on`/`field_unpublish_on`
 /// are ordinary, if undeclared, keys in the `fields` object it already sends
 /// whole, so they are stored like any other field with no plugin
-/// involvement), then re-sync the item's timers.
+/// involvement).
 ///
 /// `tap_item_insert`/`tap_item_update` already ran earlier in this same save,
 /// against the item as it was *before* these dates existed on it (the form
 /// path never gets them into `item.fields`, see the module doc) — so without
 /// this, an item scheduled through the form would get no timer until some
-/// later, unrelated save. Calling `sync_timers` again, against the item as it
-/// now stands, is what actually schedules it.
+/// later, unrelated save.
+///
+/// This writes through `host::save_item` with the item's *complete* current
+/// `fields` ([`read_item`], not `host::get_item` — see its doc for why; read
+/// once, before any write, so nothing this call itself did can make that
+/// read stale) with only the two schedule keys changed —
+/// never a partial object (the module doc explains why) — rather than the
+/// single-key raw SQL merge this plugin's own cron path uses for its
+/// claim-and-restore dance. A raw write does not invalidate the item cache
+/// (`ItemService::load`'s in-memory cache, `content/item_service.rs`), so a
+/// raw-written date would not reliably show back on the edit form or reach
+/// `tap_item_update`'s `sync_timers` on a later read until some unrelated
+/// save happened to refresh it. `save_item` is a real `ItemService` write: it
+/// invalidates that cache and fires `tap_item_update` itself, which is what
+/// actually sets or cancels the timer — no second call to `sync_timers`
+/// needed here.
 #[plugin_tap]
 pub fn tap_form_submit(input: serde_json::Value) -> serde_json::Value {
     let form_id = input
@@ -1008,20 +1029,18 @@ pub fn tap_form_submit(input: serde_json::Value) -> serde_json::Value {
     let publish = resolve(raw_publish.as_ref(), Some(&zone));
     let unpublish = resolve(raw_unpublish.as_ref(), Some(&zone));
 
-    write_schedule_field(item_id, "field_publish_on", &publish);
-    write_schedule_field(item_id, "field_unpublish_on", &unpublish);
+    let Some((mut fields, _status)) = read_item(item_id) else {
+        return serde_json::json!({});
+    };
+    apply_resolved(&mut fields, "field_publish_on", &publish);
+    apply_resolved(&mut fields, "field_unpublish_on", &unpublish);
 
-    match host::get_item(item_id) {
-        Ok(Some(item)) => sync_timers(&serde_json::to_value(&item).unwrap_or_default()),
-        Ok(None) => {}
-        Err(code) => host::log(
-            "warn",
+    if let Err(code) = host::save_item(&serde_json::json!({"id": item_id, "fields": fields})) {
+        host::log(
+            "error",
             "trovato_scheduled_publishing",
-            &format!(
-                "wrote item {item_id}'s schedule but could not re-read it to set its timer: \
-                 host error {code}; the cron sweep still finds it"
-            ),
-        ),
+            &format!("could not write item {item_id}'s schedule: host error {code}"),
+        );
     }
     serde_json::json!({})
 }
