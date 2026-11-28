@@ -31,10 +31,10 @@ async function main() {
   // so a literal that bypassed t() stands out as the one unmarked, unaccented
   // phrase on the page.
   await page.goto(`${BASE}/admin/preferences`);
-  await page.selectOption('#admin-language', 'en-XA');
+  await page.selectOption('#language', 'en-XA');
   await Promise.all([
     page.waitForURL('**/admin/preferences'),
-    page.click('form#admin-preferences [type=submit]'),
+    page.click('form#admin_preferences_form [type=submit]'),
   ]);
 
   // Add a provider whose base URL always fails to connect (a reserved,
@@ -77,10 +77,10 @@ async function main() {
 
   // Put the language back and remove the test provider.
   await page.goto(`${BASE}/admin/preferences`);
-  await page.selectOption('#admin-language', 'en');
+  await page.selectOption('#language', 'en');
   await Promise.all([
     page.waitForURL('**/admin/preferences'),
-    page.click('form#admin-preferences [type=submit]'),
+    page.click('form#admin_preferences_form [type=submit]'),
   ]);
 
   await browser.close();

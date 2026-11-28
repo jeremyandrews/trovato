@@ -3,8 +3,8 @@ import { expect } from '@playwright/test';
 /** Set the signed-in admin's language preference (and nothing else). */
 export async function setLanguage(page, language) {
   await page.goto('/admin/preferences');
-  await page.selectOption('#admin-language', language);
-  await Promise.all([page.waitForURL('**/admin/preferences'), page.click('form#admin-preferences [type=submit]')]);
+  await page.selectOption('#language', language);
+  await Promise.all([page.waitForURL('**/admin/preferences'), page.click('form#admin_preferences_form [type=submit]')]);
 }
 
 /** Before each test in the rtl project: the right-to-left pseudo locale. */

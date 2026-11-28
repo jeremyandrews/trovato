@@ -33,7 +33,7 @@ const SETS = {
     'forms-errors': async (page) => {
       await page.goto('/admin/people/add');
       await page.locator('#mail').fill('not-an-address');
-      await Promise.all([page.waitForLoadState('load'), page.locator('form#user-form [type=submit]').click()]);
+      await Promise.all([page.waitForLoadState('load'), page.locator('form#user_form [type=submit]').click()]);
     },
   } },
   lists: { out: B199, shots: {

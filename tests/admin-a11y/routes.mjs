@@ -44,10 +44,13 @@ export const EXPECTED_UNSEEDED = new Map([
   ['/admin/people/rules/{id}/edit', 'no access rule is defined'],
   ['/admin/people/rules/{id}/delete', 'no access rule is defined'],
   ['/admin/system/ai-providers/{id}/edit', 'no AI provider is configured'],
+  ['/admin/system/ai-providers/{id}/delete', 'no AI provider is configured'],
+  ['/admin/people/roles/{id}/delete', 'the site has only the built-in roles, which cannot be deleted'],
   ['/admin/config/formats/{format}/delete', 'the built-in text formats cannot be deleted'],
   ['/admin/config/redirects/{id}/edit', 'no redirect is defined'],
   ['/admin/config/redirects/{id}/delete', 'no redirect is defined'],
   ['/admin/reports/timers/{id}/edit', 'no timer is set'],
+  ['/admin/reports/timers/{id}/{action}', 'no timer is set'],
   ['/admin/config/languages/{code}/delete', 'the site has one language, the default, which cannot be deleted'],
 ]);
 
@@ -69,6 +72,7 @@ const LISTED_ON = {
 /** Pages that link to no instance of a route, and where one is found. */
 const SOURCES = {
   '/admin/users/{user_id}/sessions': '/admin/people/{id}/edit',
+  '/admin/people/{id}/cancel': '/admin/people/{id}/edit',
   '/admin/content/{id}/translate': '/admin/content/{id}/edit',
   '/admin/structure/types/{type}/search': '/admin/structure/types/{type}/edit',
   '/admin/structure/categories/{id}/tags/add': '/admin/structure/categories/{id}/tags',

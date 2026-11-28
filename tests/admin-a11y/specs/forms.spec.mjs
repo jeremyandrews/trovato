@@ -18,7 +18,7 @@ const TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22a', 'wcag22aa']
 async function failRoleForm(page) {
   await page.goto('/admin/people/roles/add');
   await page.locator('#name').fill('');
-  await Promise.all([page.waitForLoadState('load'), page.locator('form#role-form [type=submit]').click()]);
+  await Promise.all([page.waitForLoadState('load'), page.locator('form#role_form [type=submit]').click()]);
 }
 
 test('a failed submit leads with an error summary that takes focus and links to its field', async ({ page }) => {
@@ -53,9 +53,9 @@ test('on a long form the action bar stays in view and never covers the focused f
   test.skip(info.project.name === 'narrow', 'the short window below stands in for the narrow case');
   await page.setViewportSize({ width: 1280, height: 420 });
   await page.goto('/admin/people/add');
-  const bar = page.locator('form#user-form .form-actions');
+  const bar = page.locator('form#user_form .form-actions');
   await expect(bar).toHaveClass(/form-actions--sticky/);
-  const fields = page.locator('form#user-form :is(input:not([type=hidden]), select, textarea)');
+  const fields = page.locator('form#user_form :is(input:not([type=hidden]), select, textarea)');
   const count = await fields.count();
   expect(count).toBeGreaterThan(3);
   await page.locator('#name').focus();
