@@ -461,3 +461,50 @@ fn trovato_working_objects_are_never_served() {
         }
     });
 }
+
+/// A deleted image's derivatives stay in the bucket, but are never served:
+/// with the original gone there is no row to check access against, so the
+/// derivative of a private image would otherwise become public. Derivatives
+/// also carry `nosniff`, as originals do.
+#[test]
+fn a_deleted_images_derivative_is_not_served() {
+    run_test(async {
+        let Some(f) = fixture() else { return };
+        f.app.ensure_conference_type().await;
+        let owner = create_user(&f.app).await;
+        let name = format!("gone-{}.png", Uuid::now_v7().simple());
+        let (uri, path) = upload(&f.app, owner, &name, "image/png", &png_bytes()).await;
+        item_referencing(&f.app, "S3 Deleted Picture", 0, &uri).await;
+
+        let cookies = admin_cookies(&f.app).await;
+        let url = format!("/files/styles/w8/{path}");
+        let made = get(&f.app, &url, Some(&cookies)).await;
+        assert_eq!(made.status(), StatusCode::OK);
+        assert_eq!(
+            header_of(&made, "x-content-type-options".parse().unwrap()),
+            "nosniff"
+        );
+        let derivative = format!("local://styles/w8/{path}");
+        assert!(other_server(f).exists(&derivative).await.unwrap());
+
+        let id: Uuid = sqlx::query_scalar("SELECT id FROM file_managed WHERE uri = $1")
+            .bind(&uri)
+            .fetch_one(&f.app.db)
+            .await
+            .unwrap();
+        assert!(f.app.state.files().delete(id).await.unwrap());
+        assert!(!other_server(f).exists(&uri).await.unwrap());
+        assert!(
+            other_server(f).exists(&derivative).await.unwrap(),
+            "the leftover derivative is still stored: the route must refuse it"
+        );
+
+        let resp = get(&f.app, &url, None).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "anonymous must get 404"
+        );
+        other_server(f).delete(&derivative).await.unwrap();
+    });
+}

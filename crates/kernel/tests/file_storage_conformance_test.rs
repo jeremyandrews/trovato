@@ -21,8 +21,8 @@ use std::sync::Arc;
 
 use trovato_kernel::file::migrate::copy_dir_to_storage;
 use trovato_kernel::file::{
-    FileStorage, LocalFileStorage, S3Config, S3FileStorage, StorageConfig, build_storage,
-    is_not_found,
+    FileStorage, LocalFileStorage, S3Config, S3FileStorage, StorageConfig, StorageNotFound,
+    build_storage, is_not_found,
 };
 use uuid::Uuid;
 
@@ -94,6 +94,10 @@ async fn conformance(storage: &dyn FileStorage) {
     assert!(
         is_not_found(&missing),
         "a missing file is not found: {missing:#}"
+    );
+    assert!(
+        missing.downcast_ref::<StorageNotFound>().is_some(),
+        "not found is a type: {missing:#}"
     );
 
     // A write is read back byte for byte, nested directories and all.
@@ -441,4 +445,31 @@ fn s3_storage_builds_from_settings_alone() {
     .unwrap();
     assert_eq!(storage.describe(), "s3://trovato-files/site-a");
     assert_eq!(storage.public_url("local://a/b.jpg"), "/files/a/b.jpg");
+}
+
+/// A subdirectory that cannot be listed (a root-owned `lost+found` on a mount)
+/// is reported by name, and every other file is still copied.
+#[cfg(unix)]
+#[tokio::test]
+async fn migration_reports_an_unreadable_directory_and_goes_on() {
+    use std::os::unix::fs::PermissionsExt;
+    let src = TempDir::new("migrate-unreadable");
+    let dest = TempDir::new("migrate-dest");
+    std::fs::create_dir_all(src.0.join("2026")).unwrap();
+    std::fs::write(src.0.join("2026/a.txt"), b"a").unwrap();
+    let locked = src.0.join("lost+found");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::write(locked.join("x.txt"), b"x").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let readable_anyway = std::fs::read_dir(&locked).is_ok(); // running as root
+    let store = Arc::new(LocalFileStorage::new(&dest.0, "/files"));
+    let report = copy_dir_to_storage(&src.0, store.clone(), 2).await;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let report = report.unwrap();
+    assert_eq!(store.read("local://2026/a.txt").await.unwrap(), b"a");
+    if !readable_anyway {
+        assert_eq!(report.copied, 1, "{report:?}");
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert_eq!(report.failed[0].0, "lost+found/");
+    }
 }

@@ -43,24 +43,35 @@ fn is_internal_name(name: &str) -> bool {
         || (name.starts_with('.') && name.contains(".trovato-tmp-"))
 }
 
-/// Every regular file under `root`, as `/`-separated paths relative to it.
+/// Every regular file under `root`, as `/`-separated paths relative to it,
+/// and every subdirectory that could not be listed (a run reports those and
+/// goes on; only `root` itself failing stops it).
 ///
 /// Symbolic links are not followed: a link could name a file outside the
 /// directory, which must never be copied into the store.
-async fn list_files(root: &Path) -> Result<Vec<String>> {
+async fn list_files(root: &Path) -> Result<(Vec<String>, Vec<(String, String)>)> {
     let mut out = Vec::new();
+    let mut unlisted = Vec::new();
     let mut dirs: Vec<PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = dirs.pop() {
-        let mut entries = tokio::fs::read_dir(&dir)
-            .await
-            .with_context(|| format!("failed to list {}", dir.display()))?;
-        while let Some(entry) = entries.next_entry().await? {
-            let kind = entry.file_type().await?;
-            let path = entry.path();
+        let listed = list_dir(&dir).await;
+        let entries = match listed {
+            Ok(entries) => entries,
+            Err(e) if dir == root => return Err(e),
+            Err(e) => {
+                let rel = dir.strip_prefix(root).unwrap_or(&dir).display().to_string();
+                unlisted.push((format!("{rel}/"), format!("{e:#}")));
+                continue;
+            }
+        };
+        for (path, kind) in entries {
             if kind.is_dir() {
                 dirs.push(path);
             } else if kind.is_file() {
-                let name = entry.file_name().to_string_lossy().into_owned();
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 if is_internal_name(&name) {
                     continue;
                 }
@@ -76,6 +87,22 @@ async fn list_files(root: &Path) -> Result<Vec<String>> {
         }
     }
     out.sort();
+    Ok((out, unlisted))
+}
+
+/// The entries of one directory with their types (not following links).
+async fn list_dir(dir: &Path) -> Result<Vec<(PathBuf, std::fs::FileType)>> {
+    let mut entries = tokio::fs::read_dir(dir)
+        .await
+        .with_context(|| format!("failed to list {}", dir.display()))?;
+    let mut out = Vec::new();
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .with_context(|| format!("failed to list {}", dir.display()))?
+    {
+        out.push((entry.path(), entry.file_type().await?));
+    }
     Ok(out)
 }
 
@@ -128,10 +155,11 @@ pub async fn copy_dir_to_storage(
     dest: Arc<dyn FileStorage>,
     parallel: usize,
 ) -> Result<MigrationReport> {
-    let keys = list_files(root).await?;
+    let (keys, unlisted) = list_files(root).await?;
     tracing::info!(files = keys.len(), dir = %root.display(), "listed files to copy");
     let mut report = MigrationReport {
         total: keys.len() as u64,
+        failed: unlisted,
         ..MigrationReport::default()
     };
     let root = Arc::new(root.to_path_buf());

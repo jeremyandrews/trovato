@@ -95,9 +95,22 @@ async fn serve_derivative(
 
     let original_uri = format!("local://{file_path}");
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
-    match state.items().can_serve_file(&original_uri, &viewer).await {
-        Ok(true) => {}
-        Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+    match state.items().file_access(&original_uri, &viewer).await {
+        Ok(crate::content::FileAccess::Allowed { .. }) => {}
+        Ok(crate::content::FileAccess::Unmanaged) => {
+            // No row: a deleted file's leftover derivatives must never become
+            // public, so a derivative is served only while its original is
+            // still stored.
+            match state.files().storage().exists(&original_uri).await {
+                Ok(true) => {}
+                Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+                Err(e) => {
+                    tracing::warn!(error = %format!("{e:#}"), path = %file_path, "failed to check original");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            }
+        }
+        Ok(crate::content::FileAccess::Denied) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::warn!(error = %e, path = %file_path, "failed to authorize derivative access");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -117,6 +130,7 @@ async fn serve_derivative(
                 [
                     (header::CONTENT_TYPE, content_type),
                     (header::CACHE_CONTROL, cache_control),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
                 ],
                 Body::from(data),
             )
@@ -222,6 +236,7 @@ async fn serve_derivative(
         [
             (header::CONTENT_TYPE, content_type),
             (header::CACHE_CONTROL, cache_control),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
         ],
         Body::from(derivative),
     )

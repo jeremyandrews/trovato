@@ -235,7 +235,10 @@ directory, so single server and self hosted installs work exactly as before.
   role, the drill role and the break-glass admin role. The bucket (or prefix)
   holds only Trovato's files: an object with no `file_managed` row is served as
   an unmanaged file to anyone the route allows, so nothing else may be put
-  there.
+  there; in a bucket shared by several sites every site has its own
+  `S3_PREFIX` and no role is ever granted the whole bucket. A derivative is
+  served only while its original is stored, so a deleted private image's
+  leftover derivatives never become public.
 - **Image styles in S3 too.** Derivatives are read and written through the trait
   at `local://styles/<style>/<path>` (`services::image_style::derivative_uri`),
   so one server makes a derivative and every server serves it. With a directory
@@ -465,8 +468,11 @@ store.
 
 1. Writes failing: the availability SLO burning at 14.4 times over an hour and
    five minutes (2% of the month's budget in an hour), or the external check
-   of `/health/ready` failing from two locations for 10 minutes. This is the
-   "all writes failing for more than N minutes" rule, with N = 10.
+   of `/health/ready` failing from two locations for 10 minutes, checked both
+   through Cloudflare and at the origin directly: a failure through Cloudflare
+   alone is Cloudflare's outage, which no one here can fix, and is a morning
+   item with a status page note. This is the "all writes failing for more
+   than N minutes" rule, with N = 10.
 2. Data loss risk: RDS instance not available for 10 minutes (a failover that
    did not heal), database free storage under 5% with autoscaling at its
    maximum. (Uploads failing count toward rule 1: they are writes.)
@@ -474,7 +480,9 @@ store.
    days, not one late job), or point in time recovery disabled.
 4. Certificate or DNS: trovato.blog not resolving, or its TLS handshake
    failing, from the external checker for 10 minutes.
-5. Security: root sign-in, a new IAM user or access key, a policy change, a
+5. Security: root sign-in, a new IAM user or access key, a policy change by
+   any principal other than the CI apply role and Identity Center's own
+   provisioning (their changes are expected, and are morning items), a
    change to CloudTrail, the log bucket or a backup vault, a high severity
    GuardDuty finding.
 

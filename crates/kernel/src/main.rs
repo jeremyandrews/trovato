@@ -595,10 +595,21 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     info!(port = config.port, "Configuration loaded");
 
     // Refuse to start on a file store (the uploads directory, or the S3
-    // bucket) this server cannot use.
-    crate::file::build_storage(&config.file_storage, &config.uploads_dir, &config.files_url)?
-        .check_usable()
-        .await?;
+    // bucket) this server cannot use. Bounded, so a store that hangs is named
+    // in the log before a liveness probe would kill a server not yet listening.
+    let file_store =
+        crate::file::build_storage(&config.file_storage, &config.uploads_dir, &config.files_url)?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        file_store.check_usable(),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "the file store {} did not answer the startup check within 20 seconds",
+            file_store.describe()
+        )
+    })??;
 
     // With migrations as their own step, wait (alive, not ready) until the
     // schema this binary needs is there, rather than exit and crash loop.

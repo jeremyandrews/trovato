@@ -277,7 +277,9 @@ every command. The design is in
   in the database changes: once the copy is done, set `FILE_STORAGE=s3` on
   every server and restart them, then run the command once more (with the
   directory still mounted, or `--from` pointing at it) to copy anything
-  uploaded between the first copy and the restart.
+  uploaded between the first copy and the restart. Run it promptly: it
+  replaces a bucket object whose bytes differ from the local file, so a file
+  changed through the servers after the switch would be put back.
 - **Checked.** Each copy is read back from the bucket and compared with the
   local file by SHA-256; a mismatch is a failure.
 - **Resumable.** A file the bucket already holds with the same SHA-256 is
@@ -289,6 +291,6 @@ every command. The design is in
   (`FILE_STORAGE=local`).
 - **Skipped:** symbolic links (one could name a file outside the directory)
   and Trovato's own write-check and temporary files.
-- **Output:** one line, `<total> files under <dir>: <n> copied, <n> already in
+- **Output:** after its log lines, one summary line, `<total> files under <dir>: <n> copied, <n> already in
   s3://<bucket>[/<prefix>], <n> failed`, after a `failed: <key>: <reason>` line
   per failed file. Exits nonzero when any file failed.

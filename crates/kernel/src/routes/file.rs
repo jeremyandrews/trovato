@@ -192,7 +192,10 @@ pub(crate) async fn served_file_cache_control(
 /// a crash can leave behind and which have no `file_managed` row, so the
 /// access check would otherwise treat them as unmanaged files anyone may fetch.
 pub(crate) fn is_original_upload_path(path: &str) -> bool {
-    path.split('/').next() != Some("styles")
+    !path
+        .split('/')
+        .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case("styles"))
         && path
             .split('/')
             .all(|c| !c.is_empty() && c != "." && !is_working_name(c))
@@ -200,6 +203,8 @@ pub(crate) fn is_original_upload_path(path: &str) -> bool {
 
 /// One of Trovato's own working file names (see [`is_original_upload_path`]).
 fn is_working_name(c: &str) -> bool {
+    // Case-blind, for a case-insensitive local filesystem.
+    let c = c.to_ascii_lowercase();
     c.starts_with(".trovato-write-check-") || (c.starts_with('.') && c.contains(".trovato-tmp-"))
 }
 
@@ -507,6 +512,9 @@ mod tests {
     #[test]
     fn original_upload_path_rejects_trovato_working_names() {
         assert!(!is_original_upload_path(".trovato-write-check-0197"));
+        assert!(!is_original_upload_path(".Trovato-Write-Check-0197"));
+        assert!(!is_original_upload_path("Styles/w400/photo.jpg"));
+        assert!(!is_original_upload_path("STYLES/w400/photo.jpg"));
         assert!(!is_original_upload_path(
             "2026/11/.a_b.jpg.trovato-tmp-0197"
         ));
