@@ -459,11 +459,10 @@ async fn config_import_refuses_every_named_problem() {
         sqlx::query(
             "INSERT INTO item (id, type, title, status, promote, sticky, language, \
              current_revision_id, author_id, created, changed, stage_id, fields) \
-             VALUES ($1, 'b301_removed', 'held', 0, 0, 0, 'en', $2, \
-             '00000000-0000-0000-0000-000000000000', $3, $3, $4, '{}')",
+             VALUES ($1, 'b301_removed', 'held', 0, 0, 0, 'en', NULL, \
+             '00000000-0000-0000-0000-000000000000', $2, $2, $3, '{}')",
         )
         .bind(item_id)
-        .bind(revision_id)
         .bind(now)
         .bind(LIVE_STAGE_ID)
         .execute(db.pool())
@@ -480,12 +479,18 @@ async fn config_import_refuses_every_named_problem() {
         .execute(db.pool())
         .await
         .unwrap();
+        sqlx::query("UPDATE item SET current_revision_id = $1 WHERE id = $2")
+            .bind(revision_id)
+            .bind(item_id)
+            .execute(db.pool())
+            .await
+            .unwrap();
 
         let dir2 = TempConfigDir::new("removed_state_in_use_2");
         dir2.write(
             "variable.moderation_workflows.yml",
             "key: moderation.workflows\nvalue:\n  workflows:\n    - id: review\n      \
-             default_state: draft\n      states:\n        - {id: draft, published: false}\n      \
+             default_state: draft\n      states:\n        - {id: draft, published: false}\n        \
              - {id: published, published: true}\n      transitions: []\n",
         );
         let err = import_config(&storage, db.pool(), dir2.path(), false)
