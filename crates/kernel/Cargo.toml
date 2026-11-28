@@ -72,6 +72,7 @@ trovato-search-index = { path = "../search-index" }
 image = { workspace = true }
 jsonwebtoken = { workspace = true }
 reqwest = { workspace = true }
+object_store = { workspace = true }
 subtle = { workspace = true }
 base64 = { workspace = true }
 url = { workspace = true }
@@ -108,9 +109,11 @@ trovato-test-utils = { path = "../test-utils" }
 webauthn-authenticator-rs = { version = "0.5.5", default-features = false, features = ["softpasskey"] }
 
 # Turns terminal echo off while the command line reads a password
-# (`trovato user create`, `user reset-password`).
+# (`trovato user create`, `user reset-password`), and (`fs`) opens each
+# directory of a migrated file relative to the one before, never through a
+# symbolic link (`trovato files migrate-to-s3`).
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1", features = ["termios"] }
+rustix = { version = "1.1", features = ["fs", "termios"] }
 # Installs the raw SIGINT/SIGTERM/SIGHUP handler that restores terminal echo
 # if one of them lands mid-password-read (B224): `rustix`'s `sigaction`
 # equivalent is behind its `runtime` feature, documented as being for

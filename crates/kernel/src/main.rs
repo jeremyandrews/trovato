@@ -179,6 +179,73 @@ enum Commands {
         #[arg(long)]
         admin_password: String,
     },
+    /// Uploaded file commands.
+    Files {
+        #[command(subcommand)]
+        action: FilesAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum FilesAction {
+    /// Copy every file under the uploads directory into the S3 bucket the
+    /// `FILE_STORAGE=s3` and `S3_*` settings name, keeping each file's key.
+    ///
+    /// Each copy is read back and checked by SHA-256. A file the bucket
+    /// already holds with the same SHA-256 is skipped, so an interrupted or
+    /// partly failed run is finished by running it again. Nothing is deleted.
+    /// Exits nonzero if any file was not copied.
+    MigrateToS3 {
+        /// The directory to copy from (default: `UPLOADS_DIR`).
+        #[arg(long)]
+        from: Option<std::path::PathBuf>,
+        /// Files copied at once.
+        #[arg(long, default_value_t = 16)]
+        parallel: usize,
+    },
+}
+
+/// Run a `trovato files` command. Needs no database: only the settings.
+async fn run_files_command(action: FilesAction) -> Result<()> {
+    let config = Config::from_env().context("failed to load configuration")?;
+    match action {
+        FilesAction::MigrateToS3 { from, parallel } => {
+            if !matches!(config.file_storage, crate::file::StorageConfig::S3(_)) {
+                anyhow::bail!(
+                    "the destination is the S3 bucket: set FILE_STORAGE=s3 and S3_BUCKET \
+                     (and S3_REGION, or S3_ENDPOINT for a non-AWS store) first"
+                );
+            }
+            let from = from.unwrap_or_else(|| config.uploads_dir.clone());
+            let dest = crate::file::build_storage(
+                &config.file_storage,
+                &config.uploads_dir,
+                &config.files_url,
+            )?;
+            dest.check_usable().await?;
+            let report =
+                crate::file::migrate::copy_dir_to_storage(&from, dest.clone(), parallel).await?;
+            for (key, reason) in &report.failed {
+                eprintln!("failed: {key}: {reason}");
+            }
+            println!(
+                "{} files under {}: {} copied, {} already in {}, {} failed",
+                report.total,
+                from.display(),
+                report.copied,
+                report.already_there,
+                dest.describe(),
+                report.failed.len()
+            );
+            if !report.failed.is_empty() {
+                anyhow::bail!(
+                    "{} files were not copied; fix the cause and run this again",
+                    report.failed.len()
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -377,6 +444,7 @@ async fn main() -> Result<()> {
             };
             run_generate_command(options, &admin_password).await
         }
+        Some(Commands::Files { action }) => run_files_command(action).await,
     };
     // The spans still waiting in the export batch are sent before the
     // process ends, for at most a few seconds: a collector that is down must
@@ -526,8 +594,13 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     let config = Config::from_env().context("failed to load configuration")?;
     info!(port = config.port, "Configuration loaded");
 
-    // Refuse to start on an uploads directory this server cannot use.
-    crate::file::check_writable(&config.uploads_dir).await?;
+    // Refuse to start on a file store this server cannot use (see
+    // `file::startup_check`: a directory must pass in full; a remote store
+    // that cannot be reached is logged and the server starts, so a pod
+    // restarted during its outage does not crash loop).
+    let file_store =
+        crate::file::build_storage(&config.file_storage, &config.uploads_dir, &config.files_url)?;
+    crate::file::startup_check(file_store.as_ref()).await?;
 
     // With migrations as their own step, wait (alive, not ready) until the
     // schema this binary needs is there, rather than exit and crash loop.
@@ -1270,10 +1343,7 @@ async fn run_config_command(action: ConfigAction) -> Result<()> {
     // `file` config entities carry bytes, which go to the site's file storage.
     let files = std::sync::Arc::new(crate::file::FileService::new(
         pool.clone(),
-        std::sync::Arc::new(crate::file::LocalFileStorage::new(
-            &config.uploads_dir,
-            &config.files_url,
-        )),
+        crate::file::build_storage(&config.file_storage, &config.uploads_dir, &config.files_url)?,
     ));
     // Plugin config tables are named in the manifests on disk.
     let plugins = config_storage::PluginConfigSet::discover(&config.plugins_dirs).await;

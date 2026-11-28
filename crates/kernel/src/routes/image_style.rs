@@ -51,6 +51,16 @@ fn validate_image_path(path: &str) -> bool {
     true
 }
 
+/// Whether `name` can be an image style's machine name: ASCII letters, digits,
+/// `_` and `-`, nothing else (no `/`, `\`, `.` or `%`).
+fn is_style_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 /// GET /files/styles/{style_name}/{path} — serve or generate image derivative.
 ///
 /// `path` names the original upload (its storage URI after `local://`). Access
@@ -63,7 +73,15 @@ async fn serve_derivative(
 ) -> impl IntoResponse {
     // Invalid paths are 404 like a denied file, so a malformed spelling reveals
     // nothing the plain file route would not.
-    if !validate_image_path(&file_path) || !validate_image_path(&style_name) {
+    // The style is one machine name, never a path: axum decodes `%2F` in the
+    // segment, and a style of `w400/2026/11` would read a private original's
+    // real derivative while the access check ran on a path with no file. The
+    // original is held to the `/files/` route's own rules, so it can never be
+    // another derivative (`styles/...`) or one of Trovato's working files.
+    if !validate_image_path(&file_path)
+        || !crate::routes::file::is_original_upload_path(&file_path)
+        || !is_style_name(&style_name)
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
 
@@ -77,9 +95,31 @@ async fn serve_derivative(
 
     let original_uri = format!("local://{file_path}");
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
-    match state.items().can_serve_file(&original_uri, &viewer).await {
-        Ok(true) => {}
-        Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+    match state.items().file_access(&original_uri, &viewer).await {
+        Ok(crate::content::FileAccess::Allowed { .. }) => {}
+        Ok(crate::content::FileAccess::Unmanaged) => {
+            // No row: a deleted file's leftover derivatives must never become
+            // public, so a derivative is served only while its original is
+            // still stored, and never for a managed file spelled in other
+            // letter case (one file on a case-insensitive directory).
+            match crate::routes::file::unmanaged_is_servable(&state, &original_uri).await {
+                Ok(true) => {}
+                Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+                Err(e) => {
+                    tracing::warn!(error = %format!("{e:#}"), path = %file_path, "failed to authorize derivative access");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            }
+            match state.files().storage().exists(&original_uri).await {
+                Ok(true) => {}
+                Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+                Err(e) => {
+                    tracing::warn!(error = %format!("{e:#}"), path = %file_path, "failed to check original");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            }
+        }
+        Ok(crate::content::FileAccess::Denied) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::warn!(error = %e, path = %file_path, "failed to authorize derivative access");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -88,9 +128,10 @@ async fn serve_derivative(
     let cache_control =
         served_file_cache_control(&state, &original_uri, &viewer, PUBLIC_MAX_AGE).await;
 
-    // Try reading from disk cache directly (avoids TOCTOU race with separate exists + read)
-    let cache_path = image_service.cache_path(&style_name, &file_path);
-    match tokio::fs::read(&cache_path).await {
+    // A derivative made before, by any server, is in the file store beside
+    // the originals (`styles/<style>/<path>`), so every server finds it.
+    let derivative_uri = crate::services::image_style::derivative_uri(&style_name, &file_path);
+    match state.files().storage().read(&derivative_uri).await {
         Ok(data) => {
             let content_type = guess_content_type(&file_path);
             return (
@@ -98,13 +139,14 @@ async fn serve_derivative(
                 [
                     (header::CONTENT_TYPE, content_type),
                     (header::CACHE_CONTROL, cache_control),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
                 ],
                 Body::from(data),
             )
                 .into_response();
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Not cached yet, generate below
+        Err(e) if crate::file::is_not_found(&e) => {
+            // Not made yet, generate below
         }
         Err(e) => {
             tracing::debug!(error = %e, "failed to read cached derivative, regenerating");
@@ -170,20 +212,15 @@ async fn serve_derivative(
     // Process through style effects on a blocking thread to avoid starving
     // the Tokio runtime with CPU-intensive image decoding/encoding.
     let svc = image_service.clone();
-    let sn = style_name.clone();
-    let fp = file_path.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let derivative = svc.process_image(&original, &style)?;
-        // Save to disk cache while still on the blocking thread
-        if let Err(e) = svc.save_derivative(&sn, &fp, &derivative) {
-            tracing::warn!(error = %e, "failed to cache derivative");
-        }
-        Ok::<Vec<u8>, anyhow::Error>(derivative)
-    })
-    .await;
+    let result = tokio::task::spawn_blocking(move || svc.process_image(&original, &style)).await;
 
     let derivative = match result {
-        Ok(Ok(data)) => data,
+        Ok(Ok(data)) => {
+            if let Err(e) = state.files().storage().write(&derivative_uri, &data).await {
+                tracing::warn!(error = %format!("{e:#}"), "failed to store derivative");
+            }
+            data
+        }
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "failed to process image");
             return crate::error::AppError::with_status(
@@ -208,6 +245,7 @@ async fn serve_derivative(
         [
             (header::CONTENT_TYPE, content_type),
             (header::CACHE_CONTROL, cache_control),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
         ],
         Body::from(derivative),
     )
@@ -253,6 +291,24 @@ fn guess_content_type(path: &str) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn style_names_are_machine_names_never_paths() {
+        for ok in ["w400", "thumbnail", "large_2x", "hero-wide"] {
+            assert!(is_style_name(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "w400/2026/11",
+            "w400\\x",
+            "..",
+            "w400.jpg",
+            "w%2F",
+            &"a".repeat(65),
+        ] {
+            assert!(!is_style_name(bad), "{bad:?}");
+        }
+    }
 
     #[test]
     fn content_type_guessing() {
