@@ -229,6 +229,7 @@ fn the_status_report_checks_the_site_and_shows_no_secret() {
             "run cron manually",
             "File system",
             "Session cookies",
+            "Field indexes",
             "Updates",
             "Maintenance mode",
         ] {

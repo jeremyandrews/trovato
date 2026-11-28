@@ -78,6 +78,9 @@ async fn run_cron(State(state): State<AppState>, Path(key): Path<String>) -> Res
     // orphaned. Detaching the work means a disconnect cancels only the waiting:
     // the run finishes and releases what it holds.
     info!("cron triggered via HTTP");
+    // Catch any field index work a missed signal left (B207): it runs in the
+    // background and never holds the cron run up.
+    state.reconcile_field_indexes();
     let cron = state.cron().clone();
     let result = match detached(async move { cron.run().await }).await {
         Ok(result) => result,

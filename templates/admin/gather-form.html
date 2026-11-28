@@ -46,6 +46,24 @@
                 {% endfor %}
             </datalist>
 
+            {% set unindexed = unindexed_fields | default(value=[]) %}
+            {% if unindexed %}
+            <div class="notice notice--warning" role="status" id="gather-unindexed">
+                <p><strong class="notice__label">{{ t(s="Warning:") }}</strong> {{ t(s="Some fields this gather filters or sorts on are not indexed. The gather works, but on a large site it reads every item of its type to answer, and will be slow.") }}</p>
+                <ul>
+                {% for f in unindexed %}
+                    <li data-unindexed-field="{{ f.field_name }}"><code>fields.{{ f.field_name }}</code>:
+                    {% if f.reason == "not_marked" %}{{ t(s="not indexed: its Filterable and sortable setting is off.") }}
+                    {% elif f.reason == "cannot" %}{{ t(s="not indexed: a field of this type cannot have an index.") }}
+                    {% elif f.reason == "building" %}{{ t(s="its index is being built.") }}
+                    {% elif f.reason == "failed" %}{{ t(s="building its index failed; see the content type's fields page.") }}
+                    {% else %}{{ t(s="its index is queued.") }}{% endif %}</li>
+                {% endfor %}
+                </ul>
+                {% if definition.item_type %}<p><a href="/admin/structure/types/{{ definition.item_type }}/fields">{{ t(s="Manage this content type's fields") }}</a></p>{% endif %}
+            </div>
+            {% endif %}
+
             <div id="filters-section">
                 <h3>{{ t(s="Filters") }}</h3>
                 <div id="filters-container"></div>
