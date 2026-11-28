@@ -704,15 +704,8 @@ async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-fn csrf_from(html: &str) -> String {
-    let needle = r#"name="_token" value=""#;
-    let start = html
-        .find(needle)
-        .map(|i| i + needle.len())
-        .expect("a CSRF token");
-    let end = html[start..].find('"').expect("token terminated");
-    html[start..start + end].to_string()
-}
+/// The tile form's id (`routes::tile_admin`).
+const TILE_FORM_ID: &str = "tile_form";
 
 /// Submit the add-tile form for a `gather_query` tile, `items` as typed.
 async fn submit_tile_form(
@@ -742,9 +735,8 @@ async fn submit_tile_form_full(
         )
         .await;
     assert_eq!(form_page.status(), StatusCode::OK);
-    let token = csrf_from(&body_text(form_page).await);
+    let pipeline = common::form_fields(&body_text(form_page).await, TILE_FORM_ID);
     let mut fields = vec![
-        ("_token", token.as_str()),
         ("machine_name", machine_name),
         ("label", "Gather tile form"),
         ("region", "content_bottom"),
@@ -758,9 +750,12 @@ async fn submit_tile_form_full(
     if let Some(item_types) = item_types {
         fields.push(("item_types", item_types));
     }
-    let body = fields
-        .iter()
-        .map(|(k, v)| format!("{k}={}", urlencoding::encode(v)))
+    let body = std::iter::once(pipeline)
+        .chain(
+            fields
+                .iter()
+                .map(|(k, v)| format!("{k}={}", urlencoding::encode(v))),
+        )
         .collect::<Vec<_>>()
         .join("&");
     app.request_with_cookies(
@@ -859,9 +854,20 @@ fn the_tile_form_refuses_an_item_count_outside_one_to_fifty() {
             let machine = format!("b74_form_bad_{}", stamp());
             forget_tile(app, &machine);
             let response = submit_tile_form(app, &cookies, &machine, Some(typed)).await;
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "items={typed}");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "items={typed}: the form again"
+            );
             let html = body_text(response).await;
-            assert!(html.contains("1 and 50"), "the refusal says why: {html}");
+            let form = common::form_in(&html, TILE_FORM_ID).expect("the tile form again");
+            let field = &form[form.find(r#"id="items""#).expect("the items field")..];
+            let field = &field[..field.find('>').unwrap()];
+            assert!(
+                field.contains(r#"aria-invalid="true""#),
+                "items={typed}: {field}"
+            );
+            assert!(form.contains("1 and 50"), "the refusal says why: {form}");
             assert!(
                 stored_config(app, &machine).await.is_none(),
                 "items={typed} saved nothing"
@@ -931,11 +937,17 @@ fn the_tile_form_refuses_an_invalid_item_type() {
         forget_tile(app, &machine);
         let response =
             submit_tile_form_full(app, &cookies, &machine, None, Some("Not Valid!")).await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::OK, "the form again");
         let html = body_text(response).await;
+        let form = common::form_in(&html, TILE_FORM_ID).expect("the tile form again");
+        let field = &form[form
+            .find(r#"id="item_types""#)
+            .expect("the item_types field")..];
+        let field = &field[..field.find('>').unwrap()];
+        assert!(field.contains(r#"aria-invalid="true""#), "{field}");
         assert!(
-            html.contains("machine names"),
-            "the refusal says why: {html}"
+            form.contains("machine names"),
+            "the refusal says why: {form}"
         );
         assert!(
             stored_config(app, &machine).await.is_none(),

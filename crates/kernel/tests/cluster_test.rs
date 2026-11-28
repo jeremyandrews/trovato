@@ -284,6 +284,25 @@ fn csrf_in(html: &str) -> Option<String> {
     META.captures(html).map(|c| c[1].to_string())
 }
 
+/// The `_token` and `_form_build_id` of the pipeline form `form_id` on
+/// `html`: what a browser posts back with that form's fields.
+fn pipeline_fields(html: &str, form_id: &str) -> Vec<(&'static str, String)> {
+    let at = html
+        .find(&format!(r#"<form id="{form_id}""#))
+        .unwrap_or_else(|| panic!("no form {form_id} on the page: {html}"));
+    let form = &html[at..];
+    let value = |name: &str| {
+        let re = Regex::new(&format!(r#"name="{name}" value="([^"]*)""#)).unwrap();
+        re.captures(form)
+            .map(|c| c[1].to_string())
+            .unwrap_or_else(|| panic!("form {form_id} has no {name}"))
+    };
+    vec![
+        ("_token", value("_token")),
+        ("_form_build_id", value("_form_build_id")),
+    ]
+}
+
 /// A short unique suffix for names this run creates.
 fn unique() -> String {
     uuid::Uuid::now_v7().simple().to_string()[20..].to_string()
@@ -934,13 +953,13 @@ async fn s04_content_writes_on_a_are_current_on_b() {
             ("display_json", display.to_string()),
         ]
     };
+    // The query editor is a pipeline form: post what its page built.
+    let editor = c.admin.get_html(On::A, "/admin/gather/create").await;
+    let mut fields = pipeline_fields(&editor.body, "gather-form");
+    fields.extend(gather_fields(format!("Old {tag}"), json!({})));
     let created = c
         .admin
-        .submit(
-            On::A,
-            "/admin/gather/create",
-            &gather_fields(format!("Old {tag}"), json!({})),
-        )
+        .post_form(On::A, "/admin/gather/create", &fields)
         .await;
     assert!(
         created.status.is_redirection(),
@@ -961,13 +980,18 @@ async fn s04_content_writes_on_a_are_current_on_b() {
     let _ = c.admin.get(On::B, &format!("/gather/{query}")).await;
     let new_label = format!("New {tag}");
     let target = format!("/cluster-target-{tag}");
+    let editor = c
+        .admin
+        .get_html(On::A, &format!("/admin/gather/{query}/edit"))
+        .await;
+    let mut fields = pipeline_fields(&editor.body, "gather-form");
+    fields.extend(gather_fields(
+        new_label.clone(),
+        json!({"canonical_url": target}),
+    ));
     let saved = c
         .admin
-        .submit(
-            On::A,
-            &format!("/admin/gather/{query}/save"),
-            &gather_fields(new_label.clone(), json!({"canonical_url": target})),
-        )
+        .post_form(On::A, &format!("/admin/gather/{query}/save"), &fields)
         .await;
     assert!(saved.status.is_redirection(), "save gather: {}", saved.body);
     let current = eventually(CURRENT_WITHIN, || async {
