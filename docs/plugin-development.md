@@ -1177,13 +1177,16 @@ port that needs it is exactly the access an operator reaching for this
 setting is trying to avoid.
 
 Whatever an entry names, link-local (including the cloud-metadata address),
-multicast, broadcast and unspecified addresses can never be reached this way;
-an entry naming one refuses the server from starting at all, and a hostname
-entry that happens to resolve to one is refused at request time instead. A
-malformed entry, one missing its port, or one naming a plugin that parses but
-is not installed also gets attention at startup: the first two refuse to
-start, naming the bad entry; the last logs one warning and is otherwise
-inert, since the plugin may simply not be installed on this deployment yet.
+multicast, broadcast and unspecified addresses can never be reached this way.
+A literal destination naming one refuses the server from starting at all, as
+does a CIDR whose own network address is one; a broader or misaligned CIDR
+that merely contains one (`169.0.0.0/8` contains `169.254.169.254`) starts
+fine and is instead refused per request, the same way a hostname entry that
+happens to resolve to one is refused at request time. A malformed entry, one
+missing its port, or one naming a plugin that parses but is not installed
+also gets attention at startup: the first two refuse to start, naming the bad
+entry; the last logs one warning and is otherwise inert, since the plugin may
+simply not be installed on this deployment yet.
 
 ### Timers
 

@@ -16,10 +16,14 @@
 //! An entry's destination is an IPv4/IPv6 literal, a CIDR range, or a
 //! hostname. Whichever form it takes, link-local (including the cloud-metadata
 //! address), multicast, broadcast and unspecified addresses can never be named
-//! by any entry: those are refused unconditionally, at startup for a literal
-//! or CIDR destination ([`PluginHttpAllow::parse`]) and at resolve time for a
-//! hostname destination ([`is_never_allowable`], checked by the kernel's
-//! resolver in [`crate::host::http`] against whatever address DNS answers).
+//! by any entry: [`PluginHttpAllow::parse`] refuses a literal destination
+//! outright at startup, and a CIDR whose own network address is one of them,
+//! but a broader or misaligned CIDR that merely *contains* one (`169.0.0.0/8`
+//! contains `169.254.169.254`) starts fine and is instead refused per request
+//! by the same [`is_never_allowable`] check [`Entry::matches`] runs against
+//! the request's actual address. A hostname destination has no address to
+//! check until DNS resolves it, so it is checked the same way, per
+//! resolution, by the kernel's resolver in [`crate::host::http`].
 
 use std::net::{IpAddr, Ipv4Addr};
 

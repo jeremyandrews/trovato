@@ -645,6 +645,41 @@ fn revalidating_redirect_policy() -> reqwest::redirect::Policy {
     })
 }
 
+/// [`revalidating_redirect_policy`], plus one extra rule only a hostname
+/// entry's client needs: a hop back to the entry's own granted hostname is
+/// refused unless it is on the entry's exact granted port.
+///
+/// `check_url_policy` cannot see this by itself. An ordinary hostname (not a
+/// private IP literal or a reserved suffix like `*.internal`) always passes
+/// it, whatever port the URL names, because it never resolves DNS. Without
+/// this check, a redirect from the granted destination to the identical
+/// hostname on a different port would pass `check_url_policy` and then
+/// resolve under [`EntryAllowResolver`], whose own relaxation is scoped to
+/// the hostname only, not the port — exactly the "same destination, another
+/// port" case the allowlist must still refuse. A redirect to any other
+/// hostname is unaffected: it falls straight through to the same
+/// `check_url_policy` check every other redirect gets, and (unless it also
+/// resolves to a public address) is caught at connect time by
+/// [`EntryAllowResolver`]'s strict branch for a non-matching name.
+fn entry_redirect_policy(allow_host: String, allow_port: u16) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() > 10 {
+            return attempt.error(TooManyRedirects);
+        }
+        let url = attempt.url();
+        if let Some(url::Host::Domain(host)) = url.host()
+            && host.eq_ignore_ascii_case(&allow_host)
+            && url.port_or_known_default() != Some(allow_port)
+        {
+            return attempt.error(SsrfBlocked);
+        }
+        match check_url_policy(url) {
+            Ok(()) => attempt.follow(),
+            Err(_) => attempt.error(SsrfBlocked),
+        }
+    })
+}
+
 /// Build the SSRF-hardened outbound [`reqwest::ClientBuilder`] with the given
 /// resolver backend. Production callers use [`hardened_outbound_builder`]; the
 /// backend seam exists so tests can inject a rebinding resolver.
@@ -828,7 +863,7 @@ fn build_entry_client(
                 backend,
                 allow_host: name.clone(),
             }))
-            .redirect(revalidating_redirect_policy()),
+            .redirect(entry_redirect_policy(name.clone(), entry.port)),
         plugin_http_allow::Destination::Ip(_) | plugin_http_allow::Destination::Cidr(_) => {
             builder_with_resolver(backend)
         }
@@ -2122,6 +2157,50 @@ mod tests {
         let err = execute_http_request(client, &get(&base), "p1")
             .await
             .expect_err("a redirect off the granted destination must be refused");
+        assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
+    }
+
+    /// (f) for a hostname entry specifically: a redirect to the identical
+    /// granted hostname, but a different port, is refused. `check_url_policy`
+    /// alone cannot see this — it never resolves DNS, so an ordinary hostname
+    /// always passes it regardless of port — so without
+    /// `entry_redirect_policy`'s extra check, [`EntryAllowResolver`]'s
+    /// hostname-only relaxation would let this hop through to whatever
+    /// address the name resolves to, on the wrong port.
+    #[tokio::test]
+    async fn redirect_to_the_granted_hostname_on_a_different_port_is_refused() {
+        let other = body_server(b"nope".to_vec(), Framing::ContentLength).await;
+        let other_port = addr_of(&other).port();
+        let base = redirect_server(format!("http://cache.example.com:{other_port}/")).await;
+        let granted_port = addr_of(&base).port();
+        assert_ne!(
+            granted_port, other_port,
+            "the fixture ports must differ for this to test anything"
+        );
+
+        let entry = PluginHttpAllow::parse(&format!("p1@cache.example.com:{granted_port}"))
+            .expect("entry parses")
+            .entries()[0]
+            .clone();
+        let client = build_entry_client(
+            &entry,
+            Arc::new(StubResolver {
+                ips: vec![IpAddr::from([127, 0, 0, 1])],
+            }),
+        );
+        let allow = PluginHttpAllowRuntime {
+            entries: vec![AllowedEntry { entry, client }],
+        };
+        let default = reqwest::Client::new();
+        let url = format!("http://cache.example.com:{granted_port}/");
+
+        let client = resolve_outbound_client(&url, "p1", &default, &allow)
+            .expect("p1 is granted the first hop, on the granted port");
+        let err = execute_http_request(client, &get(&url), "p1")
+            .await
+            .expect_err(
+                "a redirect to the same granted hostname on a different port must be refused",
+            );
         assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
     }
 
