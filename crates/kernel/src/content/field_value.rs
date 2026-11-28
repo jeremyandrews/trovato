@@ -206,7 +206,7 @@ pub fn reference_id(value: &Value) -> String {
 const MAX_LINK_URI_LENGTH: usize = 2048;
 
 /// The maximum length of a Link's `title`.
-const MAX_LINK_TITLE_LENGTH: usize = 255;
+pub const MAX_LINK_TITLE_LENGTH: usize = 255;
 
 /// The maximum length of a Telephone's entered text.
 const MAX_TELEPHONE_LENGTH: usize = 32;
@@ -331,13 +331,17 @@ pub fn check_new_kind(field: &FieldDefinition, value: &Value) -> Option<String> 
             _ => Some("is not one of the allowed values.".to_string()),
         },
         FieldType::Link => {
+            // A bare string is refused rather than read as `uri`: every
+            // reader (`form_text`, the item page, both search backends)
+            // expects the stored object shape, so accepting a string here
+            // would pass validation and then silently render and index as
+            // nothing.
             let (uri, title, new_tab) = match value {
                 Value::Object(obj) => (
                     obj.get("uri").and_then(Value::as_str),
                     obj.get("title"),
                     obj.get("new_tab"),
                 ),
-                Value::String(s) => (Some(s.as_str()), None, None),
                 _ => (None, None, None),
             };
             if !uri.is_some_and(is_valid_link_uri) {

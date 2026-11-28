@@ -35,12 +35,21 @@ BEGIN
     vector := setweight(to_tsvector('english', COALESCE(p_title, '')), 'A');
 
     FOR field IN
-        WITH declared AS (
+        WITH field_kinds AS (
+            -- Every field's real kind, read once so a name reaching `names`
+            -- through `search_field_config` (an admin can give any field name
+            -- a search weight there, not only a text one) is judged by what
+            -- it actually is, not assumed to be text: a Telephone field given
+            -- a weight that way must still never be indexed.
             SELECT def->>'field_name' AS field_name,
                    CASE
                        WHEN def->'field_type' = '"Link"'::jsonb THEN 'link'
                        WHEN def->'field_type' = '"List"'::jsonb THEN 'list'
-                       ELSE 'text'
+                       WHEN def->'field_type' = '"Telephone"'::jsonb THEN 'telephone'
+                       WHEN def->'field_type' = '"TextLong"'::jsonb THEN 'text'
+                       WHEN jsonb_typeof(def->'field_type') = 'object'
+                            AND def->'field_type' ? 'Text' THEN 'text'
+                       ELSE NULL
                    END AS kind,
                    def->'settings'->'allowed_values' AS allowed_values
             FROM item_type it,
@@ -49,17 +58,19 @@ BEGIN
                           THEN it.settings->'fields' ELSE '[]'::jsonb END
                  ) AS def
             WHERE it.type = p_type
-              AND (def->'field_type' = '"TextLong"'::jsonb
-                   OR (jsonb_typeof(def->'field_type') = 'object'
-                       AND def->'field_type' ? 'Text')
-                   OR def->'field_type' = '"Link"'::jsonb
-                   OR def->'field_type' = '"List"'::jsonb)
+        ),
+        declared AS (
+            SELECT field_name, kind, allowed_values FROM field_kinds
+            WHERE kind IN ('text', 'link', 'list')
         ),
         names AS (
             SELECT field_name, kind, allowed_values FROM declared
             UNION
-            SELECT field_name, 'text', NULL::jsonb
-            FROM search_field_config WHERE bundle = p_type
+            SELECT c.field_name, COALESCE(fk.kind, 'text') AS kind, fk.allowed_values
+            FROM search_field_config c
+            LEFT JOIN field_kinds fk ON fk.field_name = c.field_name
+            WHERE c.bundle = p_type
+              AND COALESCE(fk.kind, 'text') <> 'telephone'
             UNION
             SELECT unnest(ARRAY['field_body', 'body']), 'text', NULL::jsonb
         )

@@ -340,3 +340,44 @@ fn a_stored_javascript_link_never_becomes_an_href() {
         );
     });
 }
+
+/// A stored List value whose key is no longer one of the field's allowed
+/// values (an allowed value removed after items already held it, which the
+/// admin field edit form permits) renders as the escaped key, not blank and
+/// not a crash.
+#[test]
+fn a_list_key_no_longer_allowed_renders_as_the_escaped_key() {
+    run_test(async {
+        let app = shared_app().await;
+        let item_type = fresh_type(app).await;
+
+        let item = create(
+            app,
+            &item_type,
+            "B302 stale key seed",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("create item");
+        forget_item(app, item.id);
+
+        sqlx::query("UPDATE item SET fields = $1 WHERE id = $2")
+            .bind(serde_json::json!({ "field_choice": "<bronze>" }))
+            .bind(item.id)
+            .execute(&app.db)
+            .await
+            .expect("write a since-removed key directly");
+        sqlx::query("UPDATE item_revision SET fields = $1 WHERE id = $2")
+            .bind(serde_json::json!({ "field_choice": "<bronze>" }))
+            .bind(item.current_revision_id)
+            .execute(&app.db)
+            .await
+            .ok();
+
+        let html = item_page(app, "", item.id).await;
+        assert!(
+            html.contains("&lt;bronze&gt;"),
+            "a key no longer allowed still renders, escaped: {html}"
+        );
+    });
+}

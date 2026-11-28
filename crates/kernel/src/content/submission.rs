@@ -240,10 +240,14 @@ pub fn build_item_fields(
                 ));
                 continue;
             }
-            if title.chars().count() > 255 {
+            if title.chars().count() > field_value::MAX_LINK_TITLE_LENGTH {
                 errors.push(ValidationError::field(
                     name,
-                    format!("{} title must be at most 255 characters.", field.label),
+                    format!(
+                        "{} title must be at most {} characters.",
+                        field.label,
+                        field_value::MAX_LINK_TITLE_LENGTH
+                    ),
                 ));
                 continue;
             }
