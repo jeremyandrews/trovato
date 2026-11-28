@@ -1403,12 +1403,10 @@ async fn run_user_command(action: UserAction) -> Result<()> {
             //
             // The grant and its `user.roles_changed` commit together.
             let audit = services::audit::AuditTrail::offline(pool.clone()).await;
+            // Whether this assigned the role is the insert's own answer, so a
+            // grant is recorded exactly when this run made it.
             let mut tx = pool.begin().await?;
-            let already = models::Role::get_user_roles(&mut *tx, user.id)
-                .await?
-                .into_iter()
-                .any(|r| r.id == role.id);
-            models::Role::assign_to_user(&mut *tx, user.id, role.id).await?;
+            let already = !models::Role::assign_to_user(&mut *tx, user.id, role.id).await?;
             let name = if already {
                 None
             } else {

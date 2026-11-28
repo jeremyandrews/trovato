@@ -78,6 +78,16 @@ async fn save_grid(
     save_grid_with(app, cookies, role_id, check, None).await
 }
 
+/// [`save_grid`] with `check` deciding the boxes of every role in `roles`.
+async fn save_grid_for(
+    app: &TestApp,
+    cookies: &str,
+    roles: &[Uuid],
+    check: impl Fn(&str) -> bool,
+) -> StatusCode {
+    save_grid_roles(app, cookies, roles, check, None).await
+}
+
 /// [`save_grid`], plus one permission name the grid did not render, posted by
 /// hand after the rendered ones and ticked for the role under test.
 ///
@@ -90,7 +100,19 @@ async fn save_grid_with(
     check: impl Fn(&str) -> bool,
     forged: Option<&str>,
 ) -> StatusCode {
+    save_grid_roles(app, cookies, &[role_id], check, forged).await
+}
+
+/// The body of [`save_grid_with`], for any number of roles under test.
+async fn save_grid_roles(
+    app: &TestApp,
+    cookies: &str,
+    roles: &[Uuid],
+    check: impl Fn(&str) -> bool,
+    forged: Option<&str>,
+) -> StatusCode {
     let _guard = GRID_SAVE_LOCK.lock().await;
+    let under_test: Vec<String> = roles.iter().map(Uuid::to_string).collect();
 
     let (status, html) = get(app, cookies, "/admin/people/permissions").await;
     assert_eq!(status, StatusCode::OK, "the grid must render");
@@ -133,22 +155,24 @@ async fn save_grid_with(
         for key in &already_checked {
             let prefix = format!("perm_{index}_");
             if let Some(other) = key.strip_prefix(&prefix)
-                && other != role_id.to_string()
+                && !under_test.iter().any(|r| r == other)
             {
                 body.push_str(&format!("&{key}=1"));
             }
         }
         if check(&name) {
-            body.push_str(&format!("&perm_{index}_{role_id}=1"));
+            for role_id in roles {
+                body.push_str(&format!("&perm_{index}_{role_id}=1"));
+            }
         }
         index += 1;
     }
     assert!(index > 0, "the grid rendered no permissions at all");
     if let Some(name) = forged {
-        body.push_str(&format!(
-            "&permname_{index}={}&perm_{index}_{role_id}=1",
-            urlencode(name)
-        ));
+        body.push_str(&format!("&permname_{index}={}", urlencode(name)));
+        for role_id in roles {
+            body.push_str(&format!("&perm_{index}_{role_id}=1"));
+        }
     }
 
     app.request_with_cookies(
@@ -473,5 +497,74 @@ fn a_delegate_can_still_grant_a_permission_they_hold() {
             vec!["access content".to_string()],
             "a delegate must still be able to grant what they hold"
         );
+    });
+}
+
+/// A grid save changes every role it asks to change, or none: when the
+/// `role.permissions_changed` recording one role's change cannot be written,
+/// no role's grants change and the save does not answer as one that worked.
+///
+/// Each role used to save in its own transaction, and a failed save was only
+/// logged: the roles before the failed one kept their change, and the screen
+/// redirected as if all had saved.
+#[test]
+fn a_grid_save_whose_event_fails_for_one_role_changes_no_role() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, first, tag) = fixture(app).await;
+        let second = Role::create(&app.db, &format!("gridsave_b_{tag}"))
+            .await
+            .expect("create role");
+        common::track_test_role(&app.db, second.id);
+
+        // Only the second role's event is refused: the first role's change,
+        // saved earlier in the same request, must not stand alone.
+        let name = format!("b277_grid_{tag}");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN RAISE EXCEPTION 'security event refused by the test'; END $$"
+        )))
+        .execute(&app.db)
+        .await
+        .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE TRIGGER {name} BEFORE INSERT ON security_audit_log FOR EACH ROW \
+             WHEN (NEW.kind = 'role.permissions_changed' \
+             AND NEW.details->>'role_id' = '{}') EXECUTE FUNCTION {name}()",
+            second.id
+        )))
+        .execute(&app.db)
+        .await
+        .unwrap();
+        let db = app.db.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP TRIGGER IF EXISTS {name} ON security_audit_log"
+            )))
+            .execute(&db)
+            .await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP FUNCTION IF EXISTS {name}()"
+            )))
+            .execute(&db)
+            .await;
+        });
+
+        let status = save_grid_for(app, &cookies, &[first, second.id], |p| {
+            p == "access content"
+        })
+        .await;
+
+        assert_ne!(
+            status,
+            StatusCode::SEE_OTHER,
+            "a grid save whose event failed answered as a save that worked"
+        );
+        assert!(
+            grants(app, first).await.is_empty(),
+            "the first role kept its change though the save failed, got {:?}",
+            grants(app, first).await
+        );
+        assert!(grants(app, second.id).await.is_empty());
     });
 }

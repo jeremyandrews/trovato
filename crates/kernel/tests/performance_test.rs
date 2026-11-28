@@ -632,19 +632,16 @@ fn form_token(html: &str) -> String {
     common::input_value_in(html, "_token").expect("a CSRF form field")
 }
 
-/// Self registration, as the signup page posts it.
+/// Self registration, as the registration form at `/user/register` posts it.
 fn register(html: &str, name: &str) -> axum::http::Request<axum::body::Body> {
-    axum::http::Request::post("/user/register/json")
-        .header("content-type", "application/json")
-        .header("x-csrf-token", meta_csrf(html))
-        .body(axum::body::Body::from(
-            serde_json::json!({
-                "username": name,
-                "mail": format!("{name}@perf.example.test"),
-                "password": WRITE_PASSWORDS[0],
-            })
-            .to_string(),
-        ))
+    let fields = common::form_fields(html, "user_register");
+    let password = WRITE_PASSWORDS[0];
+    axum::http::Request::post("/user/register")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(axum::body::Body::from(format!(
+            "{fields}&username={name}&mail={}&password={password}&confirm_password={password}",
+            urlencoding::encode(&format!("{name}@perf.example.test")),
+        )))
         .unwrap()
 }
 
@@ -686,6 +683,33 @@ fn create_token(html: &str) -> axum::http::Request<axum::body::Body> {
             serde_json::json!({ "name": "perf", "expires_in_days": 30 }).to_string(),
         ))
         .unwrap()
+}
+
+/// Self registration through the form: the account, its verification mail
+/// and `account.created` commit together.
+#[test]
+fn registration_form() {
+    run_test(async {
+        // Registration was opened when the site was built (common/perf.rs).
+        let site = shared_site();
+        let name = format!("perf_form_{}", uuid::Uuid::now_v7().simple());
+        let written = site
+            .write(
+                "registration_form.anonymous.post",
+                "",
+                "/user/register",
+                true,
+                |html| register(html, &name),
+            )
+            .await;
+        let id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
+            .bind(&name)
+            .fetch_one(&site.app.db)
+            .await
+            .unwrap_or_else(|e| panic!("the form made no account ({e}): {}", written.visit.body));
+        assert_eq!(events_of(site, "account.created", id).await, 1);
+        check_answered(&written.visit, 200);
+    });
 }
 
 /// How many security events of `kind` name `user_id`.
@@ -766,13 +790,54 @@ fn quantile(samples: &mut [std::time::Duration], q: f64) -> std::time::Duration 
     samples[rank.clamp(1, samples.len()) - 1]
 }
 
+/// What every timed write of one path must leave behind: one event of
+/// `kind`, naming `user` when there is one, per request.
+struct Expect<'a> {
+    kind: &'a str,
+    user: Option<uuid::Uuid>,
+}
+
+/// How many events of `expect.kind` (naming `expect.user`, when set) were
+/// written at or after `since`.
+async fn written_since(
+    site: &PerfSite,
+    expect: &Expect<'_>,
+    since: chrono::DateTime<chrono::Utc>,
+) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM security_audit_log WHERE kind = $1 AND created >= $2 \
+         AND ($3::uuid IS NULL OR user_id = $3)",
+    )
+    .bind(expect.kind)
+    .bind(since)
+    .bind(expect.user)
+    .fetch_one(&site.app.db)
+    .await
+    .unwrap()
+}
+
 /// Time `runs` writes after `warmup` unmeasured ones, and print the median
 /// and 95th percentile latency and the statements per request.
-async fn time_write<F, Fut>(label: &str, warmup: usize, runs: usize, mut one: F)
-where
+///
+/// A request that answered but changed nothing (a form shown again with an
+/// error, a redirect to the sign in page) must not be timed as a write: once
+/// the runs are done, outside the timed requests, every one of them must have
+/// written its event, or the timing is refused.
+async fn time_write<F, Fut>(
+    site: &PerfSite,
+    label: &str,
+    expect: Expect<'_>,
+    warmup: usize,
+    runs: usize,
+    mut one: F,
+) where
     F: FnMut(usize) -> Fut,
     Fut: std::future::Future<Output = common::perf::Written>,
 {
+    let since: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&site.app.db)
+        .await
+        .unwrap();
     let mut samples = Vec::with_capacity(runs);
     let mut statements = std::collections::BTreeMap::<u32, usize>::new();
     for i in 0..warmup + runs {
@@ -788,6 +853,14 @@ where
             *statements.entry(written.visit.counts.queries).or_default() += 1;
         }
     }
+    let written = written_since(site, &expect, since).await;
+    assert_eq!(
+        written,
+        (warmup + runs) as i64,
+        "{label}: {} requests wrote {written} {} events",
+        warmup + runs,
+        expect.kind
+    );
     let p50 = quantile(&mut samples, 0.50);
     let p95 = quantile(&mut samples, 0.95);
     println!(
@@ -813,16 +886,33 @@ fn security_event_write_latency() {
         const RUNS: usize = 200;
         let site = shared_site();
 
-        time_write("registration", WARMUP, RUNS, |_| async {
-            let name = format!("perf_reg_{}", uuid::Uuid::now_v7().simple());
-            site.write("bench", "", "/", false, |html| register(html, &name))
+        let registration = Expect {
+            kind: "account.created",
+            user: None,
+        };
+        time_write(
+            site,
+            "registration",
+            registration,
+            WARMUP,
+            RUNS,
+            |_| async {
+                let name = format!("perf_reg_{}", uuid::Uuid::now_v7().simple());
+                site.write("bench", "", "/user/register", false, |html| {
+                    register(html, &name)
+                })
                 .await
-        })
+            },
+        )
         .await;
 
         let (pw_id, _, pw_cookies) = own_member(site, "perf_pw_bench").await;
         let cookies = std::sync::Mutex::new(pw_cookies);
-        time_write("password change", WARMUP, RUNS, |i| {
+        let changed = Expect {
+            kind: "password.changed",
+            user: Some(pw_id),
+        };
+        time_write(site, "password change", changed, WARMUP, RUNS, |i| {
             let cookies = &cookies;
             async move {
                 site.app
@@ -847,7 +937,11 @@ fn security_event_write_latency() {
         let (edit_id, edit_name, _) = own_member(site, "perf_edit_bench").await;
         let admin = site.cookies_of(Visitor::Admin).to_string();
         let edit_page = format!("/admin/people/{edit_id}/edit");
-        time_write("admin user edit", WARMUP, RUNS, |i| {
+        let edited = Expect {
+            kind: "user.mail_changed",
+            user: Some(edit_id),
+        };
+        time_write(site, "admin user edit", edited, WARMUP, RUNS, |i| {
             let (admin, edit_page, edit_name) = (&admin, &edit_page, &edit_name);
             async move {
                 let mail = format!("{edit_name}+{}@perf.example.test", i % 2);
@@ -860,7 +954,11 @@ fn security_event_write_latency() {
         .await;
 
         let (token_id, _, token_cookies) = own_member(site, "perf_token_bench").await;
-        time_write("api token create", WARMUP, RUNS, |_| {
+        let issued = Expect {
+            kind: "api_token.created",
+            user: Some(token_id),
+        };
+        time_write(site, "api token create", issued, WARMUP, RUNS, |_| {
             let token_cookies = &token_cookies;
             async move {
                 // Under the per-account limit, whatever the run before left.

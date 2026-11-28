@@ -140,17 +140,36 @@ pub async fn revoke_all_for_user(
     reason: &str,
 ) -> Result<usize> {
     let mut tx = state.db().begin().await?;
+    let revoked = revoke_all_for_user_in(state, &mut tx, user_id, actor, reason).await?;
+    tx.commit().await?;
+    Ok(revoked)
+}
+
+/// [`revoke_all_for_user`] on `tx`, the caller's transaction: the deletes
+/// and their events commit when it does, for a change (an administrator
+/// blocking the account) that must not stand without them.
+///
+/// # Errors
+///
+/// When the delete or an event fails; the caller's transaction must then
+/// roll back.
+pub async fn revoke_all_for_user_in(
+    state: &AppState,
+    tx: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    actor: Option<Uuid>,
+    reason: &str,
+) -> Result<usize> {
     let ids = ApiToken::delete_all_for_user(&mut *tx, user_id).await?;
     state
         .audit_trail()
         .security_all_in(
-            &mut tx,
+            tx,
             ids.iter()
                 .map(|id| revoked_event(user_id, *id, actor, reason))
                 .collect::<Vec<_>>(),
         )
         .await?;
-    tx.commit().await?;
     Ok(ids.len())
 }
 

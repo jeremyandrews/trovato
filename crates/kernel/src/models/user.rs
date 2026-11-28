@@ -263,6 +263,12 @@ impl User {
     /// One statement either way: the earlier values come from a subquery the
     /// `UPDATE` joins, which reads the row as it was before the statement
     /// changed it, so recording what changed costs no read of its own.
+    ///
+    /// The subquery locks the row (`FOR UPDATE`). Without the lock it would
+    /// read the statement's snapshot, and an update that waited on a
+    /// concurrent one would report the values from before that one committed:
+    /// an address the other request had just set, then replaced here, would
+    /// appear in no event at all. Locking reads the row as last committed.
     pub async fn update_returning_before(
         conn: &mut sqlx::PgConnection,
         id: Uuid,
@@ -317,7 +323,8 @@ impl User {
 
         query.push_str(&params.join(", "));
         query.push_str(&format!(
-            " FROM (SELECT id, name, mail, status, is_admin FROM users WHERE id = ${param_idx}) \
+            " FROM (SELECT id, name, mail, status, is_admin FROM users WHERE id = ${param_idx} \
+             FOR UPDATE) \
              AS before WHERE users.id = before.id \
              RETURNING users.*, before.name AS before_name, before.mail AS before_mail, \
              before.status AS before_status, before.is_admin AS before_is_admin"
@@ -384,7 +391,9 @@ impl User {
     /// transaction began) as the account's password, on `conn`.
     ///
     /// Returns whether the account had a password before, read in the same
-    /// statement, or `None` when there is no such account.
+    /// statement (from the row as last committed, locked as
+    /// [`Self::update_returning_before`] locks it), or `None` when there is
+    /// no such account.
     pub(crate) async fn replace_password<'e, E: sqlx::PgExecutor<'e>>(
         executor: E,
         id: Uuid,
@@ -392,7 +401,8 @@ impl User {
     ) -> Result<Option<bool>> {
         sqlx::query_scalar(
             "UPDATE users SET pass = $1 \
-             FROM (SELECT id, pass <> '' AS had_password FROM users WHERE id = $2) AS before \
+             FROM (SELECT id, pass <> '' AS had_password FROM users WHERE id = $2 FOR UPDATE) \
+             AS before \
              WHERE users.id = before.id RETURNING before.had_password",
         )
         .bind(hashed)

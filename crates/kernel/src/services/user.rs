@@ -148,6 +148,13 @@ pub(crate) fn account_created_event(
         .detail("by", by)
 }
 
+/// An account [`UserService::update_in`] changed: the account as it is now,
+/// and its event fields as they were, for [`UserService::updated`].
+pub(crate) struct AccountUpdate {
+    pub(crate) user: User,
+    pub(crate) before: crate::models::user::AccountBefore,
+}
+
 /// The fields of an account a change to which is a security event.
 pub(crate) struct AccountFields<'a> {
     pub(crate) name: &'a str,
@@ -397,15 +404,33 @@ impl UserService {
     ) -> Result<User> {
         let pass = crate::models::user::stored_password(&input.password)?;
         let mut tx = self.inner.pool.begin().await?;
-        let user = User::insert_hashed(&mut *tx, input, &pass, 1).await?;
-        self.audit_created_in(&mut tx, &user, acting_user, path, true)
+        let user = self
+            .create_in(&mut tx, input, &pass, 1, acting_user, path)
             .await?;
         tx.commit().await?;
-        self.inner.cache.insert(user.id, user.clone());
-        self.dispatch_tap("tap_user_register", user.id, acting_user)
-            .await;
-        info!(user_id = %user.id, name = %user.name, "user created");
-        self.record_created(&user, acting_user).await;
+        self.created_with_status(&user, 1, acting_user).await;
+        Ok(user)
+    }
+
+    /// Insert an account on `tx`, the caller's transaction, and write its
+    /// `account.created` there. `pass` is what `users.pass` holds, hashed
+    /// before the transaction began; `status` and `path` are as
+    /// [`Self::create_with_status`].
+    ///
+    /// Once `tx` has committed, the caller calls [`Self::created_with_status`]
+    /// for what follows a new account.
+    pub(crate) async fn create_in(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        input: CreateUser,
+        pass: &str,
+        status: i16,
+        acting_user: &UserContext,
+        path: &str,
+    ) -> Result<User> {
+        let user = User::insert_hashed(&mut *tx, input, pass, status).await?;
+        self.audit_created_in(tx, &user, acting_user, path, status == 1)
+            .await?;
         Ok(user)
     }
 
@@ -467,7 +492,12 @@ impl UserService {
 
     /// What follows a committed insert: cache, `tap_user_register`, the
     /// content audit row.
-    async fn created_with_status(&self, user: &User, status: i16, acting_user: &UserContext) {
+    pub(crate) async fn created_with_status(
+        &self,
+        user: &User,
+        status: i16,
+        acting_user: &UserContext,
+    ) {
         self.inner.cache.insert(user.id, user.clone());
         self.dispatch_tap("tap_user_register", user.id, acting_user)
             .await;
@@ -502,7 +532,25 @@ impl UserService {
         acting_user: &UserContext,
     ) -> Result<Option<User>> {
         let mut tx = self.inner.pool.begin().await?;
-        let Some((user, before)) = User::update_returning_before(&mut tx, id, input).await? else {
+        let Some(updated) = self.update_in(&mut tx, id, input, acting_user).await? else {
+            return Ok(None);
+        };
+        tx.commit().await?;
+        self.updated(&updated, acting_user).await;
+        Ok(Some(updated.user))
+    }
+
+    /// [`Self::update`] on `tx`, the caller's transaction: the update and the
+    /// events it writes go there, and the caller calls [`Self::updated`] once
+    /// `tx` has committed. `None` when there is no such account.
+    pub(crate) async fn update_in(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        id: Uuid,
+        input: UpdateUser,
+        acting_user: &UserContext,
+    ) -> Result<Option<AccountUpdate>> {
+        let Some((user, before)) = User::update_returning_before(&mut *tx, id, input).await? else {
             return Ok(None);
         };
         let actor = actor_of(acting_user);
@@ -515,18 +563,28 @@ impl UserService {
         self.inner
             .audit
             .security_all_in(
-                &mut tx,
+                tx,
                 account_change_events(id, actor, &before_fields, &(&user).into()),
             )
             .await?;
-        tx.commit().await?;
+        Ok(Some(AccountUpdate { user, before }))
+    }
 
+    /// What follows a committed [`Self::update_in`]: the cache,
+    /// `tap_user_update`, the content audit row.
+    pub(crate) async fn updated(&self, updated: &AccountUpdate, acting_user: &UserContext) {
+        let AccountUpdate { user, before } = updated;
+        let id = user.id;
         self.inner.cache.insert(id, user.clone());
         self.dispatch_tap("tap_user_update", id, acting_user).await;
         info!(user_id = %id, "user updated");
-        self.record_updated(&before_fields, &user, acting_user)
-            .await;
-        Ok(Some(user))
+        let before_fields = AccountFields {
+            name: &before.name,
+            mail: &before.mail,
+            status: before.status,
+            is_admin: before.is_admin,
+        };
+        self.record_updated(&before_fields, user, acting_user).await;
     }
 
     /// Update a user's password with `tap_user_update` invocation.
@@ -548,20 +606,71 @@ impl UserService {
         acting_user: &UserContext,
         via: &str,
     ) -> Result<bool> {
+        self.update_password_recorded(id, new_password, acting_user, via, Vec::new())
+            .await
+    }
+
+    /// [`Self::update_password`], also writing `also` (events the caller
+    /// built, exactly as it built them) in the password's transaction, when
+    /// there is an account to change: a step whose stored change is this
+    /// password, recovery's `recovery.completed`, commits with it.
+    pub async fn update_password_recorded(
+        &self,
+        id: Uuid,
+        new_password: &str,
+        acting_user: &UserContext,
+        via: &str,
+        also: Vec<SecurityEvent>,
+    ) -> Result<bool> {
         // Hash before BEGIN: Argon2 takes a while, and a pooled connection
         // must not sit idle in a transaction meanwhile.
         let hashed = crate::models::user::hash_password(new_password)?;
         let mut tx = self.inner.pool.begin().await?;
-        let Some(had_password) = User::replace_password(&mut *tx, id, &hashed).await? else {
+        if !self
+            .update_password_in(&mut tx, id, &hashed, acting_user, via)
+            .await?
+        {
+            return Ok(false);
+        }
+        for event in also {
+            self.inner
+                .audit
+                .security_as_built_in(&mut tx, event)
+                .await?;
+        }
+        tx.commit().await?;
+        self.password_updated(id, acting_user, via).await;
+        Ok(true)
+    }
+
+    /// Store `hashed` (from `hash_password`, made before `tx` began) as the
+    /// account's password on `tx`, the caller's transaction, writing
+    /// `password.set` or `password.changed` there. Returns whether there was
+    /// such an account; the caller calls [`Self::password_updated`] once `tx`
+    /// has committed.
+    pub(crate) async fn update_password_in(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        id: Uuid,
+        hashed: &str,
+        acting_user: &UserContext,
+        via: &str,
+    ) -> Result<bool> {
+        let Some(had_password) = User::replace_password(&mut *tx, id, hashed).await? else {
             return Ok(false);
         };
         let actor = actor_of(acting_user);
         self.inner
             .audit
-            .security_in(&mut tx, password_event(id, actor, had_password, via))
+            .security_in(tx, password_event(id, actor, had_password, via))
             .await?;
-        tx.commit().await?;
+        Ok(true)
+    }
 
+    /// What follows a committed [`Self::update_password_in`]: the cache,
+    /// `tap_user_update`, the content audit row.
+    pub(crate) async fn password_updated(&self, id: Uuid, acting_user: &UserContext, via: &str) {
+        let actor = actor_of(acting_user);
         self.invalidate(id);
         self.dispatch_tap("tap_user_update", id, acting_user).await;
         info!(user_id = %id, "user password updated");
@@ -575,7 +684,6 @@ impl UserService {
                 serde_json::json!({ "via": via }),
             )
             .await;
-        Ok(true)
     }
 
     /// Remove a user's password with `tap_user_update` invocation, as
@@ -634,16 +742,17 @@ impl UserService {
     /// bug fix and not only a policy.
     ///
     /// Ends every session the account holds, everywhere (through `sessions`,
-    /// the site's session registry), once the row is gone: no session is worth
-    /// keeping for an account that no longer exists.
+    /// the site's session registry): no session is worth keeping for an
+    /// account that no longer exists. They live in Redis, which cannot roll
+    /// back with the delete, so they are ended just before its transaction
+    /// opens, and any session that began meanwhile once it has committed.
     ///
     /// Emits `account.deleted`, whoever called this — self-service and
     /// administrator deletion both go through here, so both are recorded the
     /// same way rather than each keeping its own copy of the emit. Its
-    /// `sessions_revoked` counts the sessions the account held when it was
-    /// deleted, every one of which is ended once the delete commits. The
-    /// event commits with the delete: when it cannot be written, the account
-    /// stays and this returns the error.
+    /// `sessions_revoked` counts the sessions just ended. The event commits
+    /// with the delete: when it cannot be written, the account stays (signed
+    /// out of the sessions already ended) and this returns the error.
     pub async fn delete(
         &self,
         id: Uuid,
@@ -663,10 +772,20 @@ impl UserService {
             .await
             .unwrap_or(0);
 
-        // The sessions the account holds, counted for `account.deleted`
-        // before the transaction opens: they live in Redis, which cannot roll
-        // back, so they are ended only once the delete has committed.
-        let held_sessions = sessions.list(id).await.map(|entries| entries.len());
+        // Ended before the transaction opens, so `account.deleted` can say
+        // how many were: Redis cannot join the transaction, and a count taken
+        // any other way would be of sessions listed, not of sessions ended.
+        let sessions_revoked = match sessions.revoke_all_except(id, None).await {
+            Ok(ended) => ended.len(),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    user_id = %id,
+                    "failed to end a deleted account's sessions"
+                );
+                0
+            }
+        };
 
         let actor = actor_of(acting_user).filter(|a| *a != id);
         let by = if actor.is_some() { "admin" } else { "self" };
@@ -698,7 +817,7 @@ impl UserService {
                         .detail("by", by)
                         .detail("items_reattributed", items)
                         .detail("comments_reattributed", comments)
-                        .detail("sessions_revoked", *held_sessions.as_ref().unwrap_or(&0)),
+                        .detail("sessions_revoked", sessions_revoked),
                 )
                 .await?;
         }
@@ -723,16 +842,9 @@ impl UserService {
                 )
                 .await;
 
-            // Ended after the commit and without a per-session audit row: the
-            // audit log's `user_id` references `users`, and the account is
-            // gone. The count went in `account.deleted` instead.
-            if let Err(e) = held_sessions {
-                tracing::error!(
-                    error = %e,
-                    user_id = %id,
-                    "failed to list a deleted account's sessions"
-                );
-            }
+            // A session that began between the revoke above and the commit:
+            // ended without a per-session audit row, as those were, since the
+            // audit log's `user_id` references `users` and the account is gone.
             if let Err(e) = sessions.revoke_all_except(id, None).await {
                 tracing::error!(
                     error = %e,

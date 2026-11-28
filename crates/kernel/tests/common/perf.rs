@@ -565,6 +565,10 @@ impl PerfSite {
     /// (the request alone, from sending it to reading its whole body), and
     /// the cookies to send next (the ones it reissued, or `cookies`).
     ///
+    /// With no `cookies` (an anonymous visitor), the write carries whatever
+    /// cookies the page set, as a browser would: a form the page rendered
+    /// keeps its state in the session the page started.
+    ///
     /// With `cold`, the caches are emptied before the page loads, as
     /// [`Self::submit`] does: the page then warms the same caches on every
     /// run, so the write's counts are the same on every run too. Without it
@@ -598,6 +602,11 @@ impl PerfSite {
             200,
             "{key}: {page} did not load"
         );
+        let cookies = if cookies.is_empty() {
+            super::extract_cookies(&response)
+        } else {
+            cookies.to_string()
+        };
         let html = to_bytes(response.into_body(), usize::MAX)
             .await
             .map(|b| String::from_utf8_lossy(&b).into_owned())
@@ -636,7 +645,7 @@ impl PerfSite {
             },
             elapsed,
             cookies: if reissued.is_empty() {
-                cookies.to_string()
+                cookies
             } else {
                 reissued
             },
