@@ -108,7 +108,12 @@ impl S3Storage {
     }
 
     fn object_url(&self, key: &str) -> String {
-        format!("{}://{}{}", self.url_scheme, self.host, self.request_path(key))
+        format!(
+            "{}://{}{}",
+            self.url_scheme,
+            self.host,
+            self.request_path(key)
+        )
     }
 
     /// Sign and send one request with `method` against `key`, with `body`
@@ -169,9 +174,7 @@ impl S3Storage {
 impl FileStorage for S3Storage {
     async fn write(&self, uri: &str, data: &[u8]) -> Result<()> {
         let key = self.key_for(uri)?;
-        let resp = self
-            .send(reqwest::Method::PUT, &key, data.to_vec())
-            .await?;
+        let resp = self.send(reqwest::Method::PUT, &key, data.to_vec()).await?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();

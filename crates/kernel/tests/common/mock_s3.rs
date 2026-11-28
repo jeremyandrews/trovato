@@ -77,7 +77,12 @@ impl MockS3 {
     /// signing entirely — for a test to assert on server-side state
     /// directly, same as `SmtpSink::messages`.
     pub fn object(&self, key: &str) -> Option<Vec<u8>> {
-        self.store.lock().expect("mock S3 store lock").objects.get(key).cloned()
+        self.store
+            .lock()
+            .expect("mock S3 store lock")
+            .objects
+            .get(key)
+            .cloned()
     }
 
     pub fn object_count(&self) -> usize {
@@ -110,9 +115,8 @@ async fn handle(
         })
         .unwrap_or_default();
 
-    let body = match axum::body::to_bytes(request.into_body(), 32 * 1024 * 1024).await {
-        Ok(b) => b,
-        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    let Ok(body) = axum::body::to_bytes(request.into_body(), 32 * 1024 * 1024).await else {
+        return StatusCode::BAD_REQUEST.into_response();
     };
 
     if let Err(status) = verify_signature(&method, &path, &query, &headers, &body) {
@@ -183,7 +187,8 @@ fn verify_signature(
         let when = chrono::NaiveDateTime::parse_from_str(date, "%Y%m%dT%H%M%SZ")
             .map_err(|_| StatusCode::FORBIDDEN)?
             .and_utc();
-        let expected_query = sigv4::presign_query(host, path, &credentials(), REGION, "s3", when, expires);
+        let expected_query =
+            sigv4::presign_query(host, path, &credentials(), REGION, "s3", when, expires);
         let expected_signature = expected_query
             .rsplit("X-Amz-Signature=")
             .next()
@@ -226,7 +231,10 @@ fn verify_signature(
             REGION,
             "s3",
             when,
-            &[("x-amz-date", amz_date), ("x-amz-content-sha256", content_sha256)],
+            &[
+                ("x-amz-date", amz_date),
+                ("x-amz-content-sha256", content_sha256),
+            ],
         );
         if expected == authorization {
             Ok(())

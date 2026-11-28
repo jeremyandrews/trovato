@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use common::mock_s3::{self, MockS3};
 use sqlx::Row;
-use trovato_kernel::file::{FileStorage, LocalFileStorage, MigrationBackends, S3Settings, S3Storage, migrate_files};
+use trovato_kernel::file::{
+    FileStorage, LocalFileStorage, MigrationBackends, S3Settings, S3Storage, migrate_files,
+};
 use uuid::Uuid;
 
 struct TempDir(std::path::PathBuf);
@@ -111,7 +113,10 @@ async fn moves_verifies_and_rewrites_local_files_to_s3() {
     let uri_a = format!("local://2026/01/{id_a}_a.bin");
     let uri_b = format!("local://2026/01/{id_b}_b.bin");
     local.write(&uri_a, b"public payload").await.unwrap();
-    local.write(&uri_b, b"private payload, a bit longer").await.unwrap();
+    local
+        .write(&uri_b, b"private payload, a bit longer")
+        .await
+        .unwrap();
     insert_file(db.pool(), owner, id_a, &uri_a, 14, 0).await;
     insert_file(db.pool(), owner, id_b, &uri_b, 29, 1).await;
 
@@ -130,17 +135,25 @@ async fn moves_verifies_and_rewrites_local_files_to_s3() {
 
     let new_uri_a = uri_of(db.pool(), id_a).await;
     let new_uri_b = uri_of(db.pool(), id_b).await;
-    assert_eq!(new_uri_a, "s3://2026/01/".to_string() + &format!("{id_a}_a.bin"));
-    assert_eq!(new_uri_b, "s3://2026/01/".to_string() + &format!("{id_b}_b.bin"));
+    assert_eq!(
+        new_uri_a,
+        "s3://2026/01/".to_string() + &format!("{id_a}_a.bin")
+    );
+    assert_eq!(
+        new_uri_b,
+        "s3://2026/01/".to_string() + &format!("{id_b}_b.bin")
+    );
 
     // The public file landed under the public prefix, the private one under
     // the private prefix — the two schemes do not collide in one bucket.
     assert_eq!(
-        mock.object(&format!("public/2026/01/{id_a}_a.bin")).unwrap(),
+        mock.object(&format!("public/2026/01/{id_a}_a.bin"))
+            .unwrap(),
         b"public payload"
     );
     assert_eq!(
-        mock.object(&format!("private/2026/01/{id_b}_b.bin")).unwrap(),
+        mock.object(&format!("private/2026/01/{id_b}_b.bin"))
+            .unwrap(),
         b"private payload, a bit longer"
     );
 
@@ -173,7 +186,10 @@ async fn resumes_after_a_simulated_interruption_without_reprocessing_finished_fi
     // not count it as moved.
     let done_uri_local = format!("local://2026/02/{id_done}_done.bin");
     let done_uri_s3 = format!("s3://2026/02/{id_done}_done.bin");
-    local.write(&done_uri_local, b"already migrated").await.unwrap();
+    local
+        .write(&done_uri_local, b"already migrated")
+        .await
+        .unwrap();
     s3.write(&done_uri_s3, b"already migrated").await.unwrap();
     insert_file(db.pool(), owner, id_done, &done_uri_s3, 17, 0).await;
 
@@ -205,7 +221,10 @@ async fn resumes_after_a_simulated_interruption_without_reprocessing_finished_fi
     );
 
     let new_pending_uri = uri_of(db.pool(), id_pending).await;
-    assert_eq!(new_pending_uri, format!("s3://2026/02/{id_pending}_pending.bin"));
+    assert_eq!(
+        new_pending_uri,
+        format!("s3://2026/02/{id_pending}_pending.bin")
+    );
     assert_eq!(
         s3.read(&new_pending_uri).await.unwrap(),
         b"not yet moved".to_vec()

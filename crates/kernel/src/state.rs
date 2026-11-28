@@ -421,7 +421,11 @@ impl AppState {
             &config.files_url,
             config.s3.as_ref(),
         )?;
-        let files = Arc::new(FileService::new(db.clone(), public_storage, private_storage));
+        let files = Arc::new(FileService::new(
+            db.clone(),
+            public_storage,
+            private_storage,
+        ));
 
         let config_storage: Arc<dyn ConfigStorage> =
             Arc::new(DirectConfigStorage::new(db.clone()).with_files(files.clone()));

@@ -76,7 +76,7 @@ fn uri_encode(s: &str, encode_slash: bool) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b'/' if !encode_slash => out.push('/'),
             _ => out.push_str(&format!("%{b:02X}")),
@@ -282,10 +282,7 @@ mod tests {
             ("Host", "example.com"),
         ];
         let (canonical, signed) = canonical_headers_and_signed(&headers);
-        assert_eq!(
-            canonical,
-            "host:example.com\nx-amz-date:20260524T000000Z\n"
-        );
+        assert_eq!(canonical, "host:example.com\nx-amz-date:20260524T000000Z\n");
         assert_eq!(signed, "host;x-amz-date");
     }
 

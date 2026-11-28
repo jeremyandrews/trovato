@@ -41,7 +41,10 @@ async fn writes_reads_sizes_and_deletes_a_round_trip() {
 
     storage.delete(uri).await.unwrap();
     assert!(!storage.exists(uri).await.unwrap());
-    assert!(storage.read(uri).await.is_err(), "deleted object reads as an error");
+    assert!(
+        storage.read(uri).await.is_err(),
+        "deleted object reads as an error"
+    );
 }
 
 #[tokio::test]
@@ -89,11 +92,7 @@ async fn an_anonymous_get_with_no_signature_is_refused() {
     storage.write(uri, b"nope").await.unwrap();
 
     // A plain unsigned GET, as any caller without the credentials would send.
-    let url = format!(
-        "{}/{}/secret.txt",
-        mock.endpoint(),
-        mock_s3::BUCKET
-    );
+    let url = format!("{}/{}/secret.txt", mock.endpoint(), mock_s3::BUCKET);
     let resp = reqwest::get(&url).await.unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 }
@@ -114,11 +113,13 @@ async fn two_backends_with_different_prefixes_do_not_see_each_others_objects() {
     assert_eq!(private.read(uri).await.unwrap(), b"private bytes".to_vec());
     assert_eq!(mock.object_count(), 2, "distinct keys on the wire");
     assert_eq!(
-        mock.object("public/2026/01/same_relative_path.jpg").unwrap(),
+        mock.object("public/2026/01/same_relative_path.jpg")
+            .unwrap(),
         b"public bytes"
     );
     assert_eq!(
-        mock.object("private/2026/01/same_relative_path.jpg").unwrap(),
+        mock.object("private/2026/01/same_relative_path.jpg")
+            .unwrap(),
         b"private bytes"
     );
 }

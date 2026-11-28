@@ -287,17 +287,15 @@ async fn download_file(
             return StatusCode::NOT_FOUND.into_response();
         }
     };
-    let body_stream = tokio_stream::StreamExt::map(stream, |chunk| {
-        chunk.map_err(std::io::Error::other)
-    });
+    let body_stream =
+        tokio_stream::StreamExt::map(stream, |chunk| chunk.map_err(std::io::Error::other));
 
     let cache_control = if private {
         PRIVATE_NO_STORE.to_string()
     } else {
         served_file_cache_control(&state, &file.uri, &viewer, 604_800).await
     };
-    let disposition = if file.filemime.starts_with("image/") || file.filemime == "application/pdf"
-    {
+    let disposition = if file.filemime.starts_with("image/") || file.filemime == "application/pdf" {
         "inline"
     } else {
         "attachment"

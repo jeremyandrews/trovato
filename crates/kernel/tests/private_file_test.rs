@@ -13,8 +13,8 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use common::{TestApp, run_test, shared_app};
 use trovato_kernel::file::FileVisibility;
-use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::models::CreateItem;
+use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::tap::UserContext;
 use trovato_sdk::types::{FieldDefinition, FieldType};
 use uuid::Uuid;
@@ -47,7 +47,10 @@ async fn create_user(app: &TestApp) -> Uuid {
 
 /// A content type with one private File field.
 async fn ensure_private_doc_type(app: &TestApp) -> String {
-    let name = format!("b291_private_{}", &Uuid::now_v7().simple().to_string()[20..]);
+    let name = format!(
+        "b291_private_{}",
+        &Uuid::now_v7().simple().to_string()[20..]
+    );
     let mut field = FieldDefinition::new("field_doc", FieldType::File).label("Document");
     field.settings = serde_json::json!({ "private": true });
     let settings = serde_json::json!({ "fields": [field] });
@@ -133,7 +136,13 @@ fn attaching_to_a_private_field_marks_the_file_private() {
             .await
             .expect("upload");
         assert_eq!(
-            app.state.files().get(upload.id).await.unwrap().unwrap().visibility,
+            app.state
+                .files()
+                .get(upload.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .visibility,
             FileVisibility::Public,
             "a plain upload starts public"
         );
@@ -167,7 +176,13 @@ fn private_file_download_route_follows_the_same_view_policy_but_path_route_refus
             .await
             .expect("private upload");
         assert_eq!(
-            app.state.files().get(upload.id).await.unwrap().unwrap().visibility,
+            app.state
+                .files()
+                .get(upload.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .visibility,
             FileVisibility::Private
         );
         let path = upload
@@ -180,7 +195,11 @@ fn private_file_download_route_follows_the_same_view_policy_but_path_route_refus
 
         // Published: owner, any other viewer and anonymous may all download it.
         let resp = download(app, upload.id).await;
-        assert_eq!(resp.status(), StatusCode::OK, "published item: downloadable");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "published item: downloadable"
+        );
         let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
         assert_eq!(body.to_vec(), small_png());
 
