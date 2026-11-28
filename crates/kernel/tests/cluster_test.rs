@@ -1277,20 +1277,20 @@ async fn s09_chat_limit_is_shared() {
     let _serial = SERIAL.lock().await;
     let Some(c) = cluster().await else { return };
     let limit = 3;
+    // The chat settings are a pipeline form: post what its page built.
+    let page = c.admin.get_html(On::A, "/admin/system/ai-chat").await;
+    let mut fields = pipeline_fields(&page.body, "ai_chat_config_form");
+    fields.extend([
+        ("system_prompt", "You are a test.".to_string()),
+        ("rag_max_results", "5".to_string()),
+        ("rag_min_score", "0.3".to_string()),
+        ("max_history_turns", "5".to_string()),
+        ("rate_limit_per_hour", limit.to_string()),
+        ("max_tokens", "256".to_string()),
+    ]);
     let saved = c
         .admin
-        .submit(
-            On::A,
-            "/admin/system/ai-chat",
-            &[
-                ("system_prompt", "You are a test.".to_string()),
-                ("rag_max_results", "5".to_string()),
-                ("rag_min_score", "0.3".to_string()),
-                ("max_history_turns", "5".to_string()),
-                ("rate_limit_per_hour", limit.to_string()),
-                ("max_tokens", "256".to_string()),
-            ],
-        )
+        .post_form(On::A, "/admin/system/ai-chat", &fields)
         .await;
     assert!(
         saved.status.is_redirection(),

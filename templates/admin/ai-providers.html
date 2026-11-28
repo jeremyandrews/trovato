@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {% block page_title %}{{ t(s="AI Providers") }}{% endblock page_title %}
@@ -54,17 +53,17 @@
                 </td>
                 <td class="operations">
                     <a href="/admin/system/ai-providers/{{ provider.id }}/edit">{{ t(s="Edit {name}", name=provider.label) }}</a>
-                    <form method="post" action="/admin/system/ai-providers/{{ provider.id }}/test" class="inline-form js-test-connection" data-provider-id="{{ provider.id }}" novalidate>
-                        {{ form::csrf(csrf_token=csrf_token) }}
-                        <button type="submit" class="link-button">{{ t(s="Test {name}", name=provider.label) }}</button>
-                    </form>
-                    {{ list::delete_button(action="/admin/system/ai-providers/" ~ provider.id ~ "/delete", label=t(s="Delete {name}", name=provider.label), confirm_text=t(s="Delete the {name} provider?", name=provider.label), csrf_token=csrf_token) }}
+                    <button type="submit" form="{{ test_form_id }}" formaction="/admin/system/ai-providers/{{ provider.id }}/test" class="link-button js-test-connection" data-provider-id="{{ provider.id }}">{{ t(s="Test {name}", name=provider.label) }}</button>
+                    <a class="link-button link-button--danger" href="/admin/system/ai-providers/{{ provider.id }}/delete">{{ t(s="Delete {name}", name=provider.label) }}</a>
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
 </div>
+{#- The form every row's Test button belongs to (form=), each posting to its
+    own provider's test address (formaction). -#}
+{{ test_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 {% else %}
 {{ list::empty(message=t(s="No AI providers configured."), add_url="/admin/system/ai-providers/add", add_label=t(s="Add a provider")) }}
 {% endif %}
@@ -86,21 +85,7 @@
     <h2 id="default-providers-heading">{{ t(s="Default Providers") }}</h2>
     <p>{{ t(s="Assign a default provider for each operation type. Plugins will use these unless they specify an override.") }}</p>
 
-    <form method="post" action="/admin/system/ai-providers/defaults" novalidate>
-        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
-
-        {#- The enabled providers, as [id, label] pairs. -#}
-        {% set_global provider_options = [] %}
-        {% for provider in providers %}{% if provider.enabled %}{% set pair = [provider.id, provider.label] %}{% set_global provider_options = provider_options | concat(with=[pair]) %}{% endif %}{% endfor %}
-
-        {{ form::fieldset_start(legend=t(s="Default provider for each operation")) }}
-            {% for op in operation_defaults %}
-            {{ form::select(name="default_" ~ op.key, label=t(s=op.label), options=provider_options, value=op.default_provider | default(value=""), empty=t(s="— None —")) }}
-            {% endfor %}
-        {{ form::fieldset_end() }}
-
-        {{ form::actions(submit_label=t(s="Save defaults"), cancel_url="/admin/system/ai-providers") }}
-    </form>
+    {{ defaults_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </section>
 {% endif %}
 {% endblock content %}

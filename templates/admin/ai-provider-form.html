@@ -1,57 +1,11 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
 {% block page_title %}{% if editing %}{{ t(s="Edit AI Provider") }}{% else %}{{ t(s="Add AI Provider") }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="An AI provider is a service the site may call, and the model it uses for each kind of work.") }}</p>{% endblock page_intro %}
 
 {% block content %}
-{% set errs = errors | default(value=[]) %}
-{#- Operation choices as [key, label] pairs, and the protocols. -#}
-{% set_global op_options = [] %}
-{% for op in operations %}{% set op_label = t(s=op.label) %}{% set pair = [op.key, op_label] %}{% set_global op_options = op_options | concat(with=[pair]) %}{% endfor %}
-{% set proto_openai_label = t(s="OpenAI Compatible") %}
-{% set proto_anthropic_label = t(s="Anthropic") %}
-{% set proto_openai = ["open_ai_compatible", proto_openai_label] %}
-{% set proto_anthropic = ["anthropic", proto_anthropic_label] %}
-{% set protocols = [proto_openai, proto_anthropic] %}
 <div class="admin-card">
-    <form method="post" action="{{ action }}" novalidate>
-        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
-
-        {{ form::error_summary(errors=errs) }}
-
-        {{ form::field(name="label", label=t(s="Label"), value=values.label | default(value=""), hint=t(s='A human-readable name for this provider (e.g. "OpenAI Production").'), required=true, errors=errs, width="30") }}
-
-        {{ form::select(name="protocol", label=t(s="Protocol"), options=protocols, value=values.protocol | default(value=""), empty=t(s="— Select —"), hint=t(s="OpenAI Compatible covers OpenAI, Azure, Ollama, and vLLM endpoints."), required=true, errors=errs) }}
-
-        {{ form::field(name="base_url", type="url", label=t(s="Base URL"), value=values.base_url | default(value=""), hint=t(s="The API base URL without trailing slash, for example {example}.", example="https://api.openai.com/v1"), required=true, errors=errs, autocomplete="off", attrs='spellcheck="false"') }}
-
-        {{ form::field(name="api_key_env", label=t(s="API Key Environment Variable"), value=values.api_key_env | default(value=""), hint=t(s="Name of the environment variable containing the API key, for example {example}. The key itself is never stored in the database.", example="OPENAI_API_KEY"), errors=errs, width="30", autocomplete="off", attrs='spellcheck="false" autocapitalize="characters"') }}
-
-        {{ form::field(name="rate_limit_rpm", type="number", label=t(s="Rate Limit (requests per minute)"), value=values.rate_limit_rpm | default(value="0"), hint=t(s="0 = no rate limiting."), errors=errs, width="10", attrs='min="0"') }}
-
-        {{ form::checkbox(name="enabled", label=t(s="Enabled"), checked=values.enabled | default(value=false), errors=errs) }}
-
-        {{ form::fieldset_start(legend=t(s="Operation Models"), id="operation-models", hint=t(s="Assign a model identifier to each operation type this provider supports. Leave blank for operations this provider does not serve.")) }}
-            {#- Rows are added and removed by static/js/ai-admin.js, which keys on
-                #model-rows, .form-item--inline, .js-remove-row and #add-model-row. -#}
-            <div id="model-rows">
-                {% if values.models is defined and values.models | length > 0 %}{% set rows = values.models %}{% else %}{% set rows = [0] %}{% endif %}
-                {% for m in rows %}
-                {% if m is object %}{% set mop = m.operation %}{% set mmodel = m.model | default(value="") %}{% else %}{% set mop = "" %}{% set mmodel = "" %}{% endif %}
-                <div class="model-row form-item--inline">
-                    {{ form::select(name="op_" ~ loop.index0, label=t(s="Operation {number}", number=loop.index), options=op_options, value=mop, empty=t(s="— Select operation —"), errors=errs) }}
-                    {{ form::field(name="model_" ~ loop.index0, label=t(s="Model {number}", number=loop.index), value=mmodel, errors=errs, attrs='spellcheck="false"') }}
-                    <button type="button" class="button button--small button--danger js-remove-row" aria-label="{{ t(s='Remove model {number}', number=loop.index) }}">{{ t(s="Remove") }}</button>
-                </div>
-                {% endfor %}
-            </div>
-
-            <button type="button" id="add-model-row" class="button button--secondary">{{ t(s="Add model") }}</button>
-        {{ form::fieldset_end() }}
-
-        {{ form::actions(submit_label=t(s="Save provider"), cancel_url="/admin/system/ai-providers") }}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 
 {# Operations data block — not subject to CSP (type="application/json" does not execute) #}

@@ -1,0 +1,42 @@
+{#- The budget form's grid of per-provider, per-role token limits, which
+    routes::admin_ai_budget renders into a markup element of the kernel-built
+    budget configuration form. -#}
+{% if providers | length > 0 and roles | length > 0 %}
+<h3 id="budget-limits-heading">{{ t(s="Per-Provider, Per-Role Token Limits") }}</h3>
+<p id="budget-limits-hint">{{ t(s="Set the maximum tokens per period for each role. Enter 0 for unlimited. Leave blank for no budget.") }}</p>
+
+<div class="table-scroll" role="region" aria-labelledby="budget-limits-caption" tabindex="0">
+    <table class="table">
+        <caption id="budget-limits-caption">{{ t(s="Token limit per period for each provider and role") }}</caption>
+        <thead>
+            <tr>
+                <th scope="col">{{ t(s="Provider") }}</th>
+                {% for role in roles %}
+                <th scope="col">{{ role.name }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for provider in providers %}
+            {% set provider_index = loop.index %}
+            <tr>
+                <th scope="row">{{ provider.label }}</th>
+                {% for role in roles %}
+                <td>
+                    {# Look up current default: defaults_grid[provider.id][role.name] #}
+                    {% set current_val = "" %}
+                    {% if defaults_grid[provider.id] is defined and defaults_grid[provider.id][role.name] is defined %}
+                        {% set current_val = defaults_grid[provider.id][role.name] %}
+                    {% endif %}
+                    <label class="visually-hidden" for="budget-limit-{{ provider_index }}-{{ loop.index }}">{{ t(s="Token limit for {role} on {provider}", role=role.name, provider=provider.label) }}</label>
+                    <input type="number" id="budget-limit-{{ provider_index }}-{{ loop.index }}" name="limit_{{ provider.id }}_{{ role.name }}" value="{{ current_val }}" min="0" class="ai-budget-limit" placeholder="—" aria-describedby="budget-limits-hint">
+                </td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p>{{ t(s="Configure AI providers first, then set per-role budgets here.") }} <a href="/admin/system/ai-providers">{{ t(s="Manage AI providers") }}</a></p>
+{% endif %}
