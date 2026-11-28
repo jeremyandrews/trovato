@@ -13,10 +13,13 @@
 //!
 //! Needs Postgres, Redis and the S3 test store (`TROVATO_TEST_S3_ENDPOINT`,
 //! `TROVATO_TEST_S3_BUCKET`, the store's `AWS_ACCESS_KEY_ID` and
-//! `AWS_SECRET_ACCESS_KEY`). Without the store it skips locally and fails
-//! under CI.
+//! `AWS_SECRET_ACCESS_KEY`), always set in CI (real MinIO). Without them, a
+//! local run starts an in-process fake S3 server instead of skipping
+//! (`fake_s3`, below).
 
 mod common;
+#[path = "common/fake_s3.rs"]
+mod fake_s3;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
@@ -68,13 +71,14 @@ fn s3_config() -> Option<S3Config> {
             prefix: Some(format!("serving-{}", Uuid::now_v7().simple())),
         }),
         _ => {
-            assert!(
-                std::env::var_os("CI").is_none(),
-                "CI must run the S3 serving tests: set TROVATO_TEST_S3_ENDPOINT and \
-                 TROVATO_TEST_S3_BUCKET (the workflow starts MinIO for them)"
-            );
-            eprintln!("skipping: no S3 test store (TROVATO_TEST_S3_ENDPOINT) configured");
-            None
+            let (endpoint, bucket) = fake_s3::ensure("trovato-serving-fake");
+            Some(S3Config {
+                bucket,
+                region: Some("us-east-1".to_string()),
+                allow_http: true,
+                endpoint: Some(endpoint),
+                prefix: Some(format!("serving-{}", Uuid::now_v7().simple())),
+            })
         }
     }
 }
@@ -717,6 +721,68 @@ impl FileStorage for Recording {
     }
 }
 
+/// `GET /files/{path}` against `path`, with a `Range` header.
+async fn get_range(app: &TestApp, path: &str, range: &str) -> axum::response::Response {
+    let request = Request::get(format!("/files/{path}"))
+        .header(header::RANGE, range)
+        .body(Body::empty())
+        .unwrap();
+    app.request(request).await
+}
+
+/// `Range` requests against an S3 backed file behave exactly as they do
+/// against a local directory: a single range is `206` with the exact slice
+/// and `Content-Range`, a range past the end is `416` naming the real size,
+/// and every response (ranged or not) carries `Accept-Ranges`. The body
+/// (200,000 bytes) is also large enough to prove a plain download streamed
+/// from the bucket in more than one chunk arrives byte for byte.
+#[test]
+fn s3_range_requests_and_large_downloads_behave_like_local_storage() {
+    run_test(async {
+        let Some(f) = fixture() else { return };
+        f.app.ensure_conference_type().await;
+        let owner = create_user(&f.app).await;
+        let data: Vec<u8> = (0..200_000u32).map(|i| (i % 256) as u8).collect();
+        let name = format!("ranged-{}.txt", Uuid::now_v7().simple());
+        let (uri, path) = upload(&f.app, owner, &name, "text/plain", &data).await;
+        item_referencing(&f.app, "S3 Range Public", 1, &uri).await;
+        let total = data.len();
+
+        let bounded = get_range(&f.app, &path, "bytes=100-299").await;
+        assert_eq!(bounded.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            header_of(&bounded, header::CONTENT_RANGE),
+            format!("bytes 100-299/{total}")
+        );
+        assert_eq!(
+            header_of(&bounded, header::CONTENT_LENGTH),
+            "200",
+            "Content-Length names the slice, not the whole file"
+        );
+        assert_eq!(header_of(&bounded, header::ACCEPT_RANGES), "bytes");
+        let body = to_bytes(bounded.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), &data[100..300]);
+
+        let past_end = get_range(&f.app, &path, &format!("bytes={total}-{}", total + 10)).await;
+        assert_eq!(past_end.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(
+            header_of(&past_end, header::CONTENT_RANGE),
+            format!("bytes */{total}")
+        );
+
+        let plain = get(&f.app, &format!("/files/{path}"), None).await;
+        assert_eq!(plain.status(), StatusCode::OK);
+        assert_eq!(header_of(&plain, header::ACCEPT_RANGES), "bytes");
+        let body = to_bytes(plain.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            body.len(),
+            data.len(),
+            "the whole 200,000 byte body arrived"
+        );
+        assert_eq!(body.as_ref(), data.as_slice(), "every byte, in order");
+    });
+}
+
 /// An upload whose record cannot be written leaves no bytes behind: stored
 /// with no row, they would be served to anyone as an unmanaged file. Needs
 /// only Postgres.
@@ -752,5 +818,111 @@ fn an_upload_whose_record_fails_leaves_no_bytes() {
             "and taken back out when the record failed"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// B291: `SERVE_UNMANAGED_FILES` on a ported or hosted S3 backed site.
+// ---------------------------------------------------------------------------
+
+/// A client on `s3`'s bucket and prefix, independent of any app: the
+/// migration tool that copies a ported site's files into the bucket, some of
+/// which the importer never gets a `file` record for.
+fn other_client(s3: &S3Config) -> std::sync::Arc<dyn FileStorage> {
+    build_storage(
+        &StorageConfig::S3(s3.clone()),
+        std::path::Path::new("/nonexistent"),
+        "/files",
+    )
+    .unwrap()
+}
+
+/// A fresh S3 backed app with `SERVE_UNMANAGED_FILES=false` (the shared
+/// `fixture()` always serves unmanaged files by default, so this setting
+/// needs its own app, kept to one extra `TestApp` for every assertion this
+/// setting changes, since each one opens its own database pool).
+async fn app_with_unmanaged_files_refused() -> (TestApp, S3Config) {
+    let s3 = s3_config().expect("an S3 test store (fake or real)");
+    let for_config = s3.clone();
+    let app = TestApp::with_config(move |config| {
+        config.file_storage = StorageConfig::S3(for_config.clone());
+        config.runtime.serve_unmanaged_files = false;
+    })
+    .await;
+    (app, s3)
+}
+
+/// With the default `SERVE_UNMANAGED_FILES=true`, an object the bucket holds
+/// but no `file_managed` row names is served exactly as every site has always
+/// served one; the shared `fixture()` already runs with the default, so no
+/// extra app is needed for this half of the behaviour.
+#[test]
+fn unmanaged_object_is_served_by_default() {
+    run_test(async {
+        let Some(f) = fixture() else { return };
+        let path = format!("b291-unmanaged/{}/leftover.txt", Uuid::now_v7().simple());
+        other_server(f)
+            .write(&format!("local://{path}"), BODY)
+            .await
+            .unwrap();
+
+        let resp = get(&f.app, &format!("/files/{path}"), None).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "the default keeps serving an unmanaged path, unchanged"
+        );
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], BODY);
+    });
+}
+
+/// With `SERVE_UNMANAGED_FILES=false`: an object the bucket holds but no
+/// `file_managed` row names (what a migration that copied files before it
+/// finished registering every one leaves behind) is `404` to anyone; a
+/// *registered* file referenced only by an unpublished item is still `404`
+/// to an anonymous visitor and still served to its permitted viewer: the
+/// setting only changes what happens to a path with no row, never the
+/// any-referencing access policy (D-29) a registered file already has.
+#[test]
+fn serve_unmanaged_files_false_refuses_only_the_unregistered_path() {
+    run_test(async {
+        let (app, s3) = app_with_unmanaged_files_refused().await;
+        app.ensure_conference_type().await;
+
+        let leftover_path = format!("b291-unmanaged/{}/leftover.txt", Uuid::now_v7().simple());
+        other_client(&s3)
+            .write(&format!("local://{leftover_path}"), BODY)
+            .await
+            .unwrap();
+        let resp = get(&app, &format!("/files/{leftover_path}"), None).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "an object with no file_managed row must never be served once \
+             SERVE_UNMANAGED_FILES=false"
+        );
+
+        let owner = create_user(&app).await;
+        let name = format!("ported-private-{}.txt", Uuid::now_v7().simple());
+        let (uri, path) = upload(&app, owner, &name, "text/plain", BODY).await;
+        item_referencing(&app, "Ported Private Attachment", 0, &uri).await;
+
+        let resp = get(&app, &format!("/files/{path}"), None).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "anonymous is refused a registered file an unpublished item references"
+        );
+
+        let cookies = admin_cookies(&app).await;
+        let resp = get(&app, &format!("/files/{path}"), Some(&cookies)).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "an administrator, a permitted viewer, is still served"
+        );
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], BODY);
     });
 }

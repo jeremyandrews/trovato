@@ -26,9 +26,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures_core::stream::BoxStream;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
+
+use super::range::{ByteRange, resolve_range};
 
 /// The error a backend returns when the file asked for is not stored.
 ///
@@ -134,6 +138,52 @@ pub async fn startup_check(store: &dyn FileStorage) -> Result<()> {
     }
 }
 
+/// What [`FileStorage::read_stream`] returns: the file's total size, the
+/// half-open byte span `[start, end)` actually returned (the whole file when
+/// no range was asked for), and the bytes of that span as a stream, never
+/// the whole file held in memory at once by a real backend.
+pub struct FileStream {
+    /// The file's total size, regardless of how much of it `stream` carries.
+    pub total: u64,
+    /// The first byte `stream` carries.
+    pub start: u64,
+    /// One past the last byte `stream` carries.
+    pub end: u64,
+    /// The bytes of `[start, end)`, in order.
+    pub stream: BoxStream<'static, Result<Bytes>>,
+}
+
+impl std::fmt::Debug for FileStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileStream")
+            .field("total", &self.total)
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A [`FileStream`] over bytes already in memory: what the default
+/// [`FileStorage::read_stream`] implementation uses, and what an image style
+/// derivative's first request serves the bytes [`super::service`] just made
+/// with, before a second read of the store. A range naming bytes past the end
+/// is [`RangeNotSatisfiable`](super::range::RangeNotSatisfiable) ([`is_range_not_satisfiable`](super::range::is_range_not_satisfiable)).
+pub fn memory_stream(data: Vec<u8>, range: Option<ByteRange>) -> Result<FileStream> {
+    let total = data.len() as u64;
+    let (start, end) = resolve_range(range, total)?;
+    let slice = if start == 0 && end == total {
+        data
+    } else {
+        data[start as usize..end as usize].to_vec()
+    };
+    Ok(FileStream {
+        total,
+        start,
+        end,
+        stream: Box::pin(tokio_stream::once(Ok(Bytes::from(slice)))),
+    })
+}
+
 /// File storage backend trait.
 #[async_trait]
 pub trait FileStorage: Send + Sync {
@@ -144,6 +194,22 @@ pub trait FileStorage: Send + Sync {
     /// Read data from storage at the given URI. A URI with nothing stored is
     /// a [`StorageNotFound`] error (see [`is_not_found`]).
     async fn read(&self, uri: &str) -> Result<Vec<u8>>;
+
+    /// Read all or part of a file as a stream, without holding it whole in
+    /// memory: what the serving routes use, so a visitor streaming video, or a
+    /// `Range` request seeking inside a large file, never makes this server
+    /// buffer the file. A URI with nothing stored is a [`StorageNotFound`]
+    /// error; a `range` naming bytes past the file's end is
+    /// [`RangeNotSatisfiable`](super::range::RangeNotSatisfiable).
+    ///
+    /// The default implementation reads the whole file with [`Self::read`]
+    /// and slices it in memory: correct for every backend, just not streamed.
+    /// Only a test double relies on it; [`LocalFileStorage`] and
+    /// [`S3FileStorage`] both override it with a real stream.
+    async fn read_stream(&self, uri: &str, range: Option<ByteRange>) -> Result<FileStream> {
+        let data = self.read(uri).await?;
+        memory_stream(data, range)
+    }
 
     /// Delete a file from storage. Deleting a file that is not there succeeds.
     async fn delete(&self, uri: &str) -> Result<()>;
@@ -374,6 +440,64 @@ impl FileStorage for S3FileStorage {
         Ok(bytes.to_vec())
     }
 
+    async fn read_stream(&self, uri: &str, range: Option<ByteRange>) -> Result<FileStream> {
+        use object_store::{GetOptions, GetRange, ObjectStore, ObjectStoreExt};
+        use tokio_stream::StreamExt;
+        let path = self.object_path(uri)?;
+
+        // No range: one GET gives the bytes and the object's size together.
+        if range.is_none() {
+            let got = self
+                .store
+                .get(&path)
+                .await
+                .map_err(|e| Self::map_err(uri, e, "read"))?;
+            let total = got.meta.size;
+            let (start, end) = (got.range.start, got.range.end);
+            let stream = got
+                .into_stream()
+                .map(|r| r.map_err(|e| anyhow::Error::new(e).context("failed to stream from S3")));
+            return Ok(FileStream {
+                total,
+                start,
+                end,
+                stream: Box::pin(stream),
+            });
+        }
+
+        // A range needs the real size first, both to answer `416` without a
+        // second request and to translate a `Suffix` into the bounded range
+        // the store is asked for.
+        let meta = self
+            .store
+            .head(&path)
+            .await
+            .map_err(|e| Self::map_err(uri, e, "read"))?;
+        let total = meta.size;
+        let (start, end) = resolve_range(range, total)?;
+        let get_range = (start > 0 || end < total).then_some(GetRange::Bounded(start..end));
+        let got = self
+            .store
+            .get_opts(
+                &path,
+                GetOptions {
+                    range: get_range,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| Self::map_err(uri, e, "read"))?;
+        let stream = got
+            .into_stream()
+            .map(|r| r.map_err(|e| anyhow::Error::new(e).context("failed to stream from S3")));
+        Ok(FileStream {
+            total,
+            start,
+            end,
+            stream: Box::pin(stream),
+        })
+    }
+
     async fn delete(&self, uri: &str) -> Result<()> {
         use object_store::ObjectStoreExt;
         let path = self.object_path(uri)?;
@@ -532,6 +656,36 @@ impl FileStorage for LocalFileStorage {
         };
         debug!(uri = %uri, size = data.len(), "file read");
         Ok(data)
+    }
+
+    async fn read_stream(&self, uri: &str, range: Option<ByteRange>) -> Result<FileStream> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        use tokio_stream::StreamExt;
+
+        let path = self.parse_uri(uri)?;
+        let mut file = match fs::File::open(&path).await {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(StorageNotFound(uri.to_string()).into());
+            }
+            Err(e) => return Err(anyhow::Error::new(e).context("failed to open file")),
+        };
+        let total = file.metadata().await.context("failed to stat file")?.len();
+        let (start, end) = resolve_range(range, total)?;
+        if start > 0 {
+            file.seek(std::io::SeekFrom::Start(start))
+                .await
+                .context("failed to seek file")?;
+        }
+        let stream = tokio_util::io::ReaderStream::new(file.take(end - start))
+            .map(|r| r.map_err(|e| anyhow::Error::new(e).context("failed to read file")));
+        debug!(uri = %uri, start, end, total, "file streamed");
+        Ok(FileStream {
+            total,
+            start,
+            end,
+            stream: Box::pin(stream),
+        })
     }
 
     async fn delete(&self, uri: &str) -> Result<()> {

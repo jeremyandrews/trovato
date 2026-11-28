@@ -8,21 +8,27 @@
 //! file holds the tests of `trovato files migrate-to-s3`'s copy, from a local
 //! directory into each backend.
 //!
-//! The S3 tests need `TROVATO_TEST_S3_ENDPOINT` and `TROVATO_TEST_S3_BUCKET`
-//! (an existing bucket) and the store's credentials in `AWS_ACCESS_KEY_ID` and
-//! `AWS_SECRET_ACCESS_KEY`. Without them they skip locally and fail under CI
-//! (`CI` set), so CI can never pass them by not running them. Each test works
-//! under its own random prefix, so runs never see each other's objects.
+//! The S3 tests run against `TROVATO_TEST_S3_ENDPOINT` and
+//! `TROVATO_TEST_S3_BUCKET` (an existing bucket) and the store's credentials
+//! in `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` when set (CI always sets
+//! them: real MinIO, started by the workflow). Without them, a local run
+//! starts an in-process fake S3 server ([`fake_s3`]) instead of skipping, so
+//! these tests still exercise the real backend on a workstation or a sandbox
+//! with no container runtime. Each test works under its own random prefix, so
+//! runs never see each other's objects.
 //!
 //! Needs no database.
+
+#[path = "common/fake_s3.rs"]
+mod fake_s3;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use trovato_kernel::file::migrate::copy_dir_to_storage;
 use trovato_kernel::file::{
-    FileStorage, LocalFileStorage, S3Config, S3FileStorage, StorageConfig, StorageNotFound,
-    build_storage, is_not_found, is_unreachable,
+    ByteRange, FileStorage, LocalFileStorage, S3Config, S3FileStorage, StorageConfig,
+    StorageNotFound, build_storage, is_not_found, is_range_not_satisfiable, is_unreachable,
 };
 use uuid::Uuid;
 
@@ -43,30 +49,24 @@ impl Drop for TempDir {
     }
 }
 
-/// The S3 test store's settings with a fresh prefix, or `None` (skip) when no
-/// store is configured outside CI.
+/// The S3 test store's settings with a fresh prefix: the real store named by
+/// `TROVATO_TEST_S3_ENDPOINT`/`TROVATO_TEST_S3_BUCKET` when set (always true
+/// in CI), else this process's in-process fake ([`fake_s3::ensure`]).
 fn s3_config() -> Option<S3Config> {
     trovato_test_utils::env::load_dotenv();
     let endpoint = std::env::var("TROVATO_TEST_S3_ENDPOINT").ok();
     let bucket = std::env::var("TROVATO_TEST_S3_BUCKET").ok();
-    match (endpoint, bucket) {
-        (Some(endpoint), Some(bucket)) => Some(S3Config {
-            bucket,
-            region: Some("us-east-1".to_string()),
-            allow_http: endpoint.starts_with("http://"),
-            endpoint: Some(endpoint),
-            prefix: Some(format!("conformance-{}", Uuid::now_v7().simple())),
-        }),
-        _ => {
-            assert!(
-                std::env::var_os("CI").is_none(),
-                "CI must run the S3 storage tests: set TROVATO_TEST_S3_ENDPOINT and \
-                 TROVATO_TEST_S3_BUCKET (the workflow starts MinIO for them)"
-            );
-            eprintln!("skipping: no S3 test store (TROVATO_TEST_S3_ENDPOINT) configured");
-            None
-        }
-    }
+    let (endpoint, bucket) = match (endpoint, bucket) {
+        (Some(endpoint), Some(bucket)) => (endpoint, bucket),
+        _ => fake_s3::ensure("trovato-conformance-fake"),
+    };
+    Some(S3Config {
+        bucket,
+        region: Some("us-east-1".to_string()),
+        allow_http: endpoint.starts_with("http://"),
+        endpoint: Some(endpoint),
+        prefix: Some(format!("conformance-{}", Uuid::now_v7().simple())),
+    })
 }
 
 fn s3_storage(config: &S3Config) -> Arc<dyn FileStorage> {
@@ -153,11 +153,103 @@ async fn conformance(storage: &dyn FileStorage) {
     storage.check_usable().await.expect("a usable store passes");
 }
 
+/// Collect a [`FileStream`](trovato_kernel::file::FileStream)'s stream into bytes.
+async fn collect(
+    mut stream: futures_core::stream::BoxStream<'static, anyhow::Result<bytes::Bytes>>,
+) -> Vec<u8> {
+    use tokio_stream::StreamExt;
+    let mut out = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        out.extend_from_slice(&chunk.expect("a chunk"));
+    }
+    out
+}
+
+/// The range contract every backend keeps: a whole read, the three valid
+/// range shapes, a range past the end, a missing file (ranged or not), and a
+/// traversal key.
+async fn range_conformance(storage: &dyn FileStorage) {
+    let key = format!("2026/11/{}_range.bin", Uuid::now_v7().simple());
+    let uri = format!("local://{key}");
+    let data = awkward_bytes();
+    storage.write(&uri, &data).await.unwrap();
+    let total = data.len() as u64;
+
+    // The whole file.
+    let whole = storage.read_stream(&uri, None).await.unwrap();
+    assert_eq!((whole.total, whole.start, whole.end), (total, 0, total));
+    assert_eq!(collect(whole.stream).await, data);
+
+    // bytes=100-299
+    let bounded = storage
+        .read_stream(&uri, Some(ByteRange::Bounded(100, 299)))
+        .await
+        .unwrap();
+    assert_eq!(
+        (bounded.start, bounded.end, bounded.total),
+        (100, 300, total)
+    );
+    assert_eq!(collect(bounded.stream).await, data[100..300]);
+
+    // bytes=290000-
+    let offset = storage
+        .read_stream(&uri, Some(ByteRange::Offset(290_000)))
+        .await
+        .unwrap();
+    assert_eq!((offset.start, offset.end), (290_000, total));
+    assert_eq!(collect(offset.stream).await, data[290_000..]);
+
+    // bytes=-500
+    let suffix = storage
+        .read_stream(&uri, Some(ByteRange::Suffix(500)))
+        .await
+        .unwrap();
+    assert_eq!((suffix.start, suffix.end), (total - 500, total));
+    assert_eq!(collect(suffix.stream).await, data[(data.len() - 500)..]);
+
+    // A range past the end: refused, not a missing file.
+    let past = storage
+        .read_stream(&uri, Some(ByteRange::Offset(total)))
+        .await
+        .expect_err("past the end");
+    assert_eq!(is_range_not_satisfiable(&past), Some(total));
+    let past = storage
+        .read_stream(&uri, Some(ByteRange::Bounded(total, total + 10)))
+        .await
+        .expect_err("past the end");
+    assert_eq!(is_range_not_satisfiable(&past), Some(total));
+
+    // A missing file, ranged or not: not found, not a store failure.
+    let missing_uri = format!(
+        "local://2026/11/{}_missing-range.bin",
+        Uuid::now_v7().simple()
+    );
+    let missing = storage.read_stream(&missing_uri, None).await.unwrap_err();
+    assert!(is_not_found(&missing), "{missing:#}");
+    let missing_ranged = storage
+        .read_stream(&missing_uri, Some(ByteRange::Bounded(0, 10)))
+        .await
+        .unwrap_err();
+    assert!(is_not_found(&missing_ranged), "{missing_ranged:#}");
+
+    // A traversal key is refused, not missing and not satisfiable-checked.
+    let traversal = storage.read_stream("local://../escape.txt", None).await;
+    let traversal = traversal.expect_err("traversal must be refused");
+    assert!(!is_not_found(&traversal), "{traversal:#}");
+    assert!(
+        is_range_not_satisfiable(&traversal).is_none(),
+        "{traversal:#}"
+    );
+
+    storage.delete(&uri).await.unwrap();
+}
+
 #[tokio::test]
 async fn local_storage_keeps_the_contract() {
     let dir = TempDir::new("conformance-local");
     let storage = LocalFileStorage::new(&dir.0, "/files");
     conformance(&storage).await;
+    range_conformance(&storage).await;
     assert_eq!(storage.scheme(), "local");
     // Nothing is left behind: not the check's sentinel, not a temporary file.
     let mut left = Vec::new();
@@ -194,6 +286,7 @@ async fn s3_storage_keeps_the_contract() {
     let Some(config) = s3_config() else { return };
     let storage = s3_storage(&config);
     conformance(storage.as_ref()).await;
+    range_conformance(storage.as_ref()).await;
     assert_eq!(storage.scheme(), "s3");
     assert!(storage.local_dir().is_none());
     assert_eq!(

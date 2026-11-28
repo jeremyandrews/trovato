@@ -1,24 +1,26 @@
-//! Files already copied into the files directory, registered as
-//! `file_managed` rows with the id, owner and date the record gives.
+//! Files already copied into the file store, registered as `file_managed`
+//! rows with the id, owner and date the record gives.
 //!
-//! A migrated site's files arrive on disk before the importer ever runs: a
-//! port copies them into `UPLOADS_DIR`, then writes a `file` record naming
-//! where each one landed. The importer never writes, moves or renames a byte
-//! of them — it reads the file at `path` to check it the way an upload is
+//! A migrated site's files arrive in the store before the importer ever runs:
+//! a port copies them in (a directory, `UPLOADS_DIR`, or an S3 compatible
+//! bucket, whatever `FILE_STORAGE` names), then writes a `file` record
+//! naming where each one landed. The importer never writes, moves or rewrites
+//! a byte of them: it reads the file at `path` through the site's own
+//! [`FileStorage`](crate::file::FileStorage) to check it the way an upload is
 //! checked ([`FileService::validate_file`]) and to measure its own size, then
 //! writes one `file_managed` row whose `uri` is that same path. An item's File
 //! field or embedded `local://`/`/files/` reference finds it exactly as it
 //! would find an upload, because `file_refs::sync_item_file_references` only
 //! ever looks the file up by `file_managed` id or uri.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
 use super::record::FileRecord;
 use super::{Outcome, Run, require_id, require_user};
-use crate::file::{FileService, FileStatus};
+use crate::file::{FileService, FileStatus, is_not_found};
 
 /// A stored file, as a record would describe it, with the storage URI import
 /// does not let a record change.
@@ -33,12 +35,11 @@ struct StoredFile {
     created: i64,
 }
 
-/// Resolve `rel` as a path inside `root`: relative, no `..`, and — once any
-/// symlink is followed — still inside `root`. The same containment rule
-/// `config_storage::yaml::read_file_bytes` applies to a config set's files,
-/// checked here against the live files directory instead.
-async fn resolve_in_dir(root: &Path, rel: &str) -> Result<PathBuf> {
-    let rel_path = Path::new(rel);
+/// Refuse a `path` that is not a relative path with no `..` component: the
+/// same shape `config_storage::yaml::read_file_bytes` requires of a config
+/// set's files, checked here against a `file` record's path instead.
+fn reject_unsafe_shape(path: &str) -> Result<()> {
+    let rel_path = Path::new(path);
     if rel_path.is_absolute()
         || !rel_path
             .components()
@@ -46,20 +47,36 @@ async fn resolve_in_dir(root: &Path, rel: &str) -> Result<PathBuf> {
     {
         anyhow::bail!("must be a relative path inside the files directory, with no '..'");
     }
-    let root = tokio::fs::canonicalize(root)
-        .await
-        .with_context(|| format!("failed to resolve the files directory {}", root.display()))?;
-    let resolved = tokio::fs::canonicalize(root.join(rel_path))
-        .await
-        .context("not found in the files directory")?;
-    if !resolved.starts_with(&root) {
-        anyhow::bail!("leads outside the files directory");
-    }
-    Ok(resolved)
+    Ok(())
 }
 
-/// Import one `file` record: a file already on disk, registered under the id,
-/// owner and date the record gives. Never copies, moves or rewrites the file.
+/// Confirm `rel` names a regular file inside `root`, once any symlink on its
+/// path is followed. Local storage only: an object store has no directory for
+/// a symlink to escape, so [`FileStorage::read`](crate::file::FileStorage::read)
+/// is this import's one check there; on a directory, that same read does not
+/// resolve symlinks itself, so containment is checked here first.
+async fn check_local_containment(root: &Path, rel: &str) -> Result<()> {
+    let root_real = tokio::fs::canonicalize(root)
+        .await
+        .with_context(|| format!("failed to resolve the files directory {}", root.display()))?;
+    let resolved = tokio::fs::canonicalize(root_real.join(rel))
+        .await
+        .context("not found in the files directory")?;
+    if !resolved.starts_with(&root_real) {
+        anyhow::bail!("leads outside the files directory");
+    }
+    let metadata = tokio::fs::metadata(&resolved)
+        .await
+        .with_context(|| format!("failed to read '{rel}'"))?;
+    if !metadata.is_file() {
+        anyhow::bail!("'{rel}' is not a file");
+    }
+    Ok(())
+}
+
+/// Import one `file` record: a file already in the store, registered under
+/// the id, owner and date the record gives. Never copies, moves or rewrites
+/// the file.
 pub(crate) async fn import_file(run: &mut Run<'_>, r: FileRecord) -> Result<Outcome> {
     require_id(r.id, "id")?;
     require_user(run, r.owner_id, "owner_id").await?;
@@ -71,28 +88,26 @@ pub(crate) async fn import_file(run: &mut Run<'_>, r: FileRecord) -> Result<Outc
     if path.is_empty() {
         anyhow::bail!("path is required");
     }
+    reject_unsafe_shape(path).with_context(|| format!("'{path}'"))?;
 
-    let Some(root) = run.state.files().local_dir() else {
-        anyhow::bail!(
-            "files are not stored in a local directory on this server; a `file` record needs one"
-        );
-    };
-    let resolved = resolve_in_dir(root, path)
-        .await
-        .with_context(|| format!("'{path}'"))?;
-    let metadata = tokio::fs::metadata(&resolved)
-        .await
-        .with_context(|| format!("failed to read '{path}'"))?;
-    if !metadata.is_file() {
-        anyhow::bail!("'{path}' is not a file");
+    let storage = run.state.files().storage();
+    if let Some(root) = storage.local_dir() {
+        check_local_containment(root, path)
+            .await
+            .with_context(|| format!("'{path}'"))?;
     }
-    let data = tokio::fs::read(&resolved)
-        .await
-        .with_context(|| format!("failed to read '{path}'"))?;
+
+    let uri = format!("local://{path}");
+    let data = storage.read(&uri).await.map_err(|e| {
+        if is_not_found(&e) {
+            anyhow::anyhow!("'{path}' not found in the file store")
+        } else {
+            e.context(format!("failed to read '{path}'"))
+        }
+    })?;
     FileService::validate_file(filename, &r.mime_type, &data)
         .with_context(|| format!("'{path}' is not a valid {}", r.mime_type))?;
 
-    let uri = format!("local://{path}");
     let wanted = StoredFile {
         uri: uri.clone(),
         owner_id: r.owner_id,

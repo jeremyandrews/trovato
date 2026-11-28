@@ -640,6 +640,15 @@ async fn status_report(State(state): State<AppState>, session: Session) -> Respo
     let (cron_row, last_cron) = cron_requirement(&state).await;
     rows.push(cron_row);
     rows.push(files_requirement(&state).await);
+    rows.push(if state.runtime().serve_unmanaged_files {
+        Requirement::new("Unmanaged files", "Served (default)", "ok")
+    } else {
+        Requirement::new(
+            "Unmanaged files",
+            "Refused (SERVE_UNMANAGED_FILES=false)",
+            "ok",
+        )
+    });
     rows.push(field_index_requirement(&state).await);
     rows.push(match state.runtime().cookie_secure {
         crate::session::CookieSecure::Never => Requirement::new(

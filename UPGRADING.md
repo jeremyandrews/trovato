@@ -97,6 +97,37 @@ applied, so `trovato migrate` finds nothing to do.
 
 ## Unreleased
 
+### `SERVE_UNMANAGED_FILES`, for a ported or hosted site
+
+**Who is affected:** nobody by default. A site migrated from another CMS, or
+any site whose files directory or bucket can hold an object with no
+`file_managed` row, should read this and set `SERVE_UNMANAGED_FILES=false`.
+
+**What changed.** A new setting, `SERVE_UNMANAGED_FILES` (`true` or `false`,
+default `true`). `/files/` and an image style derivative have always served a
+stored path with no `file_managed` row as a plain file (an "unmanaged" path),
+which is fine on a site where every file arrived through an upload or
+`trovato import`'s `file` record. It is not fine on a site ported from
+another CMS: a migration copies files into the store before the importer
+ever runs, and until every one of them has a `file` record, an unregistered
+file (a Drupal `private://` file, for instance) is world readable through the
+plain file route. Setting `SERVE_UNMANAGED_FILES=false` makes a path with no
+row `404`, before storage is ever read, instead. Set it back to `true` only
+once every migrated file has been imported. The default keeps every existing
+site serving exactly as it does today.
+
+`trovato import`'s `file` record (B184) now reads, measures and validates the
+file it registers through the site's own file store (`FileStorage::read`)
+rather than the local filesystem directly, so it also works on a site with
+`FILE_STORAGE=s3`. The record's input contract (a relative path, no `..`, no
+absolute path) and the row it writes are unchanged; on a local directory the
+same symlink containment check runs as before.
+
+**How to find out.** If your site was migrated from another CMS, or you are
+not certain every file in the store has a `file` record, set
+`SERVE_UNMANAGED_FILES=false` after the import finishes. The status report's
+file system section shows the setting's current value.
+
 ### `AdminNavDefinition` is `#[non_exhaustive]`, with a new `keywords` field
 
 **Who is affected:** a plugin that builds `trovato_sdk::types::AdminNavDefinition`
