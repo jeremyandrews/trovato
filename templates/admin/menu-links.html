@@ -61,11 +61,7 @@
                 <td class="operations">
                     {% if row.editable %}
                     <a href="/admin/structure/menus/{{ menu_name }}/{{ row.id }}/edit">{{ t(s="Edit {name}", name=row.title) }}</a>
-                    {% if row.children > 0 %}
-                    {{ list::delete_button(action="/admin/structure/menus/" ~ menu_name ~ "/" ~ row.id ~ "/delete", label=t(s="Delete {name}", name=row.title), confirm_text=t(s="Delete this link? Its {count} child link will be promoted to its parent.", plural="Delete this link? Its {count} child links will be promoted to its parent.", count=row.children), csrf_token=csrf_token) }}
-                    {% else %}
-                    {{ list::delete_button(action="/admin/structure/menus/" ~ menu_name ~ "/" ~ row.id ~ "/delete", label=t(s="Delete {name}", name=row.title), confirm_text=t(s="Delete this link?"), csrf_token=csrf_token) }}
-                    {% endif %}
+                    <a class="link-button link-button--danger" href="/admin/structure/menus/{{ menu_name }}/{{ row.id }}/delete">{{ t(s="Delete {name}", name=row.title) }}</a>
                     {% else %}
                     <span>{{ t(s="Not editable here") }}</span>
                     {% endif %}

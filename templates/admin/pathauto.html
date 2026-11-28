@@ -4,78 +4,21 @@
 {% block page_title %}{{ t(s="URL alias patterns") }}{% endblock page_title %}
 
 {% block content %}
-{#
-  Regenerate forms are declared here, OUTSIDE the save form below.
-  HTML5 forbids nested <form> elements, so each regenerate form is placed
-  at the top level and the "Regenerate aliases" button in the table targets
-  it via the HTML5 `form` attribute.
-  SAFE: ct.machine_name is a validated machine name ([a-z][a-z0-9_]*) from
-  the content type registry — it requires no escaping in an id= attribute.
-#}
-{% for ct in content_types %}
-<form id="regen-{{ ct.machine_name }}"
-      method="post"
-      action="/admin/config/pathauto/regenerate?confirm" novalidate>
-    <input type="hidden" name="_token" value="{{ csrf_token }}">
-    <input type="hidden" name="_confirm" value="{{ t(s='Save pattern changes first. Regenerate aliases for all {type} items using the saved pattern?', type=ct.label) }}">
-    <input type="hidden" name="_confirm_label" value="{{ t(s="Regenerate aliases for {type}", type=ct.label) }}">
-    <input type="hidden" name="item_type" value="{{ ct.machine_name }}">
-</form>
-{% endfor %}
+{#-
+  The regenerate form has no button of its own and is drawn here, OUTSIDE
+  the patterns form below: HTML5 forbids nested <form> elements, so the
+  "Regenerate aliases" button beside each type's field targets it through
+  the HTML5 `form` attribute, posting its type as `item_type`.
+-#}
+{{ regenerate_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
 <p>{{ t(s="Configure automatic URL alias patterns for each content type. Use tokens like {examples}. Leave a field blank to disable automatic alias generation for that type.", examples="[title], [type], [yyyy], [mm], [dd]") }}</p>
 <p><strong>{{ t(s="Save patterns before regenerating.") }}</strong> {{ t(s="Regenerate aliases uses the last saved pattern; unsaved edits in the text field are not used.") }}</p>
 
 {% if content_types %}
-<form method="post" action="/admin/config/pathauto" novalidate>
-    <input type="hidden" name="_token" value="{{ csrf_token }}">
-
-    <div class="table-scroll" role="region" aria-labelledby="patterns-caption" tabindex="0">
-        <table class="table">
-            <caption id="patterns-caption">{{ t(s="URL pattern per content type") }}</caption>
-            <thead>
-                <tr>
-                    <th scope="col">{{ t(s="Content type") }}</th>
-                    <th scope="col">{{ t(s="URL pattern") }}</th>
-                    <th scope="col">{{ t(s="Operations") }}</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for ct in content_types %}
-                <tr>
-                    <th scope="row">
-                        <strong>{{ ct.label }}</strong>
-                        <span class="text-muted">{{ ct.machine_name }}</span>
-                    </th>
-                    <td>
-                        <label class="visually-hidden" for="pattern-{{ ct.machine_name }}">{{ t(s="URL pattern for {type}", type=ct.label) }}</label>
-                        <input type="text"
-                               id="pattern-{{ ct.machine_name }}"
-                               name="pattern.{{ ct.machine_name }}"
-                               value="{{ patterns[ct.machine_name] }}"
-                               placeholder="{{ t(s='e.g. {example}', example=ct.machine_name ~ 's/[title]') }}"
-                               class="form-text pathauto-pattern">
-                    </td>
-                    <td class="operations pathauto-operations">
-                        {#
-                          form= targets the matching regenerate form declared above
-                          (outside this save form), satisfying the HTML5 no-nested-
-                          forms requirement while keeping the button visually inline.
-                        #}
-                        <button type="submit"
-                                form="regen-{{ ct.machine_name }}"
-                                class="button button--secondary button--small">{{ t(s="Regenerate aliases for {type}", type=ct.label) }}</button>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-
-    <div class="form-actions">
-        <button type="submit" class="button button--primary">{{ t(s="Save configuration") }}</button>
-    </div>
-</form>
+<div class="admin-card">
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+</div>
 {% else %}
 {{ list::empty(message=t(s="No content types are registered. Create one first."), add_url="/admin/structure/types/add", add_label=t(s="Create a content type")) }}
 {% endif %}
