@@ -617,6 +617,15 @@ fn a_file_whose_bytes_cannot_be_deleted_keeps_its_row() {
     });
 }
 
+/// The status report's "File system" row, from its heading to the row's end.
+fn file_system_row(html: &str) -> &str {
+    let start = html
+        .find("File system")
+        .expect("the report has a File system row");
+    let rest = &html[start..];
+    &rest[..rest.find("</tr>").unwrap_or(rest.len())]
+}
+
 async fn status_report(app: &TestApp) -> String {
     let cookies = admin_cookies(app).await;
     let resp = get(app, "/admin/reports/status", Some(&cookies)).await;
@@ -646,6 +655,7 @@ fn the_status_report_checks_the_bucket() {
             !html.contains("Not usable ("),
             "a usable bucket is no error"
         );
+        assert!(file_system_row(&html).contains("badge--success"), "ok");
 
         let missing = S3Config {
             bucket: format!("no-such-bucket-{}", Uuid::now_v7().simple()),
@@ -662,6 +672,10 @@ fn the_status_report_checks_the_bucket() {
             missing.prefix.as_deref().unwrap()
         );
         assert!(html.contains(&place), "the report shows {place:?}");
+        assert!(
+            file_system_row(&html).contains("badge--error"),
+            "a bucket this server cannot use is an error, not a warning"
+        );
         if let Ok(secret) = std::env::var("AWS_SECRET_ACCESS_KEY") {
             assert!(!html.contains(&secret), "the secret is never shown");
         }

@@ -260,8 +260,11 @@ directory, so single server and self hosted installs work exactly as before.
   components and a leading `/` (which `Path::join` treats as absolute), as the
   S3 backend does.
 - **Startup check for both.** `FileStorage::check_usable` writes, reads back
-  and deletes a uniquely named object; a server refuses to start, naming the
-  bucket or directory, when it fails, and the status report runs it too.
+  and deletes a uniquely named object. On a definite answer (no such bucket,
+  denied, wrong region) the server refuses to start, naming the bucket or
+  directory; a store that does not answer is logged and the server starts
+  (below), so a clean rollout is not proof the bucket works: the status report
+  runs the same check.
 - **Migration: `trovato files migrate-to-s3`.** Copies every regular file under
   `UPLOADS_DIR` (or `--from`) into the configured bucket under the same key,
   `--parallel` at a time. Each copy is read back and compared by SHA-256; a file
@@ -344,8 +347,8 @@ store.
   restart picks up, with no volume mounts to reason about.
 - **Least privilege per service (EKS Pod Identity).** `trovato-web`:
   `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on
-  `arn:aws:s3:::<files-bucket>/<S3_PREFIX>/*` (`arn:aws:s3:::<files-bucket>/*` with
-  no prefix), and `s3:ListBucket` on the
+  `arn:aws:s3:::<files-bucket>/files/*` (trovato.blog runs with `S3_PREFIX=files`,
+  so nothing written outside `files/` is ever served), and `s3:ListBucket` on the
   bucket with no condition (trovato.blog has one bucket per install, so it
   lists only its own keys; without `ListBucket` S3 answers a missing key with
   403 rather than 404, which Trovato reports as a store failure, and a
@@ -470,14 +473,24 @@ store.
   every file ever deleted and serve them all once the pods point at it;
   pointing at it also needs the web role on the replica's bucket policy, its
   KMS key and `S3_REGION=eu-central-1`. A database point in time restore
-  leaves the objects uploaded after the restore point with no row: the
-  runbook moves every key whose object is newer than the restore time out of
-  the served prefix before the site reopens.
+  puts the files back as they were at the restore time, from the bucket's
+  versions: delete markers newer than that time are removed (files deleted
+  since come back with their rows), a key overwritten since gets back the
+  version current then, and only keys that did not exist then are deleted
+  (their versions stay, outside what is served, for 90 days). Nothing is ever
+  moved to another key under `files/`, which would be served with no row.
+  Failing over to the Frankfurt copy is one way: uploads and deletes made
+  there exist only there, so the way back is a copy from Frankfurt to Milan
+  with the servers scaled to zero, never a plain switch of `S3_REGION`.
+  Versioning leaves a delete marker for every deleted object (and every
+  startup check), so the lifecycle rule on both buckets also expires delete
+  markers with no noncurrent version left (`ExpiredObjectDeleteMarker`).
 - **The restore runbook** (`docs/deployment/restore-runbook.md`, part 3) gives
   each row's literal commands.
 - **The restore drill** (`deploy/aws/scripts/restore-drill.sh`, part 3)
   restores the latest recovery point into a scratch environment (a `drill-*`
-  RDS instance and a `drill-*` bucket prefix, on the on-demand pool), runs
+  RDS instance and a separate `drill` bucket that production's web role cannot
+  read and production never serves, on the on-demand pool), runs
   `trovato migrate --status` and smoke tests (`/health/ready`, a known item
   page, a known private file refused anonymously and served to an admin),
   prints the measured restore time, and deletes the scratch environment. It is
@@ -539,7 +552,15 @@ heals itself or can wait.
 **Where.** Grafana Cloud's free tier (10,000 metric series, alerting, 3 IRM
 users, 100,000 synthetic checks a month; $19 a month Pro if outgrown,
 https://grafana.com/pricing/) holds the rules and runs the external checks,
-**outside AWS**, so an AWS outage still pages. Grafana Alloy in the cluster
+**outside AWS**, so an AWS outage still pages. To stay inside the free tier the
+external checks run every 2 minutes from two locations: `/health/ready` through
+Cloudflare and at the origin is 4 × 21,900 = 87,600 runs a month, and the TLS
+and DNS check every 5 minutes from one location adds 8,760, 96,360 in all (a
+10 minute rule still sees several failures in a row). Alloy drops the pod label from the request
+histograms before sending them (about 15 series per route, method and status
+instead of that times the pod count), which keeps the site well under 10,000
+series; if either limit is passed, Pro is the Grafana line in the cost
+table's growth column. Grafana Alloy in the cluster
 scrapes `/metrics` with `METRICS_TOKEN` and forwards CloudWatch metrics
 (RDS, ElastiCache, AWS Backup, S3 replication) through Grafana Cloud's
 CloudWatch integration with a read-only role; EventBridge security events go

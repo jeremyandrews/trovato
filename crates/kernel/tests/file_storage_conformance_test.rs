@@ -261,14 +261,33 @@ async fn answering(status: &'static str) -> String {
     tokio::spawn(async move {
         while let Ok((mut socket, _)) = listener.accept().await {
             tokio::spawn(async move {
-                // Read the request head and whatever body came with it, then
-                // answer and close.
-                let mut buf = vec![0u8; 64 * 1024];
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_millis(200),
-                    socket.read(&mut buf),
-                )
-                .await;
+                // Read the whole request (head, then `Content-Length` bytes of
+                // body) before answering, so closing never resets a request
+                // still being sent.
+                let mut seen = Vec::new();
+                let mut buf = [0u8; 8192];
+                let read_all = async {
+                    loop {
+                        let n = socket.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        seen.extend_from_slice(&buf[..n]);
+                        let Some(end) = seen.windows(4).position(|w| w == b"\r\n\r\n") else {
+                            continue;
+                        };
+                        let head = String::from_utf8_lossy(&seen[..end]).to_ascii_lowercase();
+                        let length: usize = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
+                        if seen.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                };
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), read_all).await;
                 let reply =
                     format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                 let _ = socket.write_all(reply.as_bytes()).await;
@@ -291,6 +310,8 @@ async fn s3_check_tells_an_outage_from_a_wrong_setting() {
         ("503 Service Unavailable", true),
         ("500 Internal Server Error", true),
         ("429 Too Many Requests", true),
+        ("408 Request Timeout", true),
+        ("403 Forbidden", false),
         ("301 Moved Permanently", false),
         ("400 Bad Request", false),
     ] {

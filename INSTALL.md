@@ -71,7 +71,7 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `UPLOADS_DIR` | `./uploads` | Path for file uploads. The server checks at startup that it can write, read and delete a file there, and refuses to start if it cannot. |
 | `FILES_URL` | `/files` | Base URL that uploaded files are served under |
 | `FILE_STORAGE` | `local` | Where uploads are kept: `local` (the `UPLOADS_DIR` directory) or `s3` (an S3 compatible bucket, below). Any other value refuses to start. |
-| `S3_BUCKET` | none | The bucket, required with `FILE_STORAGE=s3`. The server checks at startup that it can write, read and delete an object there. |
+| `S3_BUCKET` | none | The bucket, required with `FILE_STORAGE=s3`. The server checks at startup that it can write, read and delete an object there: it refuses to start on a definite answer (no such bucket, access denied, wrong region), and logs the error and starts when the store does not answer, so a pod restarted during an outage does not crash loop. |
 | `S3_REGION` | `AWS_REGION` or `AWS_DEFAULT_REGION`, else `us-east-1` | The bucket's region. |
 | `S3_ENDPOINT` | AWS | A non-AWS S3 compatible store, for example `http://127.0.0.1:9000` for MinIO. The standard `AWS_ENDPOINT_URL_S3`, if set, overrides it; `AWS_ENDPOINT` is used when neither is set. |
 | `S3_PREFIX` | none | A key prefix, for a bucket shared with other sites. Everything under it (or in the whole bucket, without one) is served as this site's files, and an object with no record is served to anyone, so store nothing else there: give each site sharing a bucket its own prefix, never one inside another's (`a` and `a/b`). |

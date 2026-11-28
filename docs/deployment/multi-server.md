@@ -46,7 +46,9 @@ made is served by all of them, and only the Pagefind index still needs the
 shared directory. Files are still served only through the kernel's `/files/`
 routes, which check access first: keep the bucket private. Each server checks
 the bucket when it starts (writes, reads back and deletes a uniquely named
-object) and refuses to start, naming the bucket, if it cannot. An existing
+object). It refuses to start, naming the bucket, on a definite answer (no
+such bucket, access denied, wrong region); a store that does not answer is
+logged and the server starts, so check the status report after a rollout. An existing
 directory is copied in with `trovato files migrate-to-s3`
 ([command line reference](../cli-reference.md#trovato-files-migrate-to-s3)).
 The design is [docs/design/production-hosting.md](../design/production-hosting.md).
