@@ -24,6 +24,10 @@ use crate::tap::UserContext;
 pub struct TileRenderContext<'a> {
     /// The application, for the theme engine and the services tiles read.
     pub state: &'a AppState,
+    /// The request's session, for a tile that renders a form (`user_login`):
+    /// the form's CSRF token is issued into it only when such a tile is drawn,
+    /// so a page without one starts no session for an anonymous visitor.
+    pub session: &'a tower_sessions::Session,
     /// Who is looking.
     pub viewer: &'a UserContext,
     /// The language the page is rendered in.
@@ -176,6 +180,7 @@ async fn render_tile_html(tile: &Tile, render: &TileRenderContext<'_>) -> Option
         "menu" => render_menu_tile(tile, render),
         "gather_query" => render_gather_tile(tile, render).await?,
         "language_switcher" => render_language_switcher_tile(tile, render)?,
+        "user_login" => render_login_tile(tile, render).await?,
         "chat" => chat_widget(&tile.machine_name),
         _ => "<p>Unknown tile type</p>".to_string(),
     };
@@ -451,6 +456,36 @@ fn language_front_page(language: &str, default_language: &str, prefix_default: b
     } else {
         format!("/{language}")
     }
+}
+
+/// A `user_login` tile: the login form itself, for a visitor who is not
+/// signed in. The form is the login page's own (`auth::build_login_form`,
+/// form id `user_login`), built through the forms pipeline so it carries a
+/// `_token` issued into this visitor's session, and it posts to `/user/login`,
+/// whose one handler checks it and shows the login page with its error when a
+/// sign in fails. A successful sign in returns to the page the tile was on.
+///
+/// `None`, and so no tile, for a signed-in viewer, and on the login page
+/// itself, which already shows the same form.
+async fn render_login_tile(tile: &Tile, render: &TileRenderContext<'_>) -> Option<String> {
+    if render.viewer.authenticated || render.current_path.starts_with("/user/login") {
+        return None;
+    }
+    let mut form = crate::routes::auth::build_login_form(Some(render.current_path));
+    form = form.attribute("class", "login-form login-form--tile");
+    let html = crate::routes::admin_form::render_as(
+        render.state,
+        render.session,
+        render.viewer,
+        form,
+        &[],
+    )
+    .await
+    .ok()?;
+    let mut context = tera::Context::new();
+    context.insert("tile", tile);
+    context.insert("login_form", &html);
+    Some(render_tile_template(tile, render, &context))
 }
 
 /// A `menu` tile: the links of the config menu it names (`menu_name`, default

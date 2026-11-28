@@ -436,6 +436,13 @@ pub struct RuntimeConfig {
     /// `EDGE_CACHE_S_MAXAGE` and `EDGE_CACHE_TAG_HEADER`. See
     /// `crate::middleware::edge_cache`.
     pub edge_cache: crate::middleware::EdgeCacheConfig,
+
+    /// Process-level overrides of the timer throttles (B278):
+    /// `TIMER_MAX_CONCURRENT`, `TIMER_MAX_PER_PLUGIN`, `TIMER_MIN_REPEAT_SECS`
+    /// and `TIMER_MAX_PAYLOAD_BYTES`. Each one set wins over the
+    /// `timer_settings` `site_config` row edited on `/admin/reports/timers`,
+    /// as `CRON_INTERVAL_SECS` wins over the cron interval.
+    pub timer_overrides: crate::timer::TimerOverrides,
 }
 
 /// The SMTP configuration mail is sent with, as an administrator may see it.
@@ -969,6 +976,7 @@ impl Config {
                 .transpose()
                 .context("CRON_INTERVAL_SECS must be a valid non-negative integer")?,
             edge_cache: crate::middleware::EdgeCacheConfig::from_lookup(get)?,
+            timer_overrides: crate::timer::TimerOverrides::from_lookup(get)?,
         };
 
         Ok(Self {

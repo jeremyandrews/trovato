@@ -4,6 +4,8 @@
 {% block page_title %}{{ t(s="Cron") }}{% endblock page_title %}
 
 {% block content %}
+<p>{{ t(s="Cron runs routine sweeps on an interval. Work due at a known second, such as a scheduled publish, is a timer.") }} <a href="/admin/reports/timers">{{ t(s="Timers") }}</a></p>
+
 <section class="admin-card" aria-labelledby="cron-last-run">
     <h2 id="cron-last-run" class="report-heading">{{ t(s="Last run") }}</h2>
     {% if last_run %}

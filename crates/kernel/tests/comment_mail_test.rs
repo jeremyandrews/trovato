@@ -21,6 +21,10 @@ use uuid::Uuid;
 
 const ITEM_TYPE: &str = "comment_mail_test";
 
+/// `comment_notify_authors` is one row of site-wide configuration: every test
+/// here that depends on it, or changes it, holds this.
+static NOTICES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn text(response: axum::response::Response) -> String {
     let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
         .await
@@ -98,6 +102,8 @@ async fn queued_for(app: &TestApp, comment: Uuid) -> i64 {
 #[test]
 fn a_held_comment_notifies_once_when_approved_and_never_before() {
     run_test(async {
+        // It needs the author notice on (B183).
+        let _notices = NOTICES.lock().await;
         let sink = SmtpSink::start().await;
         let app = TestApp::with_config(|config| {
             config.smtp_host = Some("127.0.0.1".to_string());
@@ -208,6 +214,282 @@ fn a_held_comment_notifies_once_when_approved_and_never_before() {
                 .data
                 .contains("Subject: BG18 held comment subject"),
             "the comment's own subject is the mail's subject (B163)"
+        );
+        sink.stop().await;
+    });
+}
+
+/// Set `comment_notify_authors`, or remove it (`None`, the default: on).
+async fn set_notices(app: &TestApp, value: Option<bool>) {
+    match value {
+        Some(on) => trovato_kernel::models::SiteConfig::set(
+            &app.db,
+            trovato_kernel::models::comment::NOTIFY_AUTHORS_KEY,
+            serde_json::Value::Bool(on),
+        )
+        .await
+        .expect("set the notice setting"),
+        None => {
+            sqlx::query("DELETE FROM site_config WHERE key = $1")
+                .bind(trovato_kernel::models::comment::NOTIFY_AUTHORS_KEY)
+                .execute(&app.db)
+                .await
+                .expect("clear the notice setting");
+        }
+    }
+}
+
+/// Delete, when the test ends, the accounts `users` (with their own roles),
+/// the items `items` with their comments, and the mail queued for `mail`.
+fn clean_up_on_exit(app: &TestApp, users: Vec<Uuid>, items: Vec<Uuid>, mail: Vec<String>) {
+    let db = app.db.clone();
+    common::defer_cleanup(move || async move {
+        for recipient in &mail {
+            sqlx::query("DELETE FROM mail_outbox WHERE recipient = $1")
+                .bind(recipient)
+                .execute(&db)
+                .await
+                .expect("delete queued mail");
+        }
+        for item in &items {
+            sqlx::query("DELETE FROM item WHERE id = $1")
+                .bind(item)
+                .execute(&db)
+                .await
+                .expect("delete the item and its comments");
+        }
+        for user in &users {
+            let roles: Vec<Uuid> =
+                sqlx::query_scalar("SELECT role_id FROM user_roles WHERE user_id = $1")
+                    .bind(user)
+                    .fetch_all(&db)
+                    .await
+                    .unwrap_or_default();
+            for statement in [
+                "DELETE FROM comment WHERE author_id = $1",
+                "DELETE FROM user_roles WHERE user_id = $1",
+                "DELETE FROM users WHERE id = $1",
+            ] {
+                sqlx::query(statement)
+                    .bind(user)
+                    .execute(&db)
+                    .await
+                    .expect(statement);
+            }
+            for role in roles {
+                for statement in [
+                    "DELETE FROM role_permissions WHERE role_id = $1",
+                    "DELETE FROM roles WHERE id = $1 AND name LIKE 'b183%'",
+                ] {
+                    sqlx::query(statement)
+                        .bind(role)
+                        .execute(&db)
+                        .await
+                        .expect(statement);
+                }
+            }
+        }
+    });
+}
+
+/// B183: "E-mail content authors about new comments". On (the default), a
+/// comment posted visible and a held comment approved each queue the author's
+/// notice; off, neither does. Both through the routes a site uses: the
+/// comment route and the moderation screen's Approve.
+#[test]
+fn the_author_notice_follows_the_site_setting_on_both_paths() {
+    run_test(async {
+        let notices = NOTICES.lock().await;
+        common::hold_until_cleanup(notices);
+        let sink = SmtpSink::start().await;
+        let app = TestApp::with_config(|config| {
+            config.smtp_host = Some("127.0.0.1".to_string());
+            config.smtp_port = sink.port;
+            config.smtp_encryption = "none".to_string();
+        })
+        .await;
+        setup(&app).await;
+        let system = UserContext::administrator(Uuid::nil(), vec![]);
+
+        let (author, author_mail) = member(&app, "b183author").await;
+        let (commenter, commenter_mail) = member(&app, "b183commenter").await;
+        let admin = common::username("b183admin");
+        let admin_cookies = app
+            .create_and_login_admin(
+                &admin,
+                "B183-Password-123",
+                &format!("{admin}@bg18.example.test"),
+            )
+            .await;
+        let admin_id = common::user_id_of(&app, &admin).await;
+        let item = app
+            .state
+            .items()
+            .create(
+                CreateItem {
+                    item_type: ITEM_TYPE.to_string(),
+                    title: format!("Comment notice {}", Uuid::now_v7().simple()),
+                    author_id: author,
+                    status: Some(1),
+                    promote: Some(0),
+                    sticky: Some(0),
+                    fields: Some(serde_json::json!({})),
+                    stage_id: Some(LIVE_STAGE_ID),
+                    language: Some("en".to_string()),
+                    log: None,
+                },
+                &system,
+            )
+            .await
+            .unwrap()
+            .id;
+        clean_up_on_exit(
+            &app,
+            vec![commenter, admin_id, author],
+            vec![item],
+            vec![author_mail.clone(), commenter_mail],
+        );
+        // Put the setting back as the site had it.
+        let before = trovato_kernel::models::SiteConfig::get(
+            &app.db,
+            trovato_kernel::models::comment::NOTIFY_AUTHORS_KEY,
+        )
+        .await
+        .unwrap()
+        .and_then(|v| v.as_bool());
+        {
+            let db = app.db.clone();
+            common::defer_cleanup(move || async move {
+                let key = trovato_kernel::models::comment::NOTIFY_AUTHORS_KEY;
+                match before {
+                    Some(on) => trovato_kernel::models::SiteConfig::set(
+                        &db,
+                        key,
+                        serde_json::Value::Bool(on),
+                    )
+                    .await
+                    .expect("restore the notice setting"),
+                    None => {
+                        sqlx::query("DELETE FROM site_config WHERE key = $1")
+                            .bind(key)
+                            .execute(&db)
+                            .await
+                            .expect("clear the notice setting");
+                    }
+                }
+            });
+        }
+
+        // The commenter may post, straight to published whatever the site's
+        // default status is (one row other binaries change).
+        let role = common::create_test_role(&app, &common::username("b183role")).await;
+        for permission in ["post comments", "access content", "skip comment approval"] {
+            sqlx::query("INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)")
+                .bind(role)
+                .bind(permission)
+                .execute(&app.db)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)")
+            .bind(commenter)
+            .bind(role)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        app.state.permissions().invalidate_all();
+        let commenter_name: String = sqlx::query_scalar("SELECT name FROM users WHERE id = $1")
+            .bind(commenter)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        let commenter_cookies = app.login(&commenter_name, "Bg18-Password-123").await;
+
+        for (setting, expected) in [(Some(false), 0), (None, 1), (Some(true), 1)] {
+            set_notices(&app, setting).await;
+
+            // Posted visible through the comment route.
+            let (cookies, token) = csrf(&app, &commenter_cookies, "/").await;
+            let response = app
+                .request_with_cookies(
+                    Request::post(format!("/api/v1/item/{item}/comments"))
+                        .header("content-type", "application/json")
+                        .header("x-csrf-token", &token)
+                        .body(Body::from(
+                            serde_json::json!({ "body": format!("B183 posted, {setting:?}") })
+                                .to_string(),
+                        ))
+                        .unwrap(),
+                    &cookies,
+                )
+                .await;
+            assert_eq!(response.status(), 200, "post with {setting:?}");
+            let posted: serde_json::Value = serde_json::from_str(&text(response).await).unwrap();
+            assert_eq!(posted["status"], CommentStatus::Published.as_i16());
+            let posted = posted["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+            assert_eq!(
+                queued_for(&app, posted).await,
+                expected,
+                "posting with the setting {setting:?}"
+            );
+
+            // Held, then approved on the moderation screen.
+            let held = app
+                .state
+                .comments()
+                .create(
+                    CreateComment {
+                        item_id: item,
+                        parent_id: None,
+                        author_id: commenter,
+                        subject: None,
+                        body: format!("B183 held, {setting:?}"),
+                        body_format: None,
+                        status: Some(CommentStatus::Pending.as_i16()),
+                    },
+                    &system,
+                )
+                .await
+                .unwrap()
+                .id;
+            let (cookies, token) = csrf(&app, &admin_cookies, "/admin/content/comments").await;
+            let response = app
+                .request_with_cookies(
+                    Request::post(format!("/admin/content/comments/{held}/approve"))
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .body(Body::from(format!(
+                            "_token={}",
+                            urlencoding::encode(&token)
+                        )))
+                        .unwrap(),
+                    &cookies,
+                )
+                .await;
+            assert!(response.status().is_redirection(), "{}", response.status());
+            assert_eq!(
+                queued_for(&app, held).await,
+                expected,
+                "approving with the setting {setting:?}"
+            );
+        }
+
+        // The settings screen shows the setting, ticked while it is on.
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin/content/comments")
+                    .body(Body::empty())
+                    .unwrap(),
+                &admin_cookies,
+            )
+            .await;
+        let page = text(response).await;
+        assert!(
+            page.contains("E-mail content authors about new comments"),
+            "the setting is on the comment settings form"
+        );
+        assert!(
+            page.contains(r#"name="notify_authors" value="1" class="form-checkbox" checked"#),
+            "and ticked while on"
         );
         sink.stop().await;
     });

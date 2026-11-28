@@ -22,6 +22,7 @@ path = "junit.xml"
 cluster = { max-threads = 1 }
 ai-send-path = { max-threads = 1 }
 cron-scheduler = { max-threads = 1 }
+timer-plugin = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = "binary(cluster_test)"
@@ -42,3 +43,11 @@ test-group = "ai-send-path"
 [[profile.default.overrides]]
 filter = "binary(cron_scheduler_test)"
 test-group = "cron-scheduler"
+
+# The B278 plugin timer tests share the one `test_timer` owner, and each runs
+# a scheduler over it, so one test's scheduler would fire another's timers.
+# Their static SERIAL mutex serializes them under libtest only; under nextest
+# it has to be here.
+[[profile.default.overrides]]
+filter = "binary(timer_plugin_test)"
+test-group = "timer-plugin"

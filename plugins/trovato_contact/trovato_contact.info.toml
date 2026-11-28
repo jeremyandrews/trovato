@@ -8,10 +8,19 @@ dependencies = []
 [taps]
 implements = [
     "tap_menu",
+    "tap_perm",
     "tap_api",
     "tap_form_validate",
 ]
 weight = 0
+
+# Grants `access site-wide contact form` to the anonymous and authenticated
+# roles once, when the plugin is first enabled or a site that has it enabled
+# upgrades, so the form stays open to everybody until a site revokes it.
+[migrations]
+files = [
+    "migrations/001_grant_contact_permission.sql",
+]
 
 # Declared plugin capabilities (WASM-1, deny-unless-declared). The kernel builds
 # this plugin's WASM linker from host_interfaces — it receives exactly the host

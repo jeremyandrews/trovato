@@ -55,6 +55,7 @@ PLUGINS=(
   test_owned_vocabulary
   trovato_cdn_purge_http
   trovato_cdn_purge_cloudflare
+  test_timer
 )
 
 if [ "${1:-}" = "--list" ]; then

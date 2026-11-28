@@ -183,6 +183,9 @@ const PROTECTED_TABLES: &[&str] = &[
     "recovery_email_challenges",
     "role_permissions",
     "roles",
+    // Every owner's timers (B278): a plugin reaches its own through the
+    // `timer` host interface, never another owner's.
+    "scheduled_timer",
     "security_audit_log",
     "site_config",
     "user_roles",

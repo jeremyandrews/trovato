@@ -140,9 +140,11 @@ fn merge_settings_sql(patch_param: &str) -> String {
 /// `field_name` the plugin declares is replaced whole by the declared one,
 /// each existing field it does not declare (one an admin added, or one a newer
 /// plugin version stopped declaring) stays unchanged, and declared fields the
-/// row lacks are appended in declared order. A column that is not an object,
-/// or a `fields` that is not an array, is read as no fields, so a fresh or
-/// unreadable row gets the declared list as it is.
+/// row lacks are appended in declared order. One key of an existing field
+/// survives its replacement: `settings.filterable`, the site's "Filterable and
+/// sortable" choice (B207), which is the site's to make, not the plugin's. A
+/// column that is not an object, or a `fields` that is not an array, is read as
+/// no fields, so a fresh or unreadable row gets the declared list as it is.
 ///
 /// SQL for the same reason as [`merge_settings_sql`]: it reads the row as it
 /// stands when the statement writes it.
@@ -157,7 +159,12 @@ fn merge_declared_fields_sql(declared_param: &str) -> String {
     format!(
         "COALESCE((SELECT jsonb_agg(m.field ORDER BY m.grp, m.ord) FROM ( \
            SELECT COALESCE( \
-                    (SELECT d.field FROM jsonb_array_elements({declared}) \
+                    (SELECT d.field || jsonb_build_object('settings', \
+                              (CASE WHEN jsonb_typeof(d.field -> 'settings') = 'object' \
+                               THEN d.field -> 'settings' ELSE '{{}}'::jsonb END) \
+                              || jsonb_strip_nulls(jsonb_build_object('filterable', \
+                                   e.field -> 'settings' -> 'filterable'))) \
+                     FROM jsonb_array_elements({declared}) \
                        WITH ORDINALITY AS d(field, ord) \
                      WHERE d.field ->> 'field_name' = e.field ->> 'field_name' \
                      ORDER BY d.ord LIMIT 1), \
@@ -748,6 +755,35 @@ impl ContentTypeRegistry {
 
         self.persist_fields(type_name, &def).await?;
         info!(type_name = %type_name, field = %field_name, "field updated");
+        Ok(())
+    }
+
+    /// Set one key of a field's `settings` (B207: `filterable`), keeping the
+    /// rest.
+    pub async fn set_field_setting(
+        &self,
+        type_name: &str,
+        field_name: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<()> {
+        let mut def = self
+            .get_or_load(type_name)
+            .await?
+            .context("content type not found")?;
+        let field = def
+            .fields
+            .iter_mut()
+            .find(|f| f.field_name == field_name)
+            .context("field not found")?;
+        if !field.settings.is_object() {
+            field.settings = serde_json::Value::Object(serde_json::Map::new());
+        }
+        if let Some(settings) = field.settings.as_object_mut() {
+            settings.insert(key.to_string(), value);
+        }
+        self.persist_fields(type_name, &def).await?;
+        info!(type_name = %type_name, field = %field_name, key, "field setting updated");
         Ok(())
     }
 

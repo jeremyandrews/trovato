@@ -481,6 +481,8 @@ pub const KNOWN_TAPS: &[&str] = &[
     // Edge cache purge (B303): the kernel dispatches this to whichever
     // enabled plugin implements it when its pending purge set drains.
     "tap_cache_purge",
+    // A precise timer the plugin registered is due (added by B278).
+    "tap_timer",
     // User
     "tap_user_login",
     "tap_user_logout",
@@ -544,6 +546,8 @@ pub const KNOWN_HOST_INTERFACES: &[&str] = &[
     "query",
     // Create and list owned vocabularies (added by B108, after 0.104.0).
     "vocabulary",
+    // Set, cancel and read the plugin's own precise timers (added by B278).
+    "timer",
 ];
 
 fn default_true() -> bool {

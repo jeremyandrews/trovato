@@ -105,6 +105,26 @@ enum Command {
         /// One or two results files: before, then after.
         files: Vec<PathBuf>,
     },
+    /// Mark fields of the 200 field type "Filterable and sortable" and build
+    /// their indexes (B207), timing each build.
+    Index {
+        /// Fields to mark (comma separated); the matrix's fields by default,
+        /// all but `ft_t17`, which the matrix uses as the unmarked one.
+        #[arg(long)]
+        fields: Option<String>,
+    },
+    /// Time raw SQL statements (one per `-- name` section of a file), for
+    /// comparing index designs on the same shapes: p50/p95/p99 over the
+    /// iterations, and the plan's shape and buffers.
+    Sql {
+        /// File of statements, each introduced by a `-- name: <label>` line.
+        file: PathBuf,
+        #[arg(long, default_value_t = 30)]
+        iterations: usize,
+        /// Statements to run once first (DDL for the design under test).
+        #[arg(long)]
+        setup: Option<PathBuf>,
+    },
     /// Drop the benchmark database.
     Drop,
 }
@@ -118,6 +138,12 @@ fn main() -> Result<()> {
         match cli.command {
             Command::Report { files } => report::print(&files),
             Command::Drop => drop_database().await,
+            Command::Sql {
+                file,
+                iterations,
+                setup,
+            } => run_sql(&file, iterations, setup.as_deref()).await,
+            Command::Index { fields } => run_index(fields).await,
             Command::Seed {
                 main_items,
                 other_items,
@@ -407,6 +433,10 @@ pub struct Results {
     pub cold_note: String,
     pub queries: Vec<QueryResult>,
     pub seconds: f64,
+    /// Field indexes of the 200 field type: field, kind, state, build ms,
+    /// bytes.
+    #[serde(default)]
+    pub field_indexes: Vec<(String, String, String, Option<i64>, i64)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -752,6 +782,49 @@ async fn explain(
         // A statement with placeholders is explained as a prepared statement
         // executed with the case's values, on one connection.
         let mut conn = pool.acquire().await?;
+        // The values are rebuilt from the case, so they fit a statement only
+        // as the case's shape predicted it; one they do not fit (a facet
+        // asking once per option takes the option list as an array) is
+        // explained as a generic plan, without timing.
+        if trimmed.contains("$1")
+            && let Err(e) = explain_prepared(&mut conn, trimmed, binds).await
+        {
+            let lines: Vec<String> =
+                sqlx::raw_sql(AssertSqlSafe(format!("EXPLAIN (GENERIC_PLAN) {trimmed}")))
+                    .fetch_all(&mut *conn)
+                    .await?
+                    .iter()
+                    .map(|row| sqlx::Row::get::<String, _>(row, 0))
+                    .collect();
+            let _ = sqlx::query("DEALLOCATE ALL").execute(&mut *conn).await;
+            text_out.push_str(&format!(
+                "-- statement (generic plan: {e:#})\n{trimmed}\n\n{}\n\n",
+                lines.join("\n")
+            ));
+            let shape = format!(
+                "generic plan: {}",
+                lines
+                    .iter()
+                    .filter(|l| l.contains("Scan") || l.trim_start().starts_with("->  Sort"))
+                    .map(|l| l
+                        .trim()
+                        .trim_start_matches("->")
+                        .trim()
+                        .split("  (")
+                        .next()
+                        .unwrap_or("")
+                        .to_string())
+                    .collect::<Vec<_>>()
+                    .join(" > ")
+            );
+            if best.is_none() {
+                best = Some(Plan {
+                    shape,
+                    ..Plan::default()
+                });
+            }
+            continue;
+        }
         let target = if trimmed.contains("$1") {
             sqlx::query(AssertSqlSafe(format!(
                 "PREPARE field_bench_stmt AS {trimmed}"
@@ -899,6 +972,7 @@ async fn describe_database(pool: &PgPool, results: &mut Results) -> Result<()> {
             total_bytes: total,
         })
         .collect();
+    results.field_indexes = field_indexes(pool).await?;
     results.item_indexes = sqlx::query_as(
         "SELECT i.indexrelid::regclass::text, pg_relation_size(i.indexrelid) \
          FROM pg_index i WHERE i.indrelid = 'item'::regclass ORDER BY 2 DESC",
@@ -1113,6 +1187,214 @@ async fn time_saves(state: &AppState, user: &UserContext, ids: &[uuid::Uuid]) ->
 /// Whether `e` is Postgres cancelling a statement at the gather's timeout.
 fn is_timeout(e: &anyhow::Error) -> bool {
     format!("{e:#}").contains("statement timeout")
+}
+
+/// The fields the matrix filters, sorts or facets on, except `ft_t17`.
+const MATRIX_FIELDS: [&str; 18] = [
+    "ft_country",
+    "ft_color",
+    "ft_sku",
+    "fi_price",
+    "fdt_published",
+    "ft_name",
+    "fb_b01",
+    "fi_year",
+    "ft_status",
+    "fi_rating",
+    "ft_t01",
+    "ft_t07",
+    "fx_recall",
+    "fg_topics",
+    "fr_place",
+    "fm_people",
+    "fr_owner",
+    "fb_featured",
+];
+
+async fn run_index(fields: Option<String>) -> Result<()> {
+    let state = app_state().await?;
+    let fields: Vec<String> = match fields {
+        Some(list) => list.split(',').map(|s| s.trim().to_string()).collect(),
+        None => MATRIX_FIELDS.iter().map(|s| (*s).to_string()).collect(),
+    };
+    for field in &fields {
+        state
+            .content_types()
+            .set_field_setting(
+                MAIN_TYPE,
+                field,
+                trovato_kernel::gather::field_index::SETTING,
+                Value::Bool(true),
+            )
+            .await
+            .with_context(|| format!("marking {field}"))?;
+    }
+    let started = Instant::now();
+    // Marking a field also starts a reconcile in the background, which may
+    // claim a job this drain then skips; wait until none is left, so the
+    // process does not exit under a build.
+    let mut done = 0;
+    loop {
+        done += trovato_kernel::gather::field_index::reconcile_and_drain(
+            state.db(),
+            state.content_types(),
+            state.gather(),
+        )
+        .await?;
+        let open: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM item_field_index WHERE state IN ('queued', 'building')",
+        )
+        .fetch_one(state.db())
+        .await?;
+        if open == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    eprintln!(
+        "{done} index jobs in {:.1} s",
+        started.elapsed().as_secs_f64()
+    );
+    for (field, kind, index_state, ms, size) in field_indexes(state.db()).await? {
+        eprintln!(
+            "{field:<16} {kind:<7} {index_state:<8} {:>8.1} s {:>8.1} MB",
+            ms.unwrap_or(0) as f64 / 1000.0,
+            size as f64 / 1_048_576.0
+        );
+    }
+    Ok(())
+}
+
+/// Each field index of the 200 field type: field, kind, state, build
+/// milliseconds and size in bytes. Empty before B207 part 2 (no table).
+async fn field_indexes(pool: &PgPool) -> Result<Vec<(String, String, String, Option<i64>, i64)>> {
+    let exists: bool = sqlx::query_scalar("SELECT to_regclass('item_field_index') IS NOT NULL")
+        .fetch_one(pool)
+        .await?;
+    if !exists {
+        return Ok(Vec::new());
+    }
+    Ok(sqlx::query_as(
+        "SELECT field_name::text, kind::text, state::text, build_ms, \
+                COALESCE(pg_relation_size(to_regclass(index_name)), 0) \
+         FROM item_field_index WHERE item_type = $1 ORDER BY field_name",
+    )
+    .bind(MAIN_TYPE)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// `field-bench sql`: run each `-- name:` section of `file` `iterations`
+/// times on one connection, after `setup` once, and print a Markdown row per
+/// statement: p50, p95, p99, rows, plan shape, buffers.
+async fn run_sql(
+    file: &std::path::Path,
+    iterations: usize,
+    setup: Option<&std::path::Path>,
+) -> Result<()> {
+    bench_url()?;
+    let url = std::env::var("DATABASE_URL")?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await?;
+    if let Some(setup) = setup {
+        let started = Instant::now();
+        let text = std::fs::read_to_string(setup)?;
+        for statement in text.split(";\n").map(str::trim).filter(|s| !s.is_empty()) {
+            let s = Instant::now();
+            sqlx::raw_sql(AssertSqlSafe(statement.to_string()))
+                .execute(&pool)
+                .await
+                .with_context(|| format!("setup: {statement}"))?;
+            eprintln!(
+                "setup {:>8.1} s  {}",
+                s.elapsed().as_secs_f64(),
+                statement.lines().next().unwrap_or("")
+            );
+        }
+        eprintln!("setup total {:.1} s", started.elapsed().as_secs_f64());
+    }
+    let text = std::fs::read_to_string(file)?;
+    let mut sections: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        if let Some(name) = line.strip_prefix("-- name:") {
+            sections.push((name.trim().to_string(), String::new()));
+        } else if let Some((_, body)) = sections.last_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    println!("| Statement | p50 ms | p95 ms | p99 ms | Rows | Plan | Buffers |");
+    println!("|---|---:|---:|---:|---:|---|---|");
+    for (name, sql) in sections {
+        let sql = sql.trim().trim_end_matches(';').to_string();
+        let mut samples = Vec::new();
+        let mut rows = 0;
+        let mut error = None;
+        // One untimed run, then the timed ones.
+        for i in 0..=iterations {
+            let started = Instant::now();
+            match sqlx::query(AssertSqlSafe(sql.clone()))
+                .fetch_all(&pool)
+                .await
+            {
+                Ok(r) => {
+                    rows = r.len();
+                    if i > 0 {
+                        samples.push(started.elapsed().as_secs_f64() * 1000.0);
+                    }
+                }
+                Err(e) => {
+                    error = Some(format!("{e}"));
+                    break;
+                }
+            }
+        }
+        if let Some(e) = error {
+            println!(
+                "| {name} | - | - | - | - | ERROR {} | - |",
+                e.replace('|', "/")
+            );
+            continue;
+        }
+        let l = Latency::of(&mut samples);
+        let plan = explain(&pool, std::slice::from_ref(&sql), &[], None)
+            .await
+            .unwrap_or_default();
+        println!(
+            "| {name} | {:.1} | {:.1} | {:.1} | {rows} | `{}` | {} hit / {} read |",
+            l.p50_ms, l.p95_ms, l.p99_ms, plan.shape, plan.shared_hit, plan.shared_read
+        );
+    }
+    Ok(())
+}
+
+/// Whether `sql` runs as a prepared statement with `binds`: prepare it,
+/// execute it once and deallocate it.
+async fn explain_prepared(
+    conn: &mut sqlx::PgConnection,
+    sql: &str,
+    binds: &[String],
+) -> Result<()> {
+    sqlx::query(AssertSqlSafe(format!("PREPARE field_bench_try AS {sql}")))
+        .execute(&mut *conn)
+        .await?;
+    let args: Vec<String> = binds
+        .iter()
+        .map(|b| format!("'{}'", b.replace('\'', "''")))
+        .collect();
+    let run = sqlx::query(AssertSqlSafe(format!(
+        "EXECUTE field_bench_try({})",
+        args.join(", ")
+    )))
+    .execute(&mut *conn)
+    .await;
+    sqlx::query("DEALLOCATE field_bench_try")
+        .execute(&mut *conn)
+        .await?;
+    run?;
+    Ok(())
 }
 
 // Tests are allowed to use unwrap/expect freely.

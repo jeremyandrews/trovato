@@ -100,6 +100,7 @@ refuses the call with a documented error rather than truncating it.
 | **System** | `tap_admin_nav` | - | `Vec<AdminNavDefinition>` |
 | **System** | `tap_cron` | - | `Result<(), String>` |
 | **System** | `tap_cache_purge` | `{tags: [string], all: bool}` | `Result<_, String>` — enqueue only, see [cdn.md](deployment/cdn.md) |
+| **System** | `tap_timer` | `TimerInput {name, payload, run_at, fired_at, repeat_secs, attempt}` | `{}` or `{"error": "..."}` |
 | **Lifecycle** | `tap_install` | - | `Result<(), String>` |
 | **Lifecycle** | `tap_enable` | - | `Result<(), String>` |
 | **Lifecycle** | `tap_disable` | - | `Result<(), String>` |
@@ -305,6 +306,15 @@ let v = host::create_owned_vocabulary(
     &OwnedVocabularyRequest::new("group", &group_id, "group_7_topics", "Topics"))?;
 let all = host::list_owned_vocabularies("group", &group_id)?;
 // Err(-90): owner type not declared  Err(-91): bad id or label  Err(-92): id taken
+```
+
+### Timers
+Needs `timer` in `host_interfaces` and `tap_timer` in `taps`. See plugin-timers.md.
+```rust
+host::timer_set(&TimerRequest { name: "close:7".into(), run_at: at, repeat_secs: None, payload: json!({}) })?;
+let t = host::timer_get("close:7")?;      // Option<TimerInfo>
+let gone = host::timer_cancel("close:7")?; // bool
+// Err(-95): bad name or time  Err(-96): payload too large  Err(-97): repeat too short  Err(-98): too many
 ```
 
 ### Cache

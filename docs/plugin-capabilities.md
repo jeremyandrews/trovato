@@ -35,7 +35,7 @@ item_background = false
 
 `item-api`, `db`, `variables`, `request-context`, `user-api`, `cache-api`,
 `plugin-api`, `logging`, `ai-api`, `crypto-api`, `http`, `queue`, `mail`,
-`text-format`, `query`. What each holds is in `crates/wit/kernel.wit` and
+`text-format`, `query`, `timer`. What each holds is in `crates/wit/kernel.wit` and
 [plugin-development.md](plugin-development.md#host-functions).
 
 Two of them are how a plugin does ordinary website work without `raw_sql`:
@@ -50,6 +50,11 @@ Two of them are how a plugin does ordinary website work without `raw_sql`:
 
 `db` covers the plugin's own tables: `select`, `insert`, `update` and `delete`
 with conditions, `upsert`, and `insert-many` up to 500 rows.
+
+`timer` sets, reads and cancels the plugin's own precise timers, and the
+kernel calls `tap_timer` when one is due. Its table, `scheduled_timer`, is on
+the protected floor: no `raw_sql` plugin reads or writes another owner's
+timers. See [plugin-timers.md](plugin-timers.md).
 
 ## `raw_sql`
 

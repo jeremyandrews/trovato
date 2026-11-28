@@ -1,0 +1,7 @@
+{#
+  A `user_login` tile: the login form, for a visitor who is not signed in.
+  `login_form` is the login page's own form (`user_login`), built through the
+  forms pipeline with its `_token`; it posts to /user/login. `tile` is the tile.
+  Override per tile with `elements/tile--user_login--{machine_name}.html`.
+#}
+{{ login_form | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}

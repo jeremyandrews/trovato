@@ -23,6 +23,7 @@ const TILE_TYPES: &[&str] = &[
     "gather_query",
     "language_switcher",
     "chat",
+    "user_login",
 ];
 
 /// A stored tile, as a record would describe it.
