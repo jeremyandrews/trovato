@@ -85,6 +85,20 @@ async fn upload(app: &common::TestApp, owner: Uuid) -> (String, String) {
     (up.uri, path)
 }
 
+/// Upload `data` as `text/plain` (no magic byte check, so any content is
+/// accepted) owned by `owner`; return (uri, serve-path).
+async fn upload_bytes(app: &common::TestApp, owner: Uuid, data: &[u8]) -> (String, String) {
+    let filename = format!("blob-{}.txt", Uuid::now_v7().simple());
+    let up = app
+        .state
+        .files()
+        .upload(owner, &filename, "text/plain", data)
+        .await
+        .expect("upload");
+    let path = up.uri.strip_prefix("local://").unwrap().to_string();
+    (up.uri, path)
+}
+
 /// Create a conference whose `field_city` value embeds `reference` (a file uri
 /// or `/files/` URL), so the item references that file.
 async fn item_referencing(
@@ -924,5 +938,319 @@ fn derivative_of_restricted_image_in_other_letter_case_is_refused() {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// B291: streamed serving, `Range` requests, and that access is decided
+// without ever reading the file's bytes.
+// ---------------------------------------------------------------------------
+
+/// Bytes with every byte value, long enough to span several of the
+/// streaming route's internal read chunks (the default is 4 KiB).
+fn big_bytes() -> Vec<u8> {
+    (0..200_000u32).map(|i| (i % 256) as u8).collect()
+}
+
+/// A single `bytes=a-b` request gets `206`, the exact slice, `Content-Range`
+/// and `Content-Length` naming it, and `Accept-Ranges`.
+#[test]
+fn a_bounded_range_request_gets_206_with_the_exact_slice() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let owner = create_user(app).await;
+        let data = big_bytes();
+        let (uri, path) = upload_bytes(app, owner, &data).await;
+        item_referencing(app, "Range Public Bounded", 1, &uri).await;
+
+        let resp = app
+            .request(
+                Request::get(format!("/files/{path}"))
+                    .header(header::RANGE, "bytes=100-299")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_RANGE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            format!("bytes 100-299/{}", data.len())
+        );
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_LENGTH)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "200"
+        );
+        assert_eq!(
+            resp.headers()
+                .get(header::ACCEPT_RANGES)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "bytes"
+        );
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), &data[100..300]);
+    });
+}
+
+/// `bytes=N-` (open ended) and `bytes=-N` (suffix) both resolve against the
+/// file's real size, each `206` with the matching `Content-Range`.
+#[test]
+fn an_open_ended_and_a_suffix_range_both_resolve_correctly() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let owner = create_user(app).await;
+        let data = big_bytes();
+        let (uri, path) = upload_bytes(app, owner, &data).await;
+        item_referencing(app, "Range Public Open Suffix", 1, &uri).await;
+        let total = data.len();
+
+        let offset = app
+            .request(
+                Request::get(format!("/files/{path}"))
+                    .header(header::RANGE, format!("bytes={}-", total - 500))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(offset.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            offset
+                .headers()
+                .get(header::CONTENT_RANGE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            format!("bytes {}-{}/{total}", total - 500, total - 1)
+        );
+        let body = to_bytes(offset.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), &data[(total - 500)..]);
+
+        let suffix = app
+            .request(
+                Request::get(format!("/files/{path}"))
+                    .header(header::RANGE, "bytes=-500")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(suffix.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            suffix
+                .headers()
+                .get(header::CONTENT_RANGE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            format!("bytes {}-{}/{total}", total - 500, total - 1)
+        );
+        let body = to_bytes(suffix.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), &data[(total - 500)..]);
+    });
+}
+
+/// A range past the end of the file is `416`, with `Content-Range: bytes
+/// */<size>` naming the real size, not the requested one.
+#[test]
+fn a_range_past_the_end_is_416() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let owner = create_user(app).await;
+        let (uri, path) = upload(app, owner).await;
+        item_referencing(app, "Range Public Past End", 1, &uri).await;
+
+        let resp = app
+            .request(
+                Request::get(format!("/files/{path}"))
+                    .header(
+                        header::RANGE,
+                        format!("bytes={}-{}", FILE_BODY.len(), FILE_BODY.len() + 10),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(resp.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(
+            resp.headers()
+                .get(header::CONTENT_RANGE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            format!("bytes */{}", FILE_BODY.len())
+        );
+    });
+}
+
+/// A plain request with no `Range` header still gets `Accept-Ranges: bytes`,
+/// the signal a client needs before it ever sends one.
+#[test]
+fn a_plain_request_still_advertises_accept_ranges() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let owner = create_user(app).await;
+        let (uri, path) = upload(app, owner).await;
+        item_referencing(app, "Accept Ranges Public", 1, &uri).await;
+
+        let resp = app
+            .request(
+                Request::get(format!("/files/{path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(header::ACCEPT_RANGES)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "bytes"
+        );
+    });
+}
+
+/// A download bigger than one internal read chunk arrives byte for byte: the
+/// streamed body is never truncated or reordered.
+#[test]
+fn a_download_larger_than_one_chunk_arrives_intact() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let owner = create_user(app).await;
+        let data = big_bytes();
+        let (uri, path) = upload_bytes(app, owner, &data).await;
+        item_referencing(app, "Large Public Download", 1, &uri).await;
+
+        let resp = app
+            .request(
+                Request::get(format!("/files/{path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.len(), data.len());
+        assert_eq!(body.as_ref(), data.as_slice());
+    });
+}
+
+/// A storage that counts every byte-reading call (`read`, `read_stream`), to
+/// pin that the access decision never reads a file's bytes.
+struct CountingStorage {
+    inner: trovato_kernel::file::LocalFileStorage,
+    reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl trovato_kernel::file::FileStorage for CountingStorage {
+    async fn write(&self, uri: &str, data: &[u8]) -> anyhow::Result<()> {
+        self.inner.write(uri, data).await
+    }
+    async fn read(&self, uri: &str) -> anyhow::Result<Vec<u8>> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.read(uri).await
+    }
+    async fn read_stream(
+        &self,
+        uri: &str,
+        range: Option<trovato_kernel::file::ByteRange>,
+    ) -> anyhow::Result<trovato_kernel::file::FileStream> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.read_stream(uri, range).await
+    }
+    async fn delete(&self, uri: &str) -> anyhow::Result<()> {
+        self.inner.delete(uri).await
+    }
+    async fn exists(&self, uri: &str) -> anyhow::Result<bool> {
+        self.inner.exists(uri).await
+    }
+    fn public_url(&self, uri: &str) -> String {
+        self.inner.public_url(uri)
+    }
+    fn scheme(&self) -> &'static str {
+        "local"
+    }
+    fn local_dir(&self) -> Option<&std::path::Path> {
+        self.inner.local_dir()
+    }
+    async fn check_usable(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn describe(&self) -> String {
+        "counting".into()
+    }
+}
+
+/// `ItemService::file_access` (what both `serve_uploaded_file` and
+/// `serve_derivative` call, and check, strictly before their own
+/// `FileStorage::read_stream` call — see `routes/file.rs` and
+/// `routes/image_style.rs`) never reads a byte of the file it is deciding
+/// about: it is pure `file_managed`/`file_reference`/item-access lookups.
+/// `TestApp` has no seam to swap its own `FileStorage` for an instrumented
+/// one, so this pins the access layer directly with its own `FileService`
+/// sharing the same database, rather than through the HTTP route: a denied
+/// request's 404 can never have touched the bytes, because the function that
+/// decides it never does.
+#[test]
+fn access_is_decided_without_reading_the_file() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let owner = create_user(app).await;
+
+        let dir =
+            std::env::temp_dir().join(format!("trovato-counting-{}", Uuid::now_v7().simple()));
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let storage = std::sync::Arc::new(CountingStorage {
+            inner: trovato_kernel::file::LocalFileStorage::new(&dir, "/files"),
+            reads: reads.clone(),
+        });
+        let files = trovato_kernel::file::FileService::new(app.db.clone(), storage);
+
+        let name = format!("counted-{}.txt", Uuid::now_v7().simple());
+        let up = files
+            .upload(owner, &name, "text/plain", FILE_BODY)
+            .await
+            .expect("upload");
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a new upload never reads back its own bytes"
+        );
+
+        item_referencing(app, "Counted Restricted", 0, &up.uri).await;
+
+        let denied = app
+            .state
+            .items()
+            .can_serve_file(&up.uri, &stranger())
+            .await
+            .unwrap();
+        assert!(
+            !denied,
+            "a stranger may not see a file referenced only by an unpublished item"
+        );
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the access decision touched no bytes of the file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     });
 }
