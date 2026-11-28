@@ -47,13 +47,29 @@
 //! change in this list therefore always has its event, which is what lets
 //! the stream be cited as complete.
 //!
+//! One submission that makes several changes makes them in one transaction:
+//! the administrator's account form (the account's fields, its roles, its
+//! password and, for a block, the deletion of its API tokens) and the
+//! permission grid (every role's grants). When any event cannot be written,
+//! nothing the submission asked for changes. The completed recovery is
+//! recorded with the password it sets, `recovery.completed` committing with
+//! that password and its `password.changed`.
+//!
+//! Each event describes what its own write changed: whether a role was
+//! granted or removed, and which permissions a role gained or lost, is the
+//! answer of the statement that made the change, and the earlier values of
+//! an account are read from its row as last committed, locked. A change
+//! another transaction made meanwhile is that transaction's to record.
+//!
 //! Work that cannot roll back (mail, a session ended in Redis, a cache
-//! invalidation, a plugin tap) runs only after the commit.
+//! invalidation, a plugin tap) runs only after the commit. Deleting an
+//! account ends its sessions just before its transaction opens, so that
+//! `account.deleted` can count the sessions actually ended.
 //!
 //! An event with no stored change behind it (a login success or failure, a
 //! refused deletion or credential removal, a rate limit hit, a recovery step
-//! or a session whose whole state is in Redis) has nothing to be atomic
-//! with. It is written best effort with [`SecurityAudit::emit`], and a
+//! before the password is set, or a session whose whole state is in Redis)
+//! has nothing to be atomic with. It is written best effort with [`SecurityAudit::emit`], and a
 //! failed write is logged, never turned into a failed request.
 //!
 //! # Retention
