@@ -167,7 +167,7 @@ Columns: the path as registered; its methods; its group; the handler and where i
 | `/admin/reports/timers` | GET | Reports | `list_timers` (crates/kernel/src/routes/admin_timers.rs) | admin/reports/timers.html | require_any_permission("view timers", "administer timers"); row actions only with "administer timers" |
 | `/admin/reports/timers/settings` | GET,POST | Reports | `GET: settings_form \| POST: save_settings` (crates/kernel/src/routes/admin_timers.rs) | GET: admin/reports/timer-settings.html \| POST: redirect (re-renders on error) | require_permission("administer timers"); CSRF on POST; security log `timer.settings_changed` |
 | `/admin/reports/timers/{id}/edit` | GET,POST | Reports | `GET: edit_form \| POST: edit_submit` (crates/kernel/src/routes/admin_timers.rs) | GET: admin/reports/timer-edit.html \| POST: redirect (re-renders on error) | require_permission("administer timers"); CSRF on POST; security log `timer.changed` |
-| `/admin/reports/timers/{id}/{action}` | POST | Reports | `row_action` (crates/kernel/src/routes/admin_timers.rs): pause, resume, run, cancel (asks first) | redirect | require_permission("administer timers"); CSRF; security log `timer.changed` |
+| `/admin/reports/timers/{id}/{action}` | GET,POST | Reports | `GET: cancel_form \| POST: row_action` (crates/kernel/src/routes/admin_timers.rs): GET asks before a cancel (other actions 404); POST pause, resume, run (the listing's one form), cancel (the asking page's form) | GET: admin/reports/timer-cancel.html \| POST: redirect | require_permission("administer timers"); CSRF; security log `timer.changed` |
 
 <!-- end kernel routes -->
 

@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {#- The site log. `list` is its filter, sort and page (routes::admin_list):
@@ -10,13 +9,9 @@
 
 {% block content %}
 <div class="admin-card">
-    {{ list::filter_start(action="/admin/reports/log", label=t(s="Filter the log")) }}
-        {{ form::field(name="q", type="search", label=t(s="Message contains"), value=list.q, width="20", wrapper="filter-item") }}
-        {{ form::select(name="level", label=t(s="Level"), options=level_options, value=level_filter, empty=t(s="- Any -"), translate_options=true, wrapper="filter-item") }}
-        {{ form::select(name="type", label=t(s="Type"), options=type_options, value=type_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
-    {{ list::filter_end(list=list, action="/admin/reports/log") }}
+    {{ filter_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::admin_list::render_forms); every value is escaped by the form templates #}
 </div>
-{{ list::sort_form(list=list, action="/admin/reports/log") }}
+{{ sort_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
 {% if entries %}
 <div class="admin-card">

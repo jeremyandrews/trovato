@@ -122,7 +122,7 @@ pub const SETTINGS: &[Setting] = &[
     ),
     setting(
         SITE,
-        "reg_open",
+        "registration_mode",
         "User registration",
         "",
         "sign up signup register accounts",

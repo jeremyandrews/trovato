@@ -17,8 +17,6 @@ use crate::models::{Comment, CommentStatus, SiteConfig, UpdateComment};
 use crate::routes::auth::SESSION_ACTIVE_STAGE;
 use crate::state::AppState;
 
-use crate::form::csrf::generate_csrf_token;
-
 use crate::error::AppError;
 
 use super::admin_form;
@@ -133,6 +131,27 @@ async fn get_current_stage(
 // Admin Dashboard
 // =============================================================================
 
+/// The form id of the dashboard's "Log out" button.
+const LOGOUT_FORM_ID: &str = "dashboard_logout_form";
+
+/// The dashboard's "Log out" button: a form posting to `/user/logout`, which
+/// checks its token as it checks the site's own log out form's. The button is
+/// markup, so it keeps its link style and its words are the viewer's admin
+/// language.
+async fn logout_form(state: &AppState, viewer: &crate::tap::UserContext) -> crate::form::Form {
+    let text = super::admin_nav::AdminText::for_page(state, viewer, "/admin").await;
+    crate::form::Form::new(LOGOUT_FORM_ID)
+        .action("/user/logout")
+        .attribute("class", "dashboard-inline-form")
+        .element(
+            "op",
+            FormElement::markup(format!(
+                r#"<button type="submit" class="link-button">{}</button>"#,
+                text.html("Log out", &[])
+            )),
+        )
+}
+
 /// Admin dashboard.
 ///
 /// GET /admin
@@ -164,7 +183,18 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
         .cloned()
         .collect();
 
-    let csrf_token = generate_csrf_token(&session).await;
+    let logout_form = match admin_form::render(
+        &state,
+        &session,
+        &user,
+        logout_form(&state, &viewer).await,
+        &[],
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
 
     let mut context = tera::Context::new();
     context.insert("content_types", &creatable);
@@ -199,7 +229,7 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
     );
     context.insert("path", "/admin");
     context.insert("user", &user);
-    context.insert("csrf_token", &csrf_token);
+    context.insert("logout_form", &logout_form);
 
     // The update banner, read from what the last cron check stored. Only here,
     // and only for a viewer holding `administer site`: a visitor has no use for

@@ -81,10 +81,7 @@
             <li><a href="/admin/preferences">{{ t(s="Your preferences") }}</a></li>
             <li><a href="/health">{{ t(s="Health check: database and Redis status") }}</a></li>
             <li>
-                <form method="post" action="/user/logout" class="dashboard-inline-form" novalidate>
-                    <input type="hidden" name="_token" value="{{ csrf_token }}">
-                    <button type="submit" class="link-button">{{ t(s="Log out") }}</button>
-                </form>
+                {{ logout_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
             </li>
         </ul>
     </section>

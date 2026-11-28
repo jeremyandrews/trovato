@@ -418,19 +418,49 @@ async fn log_report(
         .await
         .unwrap_or_default();
 
+    // A level is a fixed word the select translates; a type is data.
+    let level_options: Vec<(String, String)> = LEVELS
+        .iter()
+        .map(|l| ((*l).to_string(), (*l).to_string()))
+        .collect();
+    let type_options: Vec<(String, String)> =
+        types.iter().map(|t| (t.clone(), t.clone())).collect();
+    let list = query.view(total, entries.len(), Some(&sort));
+    let forms = match super::admin_list::render_forms(
+        &state,
+        &session,
+        &user,
+        &list,
+        "/admin/reports/log",
+        "Filter the log",
+        "Message contains",
+        vec![
+            (
+                "level",
+                crate::form::FormElement::select(level_options)
+                    .title("Level")
+                    .placeholder("- Any -")
+                    .default_value(level.unwrap_or_default()),
+            ),
+            (
+                "type",
+                crate::form::FormElement::select(type_options)
+                    .title("Type")
+                    .placeholder("- Any -")
+                    .default_value(log_type.unwrap_or_default()),
+            ),
+        ],
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
+
     let mut context = tera::Context::new();
-    context.insert("list", &query.view(total, entries.len(), Some(&sort)));
+    context.insert("list", &list);
+    forms.insert_into(&mut context);
     context.insert("entries", &entries);
-    context.insert("levels", LEVELS);
-    context.insert("types", &types);
-    context.insert("level_filter", &level.unwrap_or_default());
-    context.insert("type_filter", &log_type.unwrap_or_default());
-    // [value, label] pairs for the form macros: a level is a fixed word the
-    // template translates, a type is data.
-    let level_options: Vec<(&str, &str)> = LEVELS.iter().map(|l| (*l, *l)).collect();
-    context.insert("level_options", &level_options);
-    let type_options: Vec<(&str, &str)> = types.iter().map(|t| (t.as_str(), t.as_str())).collect();
-    context.insert("type_options", &type_options);
     context.insert("path", "/admin/reports/log");
     render_admin_template(&state, &viewer, "admin/reports/log.html", context).await
 }

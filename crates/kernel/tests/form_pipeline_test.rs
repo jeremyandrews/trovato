@@ -1974,3 +1974,374 @@ fn b83c_admin_forms_are_altered_refused_and_submitted() {
         }
     });
 }
+
+// =============================================================================
+// B83c: the site and search settings, the reports' filters and the timers
+// forms, the plugin list and the dashboard's log out button go through the
+// same pipeline
+// =============================================================================
+
+/// POST `body` to `uri` as a browser from `ip`, returning the status and the
+/// page, `&#x2F;` read as `/`.
+async fn post_body(
+    app: &TestApp,
+    cookies: &str,
+    uri: &str,
+    ip: &str,
+    body: String,
+) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::post(uri)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::ACCEPT, "text/html")
+                .header("x-forwarded-for", ip)
+                .body(Body::from(body))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, body_string(response).await.replace("&#x2F;", "/"))
+}
+
+/// A POST of `fields` with the form's token but no build id is refused as
+/// expired.
+async fn assert_expired_without_build_id(
+    app: &TestApp,
+    cookies: &str,
+    uri: &str,
+    ip: &str,
+    form: &str,
+    fields: &str,
+) {
+    let token = common::input_value_in(form, "_token").expect("the form carries a token");
+    let (status, text) = post_body(
+        app,
+        cookies,
+        uri,
+        ip,
+        format!("_token={}&{fields}", urlencoding::encode(&token)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {text}");
+    assert!(text.contains("expired"), "{uri}: {text}");
+}
+
+/// A listing's filter and sort are GET pipeline forms: no token, no build id.
+fn assert_get_pipeline_form(html: &str, form_id: &str) {
+    let form = common::form_in(html, form_id).unwrap_or_else(|| panic!("no {form_id}: {html}"));
+    assert!(form.contains("data-form-pipeline"), "{form}");
+    assert!(form.contains(r#"method="get""#), "{form}");
+    assert!(!form.contains("_form_build_id"), "{form}");
+}
+
+/// The site settings and test email forms are pipeline forms; a bad site
+/// email is shown on its field with nothing saved; a post without the build
+/// id is refused as expired.
+#[test]
+fn b83c_the_site_settings_forms_are_pipeline_forms() {
+    run(|app| async move {
+        let (_, cookies) = admin(app, "b83c_site").await;
+        let ip = common::test_ip_for("b83c_site");
+        let before = trovato_kernel::models::SiteConfig::site_mail(&app.db)
+            .await
+            .unwrap_or_default();
+
+        let (cookies, html) = visit(app, &cookies, "/admin/config/site", &ip).await;
+        let form = common::form_in(&html, "site_settings_form").expect("the settings form");
+        assert!(form.contains("data-form-pipeline"), "{form}");
+        for name in [
+            "site_name",
+            "site_slogan",
+            "site_mail",
+            "front_page",
+            "items_per_page",
+            "registration_mode",
+            "notify_admin_on_register",
+            "update_check",
+            "count_content_views",
+        ] {
+            assert!(form.contains(&format!(r#"name="{name}""#)), "{name}");
+        }
+        assert!(common::form_in(&html, "site_test_email_form").is_some());
+        assert!(common::form_in(&html, "site_maintenance_form").is_some());
+
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/admin/config/site",
+            &ip,
+            &html,
+            "site_settings_form",
+            &[
+                ("site_name", "B83c site"),
+                ("site_mail", "not-an-address"),
+                ("registration_mode", "open"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let form = form_of(&text, "site_settings_form");
+        assert!(
+            form.contains(r#"id="site_mail-error""#)
+                && form.contains(r#"aria-invalid="true""#)
+                && form.contains("Please enter a valid email address."),
+            "the refusal is shown on the field: {form}"
+        );
+        assert_eq!(
+            trovato_kernel::models::SiteConfig::site_mail(&app.db)
+                .await
+                .unwrap_or_default(),
+            before,
+            "a refused submission saves nothing"
+        );
+
+        assert_expired_without_build_id(
+            app,
+            &cookies,
+            "/admin/config/site",
+            &ip,
+            form,
+            "site_name=B83c&site_mail=b83c%40example.test&registration_mode=open",
+        )
+        .await;
+        let (cookies, html) = visit(app, &cookies, "/admin/config/site", &ip).await;
+        assert_expired_without_build_id(
+            app,
+            &cookies,
+            "/admin/config/site/test-email",
+            &ip,
+            form_of(&html, "site_test_email_form"),
+            "op=",
+        )
+        .await;
+    });
+}
+
+/// The search settings form is a pipeline form; a fraction in a whole
+/// number field is shown on that field; a post without the build id is
+/// refused as expired.
+#[test]
+fn b83c_the_search_settings_form_is_a_pipeline_form() {
+    run(|app| async move {
+        let (_, cookies) = admin(app, "b83c_search").await;
+        let ip = common::test_ip_for("b83c_search");
+        let (cookies, html) = visit(app, &cookies, "/admin/config/search", &ip).await;
+        let form = common::form_in(&html, "search_settings_form").expect("the settings form");
+        assert!(form.contains("data-form-pipeline"), "{form}");
+        assert!(form.contains(r#"name="results_per_page""#), "{form}");
+        assert!(form.contains(r#"name="priority_keyword""#), "{form}");
+
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/admin/config/search",
+            &ip,
+            &html,
+            "search_settings_form",
+            &[("results_per_page", "2.5")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let form = form_of(&text, "search_settings_form");
+        assert!(
+            form.contains(r#"id="results_per_page-error""#)
+                && form.contains(r#"aria-invalid="true""#)
+                && form.contains("Results per page must be a whole number in range."),
+            "the refusal is shown on the field: {form}"
+        );
+
+        assert_expired_without_build_id(
+            app,
+            &cookies,
+            "/admin/config/search",
+            &ip,
+            form,
+            "results_per_page=10",
+        )
+        .await;
+    });
+}
+
+/// The timers listing's filter and sort are GET pipeline forms and its row
+/// buttons submit one pipeline form; the edit form shows a bad time on its
+/// field; the throttles form and the row buttons refuse a post without the
+/// build id.
+#[test]
+fn b83c_the_timers_forms_are_pipeline_forms() {
+    run(|app| async move {
+        let (_, cookies) = admin(app, "b83c_timers").await;
+        let ip = common::test_ip_for("b83c_timers");
+        let owner = format!("b83c_{}", &Uuid::new_v4().simple().to_string()[..12]);
+        let db = app.db.clone();
+        let o = owner.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM scheduled_timer WHERE owner = $1")
+                .bind(o)
+                .execute(&db)
+                .await;
+        });
+        let request = trovato_kernel::timer::TimerRequest {
+            name: "b83c:probe".to_string(),
+            run_at: chrono::Utc::now().timestamp() + 3600,
+            repeat_secs: None,
+            payload: json!({}),
+        };
+        let settings = trovato_kernel::timer::TimerSettings {
+            max_per_plugin: 100_000,
+            ..trovato_kernel::timer::TimerSettings::default()
+        };
+        let id = trovato_kernel::timer::set(&app.db, &owner, &request, &settings)
+            .await
+            .unwrap()
+            .id;
+
+        let list = format!("/admin/reports/timers?owner={owner}");
+        let (cookies, html) = visit(app, &cookies, &list, &ip).await;
+        assert_get_pipeline_form(&html, "list-filter");
+        assert_get_pipeline_form(&html, "list-sort");
+        let filter = common::form_in(&html, "list-filter").unwrap();
+        assert!(filter.contains(r#"name="owner""#) && filter.contains(r#"name="status""#));
+        assert!(common::form_in(&html, "timer_actions_form").is_some());
+        assert!(
+            html.contains(&format!(
+                r#"form="timer_actions_form" formaction="/admin/reports/timers/{id}/pause""#
+            )),
+            "{html}"
+        );
+
+        let edit = format!("/admin/reports/timers/{id}/edit");
+        let (cookies, html) = visit(app, &cookies, &edit, &ip).await;
+        assert!(
+            common::form_in(&html, "timer_edit_form").is_some(),
+            "{html}"
+        );
+        let (status, text) = submit(
+            app,
+            &cookies,
+            &edit,
+            &ip,
+            &html,
+            "timer_edit_form",
+            &[("run_at", "not a time"), ("repeat_secs", "")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let form = form_of(&text, "timer_edit_form");
+        assert!(
+            form.contains(r#"id="run_at-error""#)
+                && form.contains(r#"aria-invalid="true""#)
+                && form.contains("Enter the next run as a date and time."),
+            "the refusal is shown on the field: {form}"
+        );
+
+        let (cookies, html) = visit(app, &cookies, "/admin/reports/timers/settings", &ip).await;
+        assert_expired_without_build_id(
+            app,
+            &cookies,
+            "/admin/reports/timers/settings",
+            &ip,
+            form_of(&html, "timer_settings_form"),
+            "max_concurrent=1",
+        )
+        .await;
+        // A row button without the form's build id changes nothing.
+        let (cookies, html) = visit(app, &cookies, &list, &ip).await;
+        assert_expired_without_build_id(
+            app,
+            &cookies,
+            &format!("/admin/reports/timers/{id}/pause"),
+            &ip,
+            form_of(&html, "timer_actions_form"),
+            "op=",
+        )
+        .await;
+        let status: String = sqlx::query_scalar("SELECT status FROM scheduled_timer WHERE id = $1")
+            .bind(id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(status, "scheduled");
+    });
+}
+
+/// The site log's and the audit log's filter and sort are GET pipeline
+/// forms.
+#[test]
+fn b83c_the_log_filters_are_pipeline_forms() {
+    run(|app| async move {
+        let (_, cookies) = admin(app, "b83c_logs").await;
+        let ip = common::test_ip_for("b83c_logs");
+        let (cookies, log) = visit(app, &cookies, "/admin/reports/log", &ip).await;
+        assert_get_pipeline_form(&log, "list-filter");
+        assert_get_pipeline_form(&log, "list-sort");
+        let filter = common::form_in(&log, "list-filter").unwrap();
+        assert!(filter.contains(r#"name="level""#) && filter.contains(r#"name="type""#));
+        let (_, audit) = visit(app, &cookies, "/admin/reports/audit", &ip).await;
+        assert_get_pipeline_form(&audit, "list-filter");
+        assert_get_pipeline_form(&audit, "list-sort");
+    });
+}
+
+/// The plugin list's buttons submit one pipeline form, which refuses a post
+/// without its build id.
+#[test]
+fn b83c_the_plugin_toggle_form_is_a_pipeline_form() {
+    run(|app| async move {
+        let (_, cookies) = admin(app, "b83c_plugins").await;
+        let ip = common::test_ip_for("b83c_plugins");
+        let (cookies, html) = visit(app, &cookies, "/admin/plugins", &ip).await;
+        let form = common::form_in(&html, "plugin_toggle_form").expect("the toggle form");
+        assert!(form.contains("data-form-pipeline"), "{form}");
+        assert!(
+            html.contains(r#"form="plugin_toggle_form" name="disable" value="#)
+                || html.contains(r#"form="plugin_toggle_form" name="enable" value="#),
+            "each button submits the one form: {html}"
+        );
+        assert_expired_without_build_id(
+            app,
+            &cookies,
+            "/admin/plugins/toggle",
+            &ip,
+            form,
+            "disable=trovato_redirects",
+        )
+        .await;
+    });
+}
+
+/// The dashboard's log out button is a pipeline form, and pressing it signs
+/// the user out.
+#[test]
+fn b83c_the_dashboard_log_out_button_is_a_pipeline_form_and_signs_out() {
+    run(|app| async move {
+        let (_, cookies) = admin(app, "b83c_logout").await;
+        let ip = common::test_ip_for("b83c_logout");
+        let (cookies, html) = visit(app, &cookies, "/admin", &ip).await;
+        let form = common::form_in(&html, "dashboard_logout_form").expect("the log out form");
+        assert!(form.contains("data-form-pipeline"), "{form}");
+        assert!(form.contains(r#"action="/user/logout""#), "{form}");
+        let (status, _) = submit(
+            app,
+            &cookies,
+            "/user/logout",
+            &ip,
+            &html,
+            "dashboard_logout_form",
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let response = app
+            .request_with_cookies(
+                Request::get("/admin")
+                    .header("x-forwarded-for", &ip)
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_ne!(response.status(), StatusCode::OK, "signed out");
+    });
+}
