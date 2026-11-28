@@ -639,7 +639,7 @@ async fn status_report(State(state): State<AppState>, session: Session) -> Respo
     rows.push(redis_requirement(&state).await);
     let (cron_row, last_cron) = cron_requirement(&state).await;
     rows.push(cron_row);
-    rows.push(files_requirement(&state).await);
+    rows.extend(files_requirements(&state).await);
     rows.push(match state.runtime().cookie_secure {
         crate::session::CookieSecure::Never => Requirement::new(
             "Session cookies",
@@ -799,18 +799,27 @@ async fn cron_requirement(state: &AppState) -> (Requirement, Option<i64>) {
     (row, Some(run.timestamp))
 }
 
-/// Whether this server can write to the uploads directory.
-async fn files_requirement(state: &AppState) -> Requirement {
-    const TITLE: &str = "File system";
-    let Some(dir) = state.files().local_dir() else {
-        return Requirement::new(TITLE, "Remote storage", "ok");
-    };
-    match crate::file::storage::check_writable(dir).await {
-        Ok(()) => Requirement::new(TITLE, format!("Writable ({})", dir.display()), "ok"),
-        Err(e) => {
-            tracing::warn!(error = %e, "status report: uploads directory");
-            Requirement::new(TITLE, format!("Not writable ({})", dir.display()), "error")
-                .because("Uploads will fail. Set UPLOADS_DIR to a directory this server can write.")
-        }
+/// Whether this server can write to and read from each configured file
+/// storage scheme: one row per scheme, each a round-trip write/read/delete
+/// probe against the backend itself (local or S3), not just a directory
+/// check — generic over either kind via [`crate::file::FileStorage::probe`].
+async fn files_requirements(state: &AppState) -> Vec<Requirement> {
+    let mut rows = Vec::new();
+    for (title, storage) in [
+        ("Public files", state.files().storage()),
+        ("Private files", state.files().private_storage()),
+    ] {
+        let describe = storage.describe();
+        rows.push(match storage.probe().await {
+            Ok(()) => Requirement::new(title, format!("OK ({describe})"), "ok"),
+            Err(e) => {
+                tracing::warn!(error = %e, scheme = %title, "status report: file storage probe");
+                Requirement::new(title, format!("Failed ({describe})"), "error").because(
+                    "Writing, reading back or deleting a probe file failed. Uploads to this \
+                     scheme will fail too.",
+                )
+            }
+        });
     }
+    rows
 }

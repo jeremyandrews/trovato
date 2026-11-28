@@ -12,7 +12,8 @@ use axum::{
 };
 use tower_sessions::Session;
 
-use crate::routes::file::served_file_cache_control;
+use crate::content::FileAccess;
+use crate::routes::file::{resolve_served_uri, served_file_cache_control};
 use crate::state::AppState;
 
 /// Public cache lifetime for a derivative anyone may fetch (one year).
@@ -75,15 +76,23 @@ async fn serve_derivative(
         .into_response();
     };
 
-    let original_uri = format!("local://{file_path}");
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
-    match state.items().can_serve_file(&original_uri, &viewer).await {
-        Ok(true) => {}
-        Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+    let (original_uri, access) = match resolve_served_uri(&state, &file_path, &viewer).await {
+        Ok(resolved) => resolved,
         Err(e) => {
             tracing::warn!(error = %e, path = %file_path, "failed to authorize derivative access");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
+    };
+    match access {
+        // A derivative of a private original is private too: never served at
+        // this guessable path, regardless of who is asking.
+        FileAccess::Allowed {
+            visibility: crate::file::FileVisibility::Private,
+            ..
+        } => return StatusCode::NOT_FOUND.into_response(),
+        FileAccess::Allowed { .. } | FileAccess::Unmanaged => {}
+        FileAccess::Denied => return StatusCode::NOT_FOUND.into_response(),
     }
     let cache_control =
         served_file_cache_control(&state, &original_uri, &viewer, PUBLIC_MAX_AGE).await;

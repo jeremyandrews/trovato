@@ -30,6 +30,7 @@ pub fn router() -> Router<AppState> {
             post(upload_file).layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_SIZE)),
         )
         .route("/file/{id}", get(get_file_info))
+        .route("/file/{id}/download", get(download_file))
         .route("/files/{*path}", get(serve_uploaded_file))
 }
 
@@ -212,7 +213,7 @@ async fn get_file_info(
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 }
             }
-            let url = state.files().storage().public_url(&file.uri);
+            let url = state.files().serving_url(&file);
             Json(FileInfoResponse {
                 id: file.id,
                 filename: file.filename,
@@ -231,12 +232,122 @@ async fn get_file_info(
     }
 }
 
+/// Serve a file (public or private) by id, after an access check — the
+/// `/file/<uuid>/download` route Ritrovo A15 asked for, and the only way to
+/// fetch a private file: it is never reachable at a guessable path.
+///
+/// GET /file/{id}/download
+///
+/// Private and `PRIVATE_FILE_SERVE=redirect` on a backend that can presign
+/// (S3): a 302 to a short-lived presigned URL. Otherwise the bytes stream
+/// straight through the kernel, same as `/files/{path}`.
+async fn download_file(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let Ok(Some(file)) = state.files().get(id).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    match state.items().can_serve_file(&file.uri, &viewer).await {
+        Ok(true) => {}
+        Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            warn!(error = %e, id = %id, "failed to authorize file download");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
+    let storage = state.files().storage_for(file.visibility);
+    let private = file.visibility == crate::file::FileVisibility::Private;
+
+    if private && state.runtime().private_file_serve == "redirect" {
+        match storage.presigned_get_url(&file.uri).await {
+            Ok(Some(url)) => {
+                return (
+                    StatusCode::FOUND,
+                    [(axum::http::header::LOCATION, url)],
+                    [(axum::http::header::CACHE_CONTROL, PRIVATE_NO_STORE)],
+                )
+                    .into_response();
+            }
+            Ok(None) => {} // Backend cannot presign: fall through to streaming.
+            Err(e) => {
+                warn!(error = %e, id = %id, "failed to presign file download");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+    }
+
+    let stream = match storage.read_stream(&file.uri).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            warn!(error = %e, id = %id, "failed to stream file download");
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    };
+    let body_stream = tokio_stream::StreamExt::map(stream, |chunk| {
+        chunk.map_err(std::io::Error::other)
+    });
+
+    let cache_control = if private {
+        PRIVATE_NO_STORE.to_string()
+    } else {
+        served_file_cache_control(&state, &file.uri, &viewer, 604_800).await
+    };
+    let disposition = if file.filemime.starts_with("image/") || file.filemime == "application/pdf"
+    {
+        "inline"
+    } else {
+        "attachment"
+    };
+
+    // Infallible: Response::builder() with a valid status and ASCII header values cannot fail.
+    #[allow(clippy::unwrap_used)]
+    axum::http::Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, &file.filemime)
+        .header(axum::http::header::CACHE_CONTROL, cache_control)
+        .header(axum::http::header::CONTENT_DISPOSITION, disposition)
+        .header("X-Content-Type-Options", "nosniff")
+        .body(axum::body::Body::from_stream(body_stream))
+        .unwrap()
+        .into_response()
+}
+
+/// The `local://{path}` or `s3://{path}` URI `path` names, with the
+/// [`FileAccess`] that applies to it — tries `local://` first (the common
+/// case, and a backward-compatible path for a static asset never uploaded
+/// through this service), then `s3://` only if `local://` resolves to no
+/// `file_managed` row at all.
+pub(crate) async fn resolve_served_uri(
+    state: &AppState,
+    path: &str,
+    viewer: &crate::tap::UserContext,
+) -> Result<(String, FileAccess), anyhow::Error> {
+    let local = format!("local://{path}");
+    match state.items().file_access(&local, viewer).await? {
+        FileAccess::Unmanaged => {
+            let s3 = format!("s3://{path}");
+            match state.items().file_access(&s3, viewer).await? {
+                FileAccess::Unmanaged => Ok((local, FileAccess::Unmanaged)),
+                other => Ok((s3, other)),
+            }
+        }
+        other => Ok((local, other)),
+    }
+}
+
 /// Serve an uploaded file from the uploads directory.
 ///
 /// GET /files/{*path}
 ///
-/// Path segments map to the storage URI after the `local://` prefix.
-/// Rejects directory traversal attempts.
+/// Path segments map to the storage URI after the `local://` (or `s3://`)
+/// prefix. Rejects directory traversal attempts. Public files only: a
+/// private file is refused here even for a viewer who could otherwise see
+/// it — it is never reachable at a guessable path, only through
+/// `GET /file/{id}/download`.
 async fn serve_uploaded_file(
     State(state): State<AppState>,
     session: Session,
@@ -256,8 +367,6 @@ async fn serve_uploaded_file(
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let uri = format!("local://{path}");
-
     // FR-8 Story 3.5 — enforce access before streaming bytes (any-referencing
     // policy, D-29). A denied or unresolvable file returns 404, matching this
     // surface's existing not-found posture (no existence leak).
@@ -265,16 +374,23 @@ async fn serve_uploaded_file(
     // The served type is the managed row's stored `filemime`, validated at
     // upload; only an unmanaged path falls back to the extension table.
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
-    let content_type = match state.items().file_access(&uri, &viewer).await {
-        Ok(FileAccess::Allowed { filemime }) => filemime,
-        Ok(FileAccess::Unmanaged) => mime_for_filename(path)
-            .unwrap_or("application/octet-stream")
-            .to_string(),
-        Ok(FileAccess::Denied) => return StatusCode::NOT_FOUND.into_response(),
+    let (uri, access) = match resolve_served_uri(&state, path, &viewer).await {
+        Ok(resolved) => resolved,
         Err(e) => {
             warn!(error = %e, path = %path, "failed to authorize file access");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
+    };
+    let content_type = match access {
+        FileAccess::Allowed {
+            visibility: crate::file::FileVisibility::Private,
+            ..
+        } => return StatusCode::NOT_FOUND.into_response(),
+        FileAccess::Allowed { filemime, .. } => filemime,
+        FileAccess::Unmanaged => mime_for_filename(path)
+            .unwrap_or("application/octet-stream")
+            .to_string(),
+        FileAccess::Denied => return StatusCode::NOT_FOUND.into_response(),
     };
 
     match state.files().load_file_data(&uri).await {

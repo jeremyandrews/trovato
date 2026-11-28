@@ -325,7 +325,7 @@ async fn file_details(
     };
 
     let owner = state.users().find_by_id(file.owner_id).await.ok().flatten();
-    let public_url = state.files().storage().public_url(&file.uri);
+    let public_url = state.files().serving_url(&file);
     let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
@@ -491,10 +491,9 @@ async fn media_library(
         .unwrap_or(0);
 
     // Build public URLs for each file
-    let storage = state.files().storage().clone();
     let file_urls: std::collections::HashMap<String, String> = files
         .iter()
-        .map(|f| (f.id.to_string(), storage.public_url(&f.uri)))
+        .map(|f| (f.id.to_string(), state.files().serving_url(f)))
         .collect();
 
     let csrf_token = generate_csrf_token(&session).await;

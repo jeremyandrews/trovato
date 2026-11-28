@@ -112,10 +112,9 @@ async fn imported_item_references_and_promotes_its_file() {
     );
 
     let files_dir = TempDir::new("files");
-    let files = FileService::new(
-        pool.clone(),
-        Arc::new(LocalFileStorage::new(&files_dir.0, "/files")),
-    );
+    let storage: Arc<dyn trovato_kernel::file::FileStorage> =
+        Arc::new(LocalFileStorage::new(&files_dir.0, "/files"));
+    let files = FileService::new(pool.clone(), storage.clone(), storage);
     for id in [referenced, referenced_too] {
         assert_eq!(
             files.get(id).await.unwrap().map(|f| f.status),

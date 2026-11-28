@@ -525,8 +525,15 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     let config = Config::from_env().context("failed to load configuration")?;
     info!(port = config.port, "Configuration loaded");
 
-    // Refuse to start on an uploads directory this server cannot use.
-    crate::file::check_writable(&config.uploads_dir).await?;
+    // Refuse to start on an uploads directory this server cannot use. Only
+    // when each scheme is actually configured for local storage: an S3
+    // backend is checked at runtime instead, by the status report's probe.
+    if config.public_file_backend == "local" {
+        crate::file::check_writable(&config.uploads_dir).await?;
+    }
+    if config.private_file_backend == "local" {
+        crate::file::check_writable(&config.private_uploads_dir).await?;
+    }
 
     // With migrations as their own step, wait (alive, not ready) until the
     // schema this binary needs is there, rather than exit and crash loop.
@@ -1243,13 +1250,26 @@ async fn run_config_command(action: ConfigAction) -> Result<()> {
 
     prepare_schema_for_cli(&pool, &config).await?;
 
-    // `file` config entities carry bytes, which go to the site's file storage.
+    // `file` config entities carry bytes, which go to the site's public file
+    // storage (a config set's files are site assets, never private uploads).
+    let public_storage = crate::file::build_storage(
+        "public",
+        &config.public_file_backend,
+        &config.uploads_dir,
+        &config.files_url,
+        config.s3.as_ref(),
+    )?;
+    let private_storage = crate::file::build_storage(
+        "private",
+        &config.private_file_backend,
+        &config.private_uploads_dir,
+        &config.files_url,
+        config.s3.as_ref(),
+    )?;
     let files = std::sync::Arc::new(crate::file::FileService::new(
         pool.clone(),
-        std::sync::Arc::new(crate::file::LocalFileStorage::new(
-            &config.uploads_dir,
-            &config.files_url,
-        )),
+        public_storage,
+        private_storage,
     ));
     // Plugin config tables are named in the manifests on disk.
     let plugins = config_storage::PluginConfigSet::discover(&config.plugins_dirs).await;

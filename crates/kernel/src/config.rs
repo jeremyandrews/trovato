@@ -365,6 +365,13 @@ pub struct RuntimeConfig {
     /// forwarding header does; everyone else gets a 404.
     pub metrics_token: Option<String>,
 
+    /// How `GET /file/{id}/download` serves a private file: `stream`
+    /// (default, bytes pass through the kernel) or `redirect` (302 to a
+    /// short-lived presigned URL — only takes effect when the private
+    /// backend can presign, which only S3 does; a local private backend
+    /// always streams regardless of this setting).
+    pub private_file_serve: String,
+
     /// Retention window for the kernel security audit stream, in days.
     pub security_audit_retention_days: i64,
 
@@ -482,6 +489,26 @@ pub struct Config {
 
     /// Base URL for serving uploaded files (default: /files).
     pub files_url: String,
+
+    /// Which backend serves the `public` file scheme: `local` (default) or
+    /// `s3` (requires `s3` to be `Some`).
+    pub public_file_backend: String,
+
+    /// Which backend serves the `private` file scheme: `local` (default) or
+    /// `s3` (requires `s3` to be `Some`).
+    pub private_file_backend: String,
+
+    /// Directory for privately-stored local files (default:
+    /// `{uploads_dir}/private`). A deployment using a local private backend
+    /// must never let its web server or reverse proxy serve this directory
+    /// directly — the kernel's own `/file/{id}/download` route is the only
+    /// sanctioned path to its bytes.
+    pub private_uploads_dir: PathBuf,
+
+    /// S3-compatible backend settings, present only when `S3_BUCKET` is set.
+    /// Credentials come from `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` only:
+    /// never the database, never a config set.
+    pub s3: Option<crate::file::S3Settings>,
 
     /// CORS allowed origins (comma-separated, default: "*").
     pub cors_allowed_origins: Vec<String>,
@@ -815,6 +842,33 @@ impl Config {
 
         let files_url = get("FILES_URL").unwrap_or_else(|| "/files".to_string());
 
+        let public_file_backend = get("PUBLIC_FILE_BACKEND").unwrap_or_else(|| "local".to_string());
+        let private_file_backend =
+            get("PRIVATE_FILE_BACKEND").unwrap_or_else(|| "local".to_string());
+        let private_uploads_dir = get("PRIVATE_UPLOADS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| uploads_dir.join("private"));
+
+        // S3 is configured only when a bucket is named; every other S3_*
+        // setting falls back to a documented default. Credentials are read
+        // here and nowhere else — they travel only on `Config.s3`, never to
+        // the database or a config set.
+        let s3 = get("S3_BUCKET").map(|bucket| crate::file::S3Settings {
+            endpoint: get("S3_ENDPOINT").unwrap_or_else(|| "https://s3.amazonaws.com".to_string()),
+            region: get("S3_REGION").unwrap_or_else(|| "us-east-1".to_string()),
+            bucket,
+            key_prefix: get("S3_KEY_PREFIX").unwrap_or_default(),
+            path_style: get("S3_PATH_STYLE")
+                .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
+                .unwrap_or(false),
+            access_key_id: get("S3_ACCESS_KEY_ID").unwrap_or_default(),
+            secret_access_key: get("S3_SECRET_ACCESS_KEY").unwrap_or_default(),
+            public_base_url: get("S3_PUBLIC_BASE_URL"),
+            presign_ttl: Duration::from_secs(
+                parse_or(settings.get, "S3_PRESIGN_TTL_SECS", 900u64).max(1),
+            ),
+        });
+
         // Note the empty default: no configured origins means no cross-origin
         // allowance, which `build_cors_layer` turns into a same-origin policy.
         let cors_allowed_origins = settings.csv("CORS_ALLOWED_ORIGINS", &[]);
@@ -929,6 +983,7 @@ impl Config {
             ),
             profile_fingerprints: false,
             metrics_token,
+            private_file_serve: get("PRIVATE_FILE_SERVE").unwrap_or_else(|| "stream".to_string()),
             security_audit_retention_days: crate::audit::retention_days_from(
                 get("SECURITY_AUDIT_RETENTION_DAYS").as_deref(),
             ),
@@ -973,6 +1028,10 @@ impl Config {
             plugins_dirs,
             uploads_dir,
             files_url,
+            public_file_backend,
+            private_file_backend,
+            private_uploads_dir,
+            s3,
             cors_allowed_origins,
             cookie_same_site,
             disabled_plugins,

@@ -40,10 +40,15 @@ fn is_path_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '.' | '~')
 }
 
-/// Extract every `local://{path}` and `/files/{path}` reference from `s`,
-/// pushing each as a normalized `local://{path}` URI into `out`.
+/// Extract every `local://{path}`, `s3://{path}` and `/files/{path}`
+/// reference from `s`, pushing each as a normalized URI into `out`.
+///
+/// `/files/{path}` (the kernel's own proxy route) cannot tell which physical
+/// backend served it from the URL alone, so it normalizes to `local://{path}`
+/// — matching an S3-backed public file embedded this way is a known gap (see
+/// the module doc), traded for not having to guess a backend here.
 fn scan_string(s: &str, out: &mut BTreeSet<String>) {
-    for (marker, keep_prefix) in [("local://", true), ("/files/", false)] {
+    for (marker, scheme) in [("local://", "local"), ("s3://", "s3"), ("/files/", "local")] {
         let mut rest = s;
         while let Some(pos) = rest.find(marker) {
             let after = &rest[pos + marker.len()..];
@@ -53,12 +58,7 @@ fn scan_string(s: &str, out: &mut BTreeSet<String>) {
             if path.is_empty() || path.starts_with('/') || path.contains("..") {
                 continue;
             }
-            if keep_prefix {
-                out.insert(format!("local://{path}"));
-            } else {
-                // `/files/{path}` public URL → the canonical storage URI.
-                out.insert(format!("local://{path}"));
-            }
+            out.insert(format!("{scheme}://{path}"));
         }
     }
 }
@@ -85,10 +85,16 @@ fn extract_file_uris(fields: &serde_json::Value) -> Vec<String> {
 /// does not exist; resolution against `file_managed` drops those.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct FileReferences {
-    /// `local://{path}` URIs, sorted and deduplicated.
+    /// `local://{path}` or `s3://{path}` URIs, sorted and deduplicated.
     pub uris: Vec<String>,
     /// File field values, sorted and deduplicated.
     pub ids: Vec<Uuid>,
+    /// The subset of `ids` held by a field whose `settings.private` is
+    /// `true`: [`sync_item_file_references`] promotes these to
+    /// `FileVisibility::Private`, in addition to the usual `Permanent`
+    /// promotion. Sticky: nothing here ever demotes a file back to public,
+    /// since another field could reference the same id unprivately.
+    pub private_ids: Vec<Uuid>,
 }
 
 /// Every file `fields` references, given the item type's field definitions.
@@ -99,14 +105,23 @@ pub(crate) fn extract_file_references(
     fields: &serde_json::Value,
     definitions: &[FieldDefinition],
 ) -> FileReferences {
-    let ids: BTreeSet<Uuid> = definitions
+    let file_fields: Vec<&FieldDefinition> = definitions
         .iter()
         .filter(|d| matches!(d.field_type, FieldType::File))
+        .collect();
+    let ids: BTreeSet<Uuid> = file_fields
+        .iter()
+        .flat_map(|d| file_field_ids(fields.get(&d.field_name)))
+        .collect();
+    let private_ids: BTreeSet<Uuid> = file_fields
+        .iter()
+        .filter(|d| d.settings.get("private").and_then(|v| v.as_bool()) == Some(true))
         .flat_map(|d| file_field_ids(fields.get(&d.field_name)))
         .collect();
     FileReferences {
         uris: extract_file_uris(fields),
         ids: ids.into_iter().collect(),
+        private_ids: private_ids.into_iter().collect(),
     }
 }
 
@@ -194,6 +209,22 @@ pub(crate) async fn sync_item_file_references(
     .execute(&mut *conn)
     .await
     .context("failed to promote referenced files")?;
+
+    // Fail-closed: a file attached to a private field is marked private
+    // immediately, even though its bytes may still sit in the public
+    // backend until an operator runs `trovato files migrate` to relocate
+    // them. Never reversed here — another field could reference the same
+    // file without being private.
+    if !refs.private_ids.is_empty() {
+        sqlx::query(
+            "UPDATE file_managed SET visibility = 1, changed = EXTRACT(EPOCH FROM NOW())::bigint \
+             WHERE id = ANY($1) AND visibility != 1",
+        )
+        .bind(&refs.private_ids)
+        .execute(&mut *conn)
+        .await
+        .context("failed to mark private-field files private")?;
+    }
     Ok(())
 }
 

@@ -208,6 +208,10 @@ tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
 async-stream = "0.3"
 futures-core = "0.3"
+# Already resolved transitively (reqwest, axum); named directly so the S3
+# backend's streamed GET (`file::s3::S3Storage::read_stream`) can name
+# `bytes::Bytes` without reaching through another crate's re-export.
+bytes = "1"
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "pool"] }
 # Word and line diffs for the revision compare page. Default features (`std`,
 # `text`) pull in no other crate.

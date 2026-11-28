@@ -83,6 +83,7 @@ tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 async-stream = { workspace = true }
 futures-core = { workspace = true }
+bytes = { workspace = true }
 similar = { workspace = true }
 lettre = { workspace = true }
 

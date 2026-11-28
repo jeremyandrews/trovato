@@ -525,15 +525,21 @@ async fn browse_media(
         }
     };
 
-    let storage = state.files().storage();
     let items: Vec<MediaItem> = files
         .iter()
         .map(|f| {
-            let url = storage.public_url(&f.uri);
-            let thumbnail_url = if f.filemime.starts_with("image/") {
+            let url = state.files().serving_url(f);
+            // Image style derivatives are only ever generated and served for
+            // a public original (a private one is denied at that route).
+            let thumbnail_url = if f.filemime.starts_with("image/")
+                && f.visibility == crate::file::FileVisibility::Public
+            {
                 Some(format!(
                     "/files/styles/thumbnail/{}",
-                    f.uri.strip_prefix("local://").unwrap_or(&f.uri)
+                    f.uri
+                        .strip_prefix("local://")
+                        .or_else(|| f.uri.strip_prefix("s3://"))
+                        .unwrap_or(&f.uri)
                 ))
             } else {
                 None

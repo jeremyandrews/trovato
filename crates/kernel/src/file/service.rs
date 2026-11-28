@@ -154,6 +154,31 @@ impl From<i16> for FileStatus {
     }
 }
 
+/// Which of the two configured storage schemes a file belongs to: not which
+/// physical backend holds its bytes (that is the `local://`/`s3://` prefix on
+/// its `uri`), but whether it may be served from a guessable path at all.
+///
+/// Public is served by `/files/{path}` and the image style route, exactly as
+/// every file was before this type existed. Private is served only by
+/// `GET /file/{id}/download`, after an access check, and is denied outright
+/// by the path-based routes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[repr(i16)]
+pub enum FileVisibility {
+    #[default]
+    Public = 0,
+    Private = 1,
+}
+
+impl From<i16> for FileVisibility {
+    fn from(v: i16) -> Self {
+        match v {
+            1 => FileVisibility::Private,
+            _ => FileVisibility::Public,
+        }
+    }
+}
+
 /// File metadata from database.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
@@ -164,6 +189,7 @@ pub struct FileInfo {
     pub filemime: String,
     pub filesize: i64,
     pub status: FileStatus,
+    pub visibility: FileVisibility,
     pub created: i64,
     pub changed: i64,
 
@@ -191,6 +217,7 @@ struct FileRow {
     filemime: String,
     filesize: i64,
     status: i16,
+    visibility: i16,
     created: i64,
     changed: i64,
     alt_text: Option<String>,
@@ -206,6 +233,7 @@ impl From<FileRow> for FileInfo {
             filemime: row.filemime,
             filesize: row.filesize,
             status: FileStatus::from(row.status),
+            visibility: FileVisibility::from(row.visibility),
             created: row.created,
             changed: row.changed,
             alt_text: row.alt_text,
@@ -232,6 +260,11 @@ pub struct StoreFile<'a> {
     pub alt_text: Option<&'a str>,
     /// Tenant scoping for the storage URI.
     pub tenant_id: Option<Uuid>,
+    /// Which scheme stores this file. `Public` for a plain upload; a caller
+    /// that already knows the target is a private File field (the field
+    /// widget) passes `Private` so the bytes land directly in the private
+    /// backend, no relocation needed later.
+    pub visibility: FileVisibility,
 }
 
 /// File upload result.
@@ -246,20 +279,67 @@ pub struct UploadResult {
 }
 
 /// File service for managing uploads.
+///
+/// Holds one storage backend per [`FileVisibility`] scheme. They are often
+/// the same kind of backend (both local, both S3) but never necessarily the
+/// same *instance* — a private local backend typically lives under a
+/// directory never served statically, which is exactly what makes "private"
+/// mean anything for local storage — so a file's backend is always chosen by
+/// its own `visibility`, never guessed from its URI's `local://`/`s3://`
+/// prefix alone (that prefix names only the physical backend kind).
 pub struct FileService {
     pool: PgPool,
-    storage: Arc<dyn FileStorage>,
+    public: Arc<dyn FileStorage>,
+    private: Arc<dyn FileStorage>,
 }
 
 impl FileService {
-    /// Create a new file service.
-    pub fn new(pool: PgPool, storage: Arc<dyn FileStorage>) -> Self {
-        Self { pool, storage }
+    /// Create a new file service. `public` and `private` may be the same
+    /// backend instance (e.g. both local, during an incremental rollout), or
+    /// different ones; either is valid, chosen by `Config`.
+    pub fn new(pool: PgPool, public: Arc<dyn FileStorage>, private: Arc<dyn FileStorage>) -> Self {
+        Self {
+            pool,
+            public,
+            private,
+        }
     }
 
-    /// The storage's local directory, if it is one ([`FileStorage::local_dir`]).
+    /// The backend for `visibility`.
+    pub fn storage_for(&self, visibility: FileVisibility) -> &Arc<dyn FileStorage> {
+        match visibility {
+            FileVisibility::Public => &self.public,
+            FileVisibility::Private => &self.private,
+        }
+    }
+
+    /// The public backend, for callers that work only with public files (the
+    /// media library's historical default) or want the default scheme for a
+    /// fresh upload whose field is not yet known to be private.
+    pub fn storage(&self) -> &Arc<dyn FileStorage> {
+        &self.public
+    }
+
+    /// The private backend.
+    pub fn private_storage(&self) -> &Arc<dyn FileStorage> {
+        &self.private
+    }
+
+    /// The URL to show for `file`: its public backend's URL when public, or
+    /// the kernel's own access-checked download route when private. Never a
+    /// guessable path for a private file.
+    pub fn serving_url(&self, file: &FileInfo) -> String {
+        match file.visibility {
+            FileVisibility::Public => self.public.public_url(&file.uri),
+            FileVisibility::Private => format!("/file/{}/download", file.id),
+        }
+    }
+
+    /// The public backend's local directory, if it is one
+    /// ([`FileStorage::local_dir`]) — what the status report and the config
+    /// importer's direct-filesystem path check against.
     pub fn local_dir(&self) -> Option<&std::path::Path> {
-        self.storage.local_dir()
+        self.public.local_dir()
     }
 
     /// Upload a file (default tenant — no tenant prefix in URI).
@@ -303,6 +383,32 @@ impl FileService {
             status: FileStatus::Temporary,
             alt_text: None,
             tenant_id,
+            visibility: FileVisibility::Public,
+        })
+        .await
+    }
+
+    /// As [`Self::upload_for_tenant`], but stored directly in the private
+    /// backend: for a widget that already knows it is uploading for a
+    /// private File field.
+    pub async fn upload_private(
+        &self,
+        owner_id: Uuid,
+        filename: &str,
+        mime_type: &str,
+        data: &[u8],
+        tenant_id: Option<Uuid>,
+    ) -> Result<UploadResult> {
+        self.store(StoreFile {
+            id: Uuid::now_v7(),
+            owner_id,
+            filename,
+            mime_type,
+            data,
+            status: FileStatus::Temporary,
+            alt_text: None,
+            tenant_id,
+            visibility: FileVisibility::Private,
         })
         .await
     }
@@ -354,29 +460,40 @@ impl FileService {
     pub async fn store(&self, file: StoreFile<'_>) -> Result<UploadResult> {
         Self::validate_file(file.filename, file.mime_type, file.data)?;
 
-        let existing: Option<String> =
-            sqlx::query_scalar("SELECT uri FROM file_managed WHERE id = $1")
+        let storage = self.storage_for(file.visibility);
+
+        let existing: Option<(String, i16)> =
+            sqlx::query_as("SELECT uri, visibility FROM file_managed WHERE id = $1")
                 .bind(file.id)
                 .fetch_optional(&self.pool)
                 .await
                 .context("failed to look up file")?;
 
+        // Re-storing an id already on the OTHER scheme's backend (rare:
+        // config re-import after a field's `private` setting changed) needs
+        // a fresh URI on this call's backend — the old bytes are abandoned
+        // in place rather than silently cross-writing another backend's URI
+        // namespace; `trovato files migrate` is the supported way to move
+        // bytes between backends.
         let (uri, bytes_changed) = match existing {
-            Some(uri) => {
-                let changed = match self.storage.read(&uri).await {
+            Some((uri, existing_visibility))
+                if FileVisibility::from(existing_visibility) == file.visibility =>
+            {
+                let changed = match storage.read(&uri).await {
                     Ok(stored) => stored != file.data,
                     Err(_) => true,
                 };
                 (uri, changed)
             }
-            None => (
-                self.new_storage_uri(file.filename, file.tenant_id).await?,
+            _ => (
+                self.new_storage_uri(storage, file.filename, file.tenant_id)
+                    .await?,
                 true,
             ),
         };
 
         if bytes_changed {
-            self.storage
+            storage
                 .write(&uri, file.data)
                 .await
                 .context("failed to write file to storage")?;
@@ -386,19 +503,23 @@ impl FileService {
         let alt_text = file.alt_text.map(|t| t.trim().to_string());
         sqlx::query(
             r#"
-            INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)
+            INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, status, visibility, created, changed, alt_text)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)
             ON CONFLICT (id) DO UPDATE SET
                 filename = EXCLUDED.filename,
+                uri = EXCLUDED.uri,
                 filemime = EXCLUDED.filemime,
                 filesize = EXCLUDED.filesize,
                 status = EXCLUDED.status,
+                visibility = EXCLUDED.visibility,
                 alt_text = EXCLUDED.alt_text,
                 changed = EXCLUDED.changed
-            WHERE $10
+            WHERE $11
+               OR file_managed.uri IS DISTINCT FROM EXCLUDED.uri
                OR file_managed.filename IS DISTINCT FROM EXCLUDED.filename
                OR file_managed.filemime IS DISTINCT FROM EXCLUDED.filemime
                OR file_managed.status IS DISTINCT FROM EXCLUDED.status
+               OR file_managed.visibility IS DISTINCT FROM EXCLUDED.visibility
                OR file_managed.alt_text IS DISTINCT FROM EXCLUDED.alt_text
             "#,
         )
@@ -409,6 +530,7 @@ impl FileService {
         .bind(file.mime_type)
         .bind(file.data.len() as i64)
         .bind(file.status as i16)
+        .bind(file.visibility as i16)
         .bind(now)
         .bind(alt_text)
         .bind(bytes_changed)
@@ -416,7 +538,7 @@ impl FileService {
         .await
         .context("failed to write file record")?;
 
-        let url = self.storage.public_url(&uri);
+        let url = storage.public_url(&uri);
 
         debug!(
             id = %file.id,
@@ -436,9 +558,14 @@ impl FileService {
         })
     }
 
-    /// A fresh storage URI for `filename`, under the tenant's prefix if it has
-    /// one. The scheme is the storage's own.
-    async fn new_storage_uri(&self, filename: &str, tenant_id: Option<Uuid>) -> Result<String> {
+    /// A fresh storage URI for `filename` on `storage`, under the tenant's
+    /// prefix if it has one. The scheme in the URI is the storage's own.
+    async fn new_storage_uri(
+        &self,
+        storage: &Arc<dyn FileStorage>,
+        filename: &str,
+        tenant_id: Option<Uuid>,
+    ) -> Result<String> {
         // Determine tenant prefix for URI. Default tenant uses no prefix
         // (backward compatible with existing files).
         let tenant_prefix = match tenant_id {
@@ -463,8 +590,8 @@ impl FileService {
         let unique_id = Uuid::now_v7().simple().to_string();
         let safe_name = sanitize_filename(filename);
 
-        match self.storage.scheme() {
-            scheme @ "local" => Ok(build_storage_uri(
+        match storage.scheme() {
+            scheme @ ("local" | "s3") => Ok(build_storage_uri(
                 scheme,
                 &tenant_prefix,
                 now,
@@ -478,7 +605,7 @@ impl FileService {
     /// List all files.
     pub async fn list(&self) -> Result<Vec<FileInfo>> {
         let rows: Vec<FileRow> = sqlx::query_as(
-            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text FROM file_managed ORDER BY created DESC"
+            "SELECT id, owner_id, filename, uri, filemime, filesize, status, visibility, created, changed, alt_text FROM file_managed ORDER BY created DESC"
         )
         .fetch_all(&self.pool)
         .await
@@ -490,7 +617,7 @@ impl FileService {
     /// List files with pagination.
     pub async fn list_paginated(&self, limit: i64, offset: i64) -> Result<Vec<FileInfo>> {
         let rows: Vec<FileRow> = sqlx::query_as(
-            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text FROM file_managed ORDER BY created DESC LIMIT $1 OFFSET $2"
+            "SELECT id, owner_id, filename, uri, filemime, filesize, status, visibility, created, changed, alt_text FROM file_managed ORDER BY created DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -511,7 +638,7 @@ impl FileService {
         let rows: Vec<FileRow> = match status {
             Some(s) => {
                 sqlx::query_as(
-                    "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text FROM file_managed WHERE status = $1 ORDER BY created DESC LIMIT $2 OFFSET $3"
+                    "SELECT id, owner_id, filename, uri, filemime, filesize, status, visibility, created, changed, alt_text FROM file_managed WHERE status = $1 ORDER BY created DESC LIMIT $2 OFFSET $3"
                 )
                 .bind(s as i16)
                 .bind(limit)
@@ -522,7 +649,7 @@ impl FileService {
             }
             None => {
                 sqlx::query_as(
-                    "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text FROM file_managed ORDER BY created DESC LIMIT $1 OFFSET $2"
+                    "SELECT id, owner_id, filename, uri, filemime, filesize, status, visibility, created, changed, alt_text FROM file_managed ORDER BY created DESC LIMIT $1 OFFSET $2"
                 )
                 .bind(limit)
                 .bind(offset)
@@ -567,8 +694,8 @@ impl FileService {
             "created DESC, id DESC"
         };
         let list_sql = format!(
-            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, \
-             alt_text FROM file_managed WHERE 1=1{conditions} \
+            "SELECT id, owner_id, filename, uri, filemime, filesize, status, visibility, created, \
+             changed, alt_text FROM file_managed WHERE 1=1{conditions} \
              ORDER BY {order_by}, {ties} LIMIT ${} OFFSET ${}",
             n + 1,
             n + 2
@@ -639,7 +766,7 @@ impl FileService {
         // Build the query dynamically based on filters.
         // All user-supplied values are bound as parameters (never interpolated).
         let mut sql = String::from(
-            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text FROM file_managed WHERE 1=1",
+            "SELECT id, owner_id, filename, uri, filemime, filesize, status, visibility, created, changed, alt_text FROM file_managed WHERE 1=1",
         );
         let mut param_idx: u8 = 1;
 
@@ -753,7 +880,7 @@ impl FileService {
     /// Get file info by ID.
     pub async fn get(&self, id: Uuid) -> Result<Option<FileInfo>> {
         let row = sqlx::query_as::<_, FileRow>(
-            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text FROM file_managed WHERE id = $1"
+            "SELECT id, owner_id, filename, uri, filemime, filesize, status, visibility, created, changed, alt_text FROM file_managed WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -833,7 +960,7 @@ impl FileService {
         };
 
         // Delete from storage
-        if let Err(e) = self.storage.delete(&file.uri).await {
+        if let Err(e) = self.storage_for(file.visibility).delete(&file.uri).await {
             warn!(error = %e, uri = %file.uri, "failed to delete file from storage");
             // Continue to delete database record anyway
         }
@@ -858,7 +985,7 @@ impl FileService {
         // Get files to delete
         let files: Vec<FileRow> = sqlx::query_as(
             r#"
-            SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, alt_text
+            SELECT id, owner_id, filename, uri, filemime, filesize, status, visibility, created, changed, alt_text
             FROM file_managed
             WHERE status = $1 AND created < $2
             "#,
@@ -873,7 +1000,8 @@ impl FileService {
 
         for file in files {
             // Delete from storage
-            if let Err(e) = self.storage.delete(&file.uri).await {
+            let storage = self.storage_for(FileVisibility::from(file.visibility));
+            if let Err(e) = storage.delete(&file.uri).await {
                 warn!(error = %e, uri = %file.uri, "failed to delete temp file from storage");
             }
 
@@ -894,14 +1022,27 @@ impl FileService {
         Ok(count)
     }
 
-    /// Get the storage backend.
-    pub fn storage(&self) -> &Arc<dyn FileStorage> {
-        &self.storage
+    /// The backend that stores the file at `uri`, resolved by looking up its
+    /// `visibility` (a `local://` or `s3://` prefix alone cannot tell two
+    /// differently-configured backends of the same kind apart). A `uri` with
+    /// no `file_managed` row (a static asset never uploaded through this
+    /// service) resolves to the public backend, matching the historical
+    /// behavior of serving any file physically present under it.
+    async fn storage_for_uri(&self, uri: &str) -> &Arc<dyn FileStorage> {
+        let visibility: Option<i16> =
+            sqlx::query_scalar("SELECT visibility FROM file_managed WHERE uri = $1")
+                .bind(uri)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten();
+        self.storage_for(visibility.map(FileVisibility::from).unwrap_or_default())
     }
 
     /// Load file data by path (convenience for image processing, etc.).
     pub async fn load_file_data(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        match self.storage.read(path).await {
+        let storage = self.storage_for_uri(path).await;
+        match storage.read(path).await {
             Ok(data) => Ok(Some(data)),
             Err(e) => {
                 let msg = e.to_string();

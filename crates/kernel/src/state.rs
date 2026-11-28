@@ -20,7 +20,7 @@ use crate::config_storage::{ConfigStorage, DirectConfigStorage};
 use crate::content::{ContentTypeRegistry, ItemService, RecordTypeRegistry};
 use crate::cron::CronService;
 use crate::db;
-use crate::file::{FileService, LocalFileStorage};
+use crate::file::FileService;
 use crate::form::FormService;
 use crate::gather::{
     CategoryService, GatherExtensionDeclaration, GatherExtensionRegistry, GatherService,
@@ -403,13 +403,25 @@ impl AppState {
             .context("Redis PING failed")?;
 
         // Create config storage
-        // File service with local storage. Created here because config storage
-        // stores the bytes of `file` config entities through it.
-        let file_storage = Arc::new(LocalFileStorage::new(
+        // File service with its public and private backends. Created here
+        // because config storage stores the bytes of `file` config entities
+        // through it (always on the public backend: a config set's files are
+        // the site's own assets, never a visitor's private upload).
+        let public_storage = crate::file::build_storage(
+            "public",
+            &config.public_file_backend,
             &config.uploads_dir,
             &config.files_url,
-        ));
-        let files = Arc::new(FileService::new(db.clone(), file_storage));
+            config.s3.as_ref(),
+        )?;
+        let private_storage = crate::file::build_storage(
+            "private",
+            &config.private_file_backend,
+            &config.private_uploads_dir,
+            &config.files_url,
+            config.s3.as_ref(),
+        )?;
+        let files = Arc::new(FileService::new(db.clone(), public_storage, private_storage));
 
         let config_storage: Arc<dyn ConfigStorage> =
             Arc::new(DirectConfigStorage::new(db.clone()).with_files(files.clone()));

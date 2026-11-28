@@ -520,10 +520,17 @@ pub enum FileAccess {
     /// No `file_managed` row has this URI: no ownership or reference model
     /// applies, and the path serves as before.
     Unmanaged,
-    /// A managed file the viewer may fetch, with its stored, validated type.
+    /// A managed file the viewer may fetch, with its stored, validated type
+    /// and its scheme.
     Allowed {
         /// `file_managed.filemime`.
         filemime: String,
+        /// `file_managed.visibility`. A path-based route (`/files/{path}`,
+        /// the image style route) must still refuse a `Private` file: this
+        /// variant answers "the viewer may see it", not "this URL may serve
+        /// it" — those are different questions for a private file, which is
+        /// never reachable at a guessable path regardless of who is asking.
+        visibility: crate::file::FileVisibility,
     },
     /// A managed file the viewer may not fetch: answer as if it were absent.
     Denied,
@@ -538,13 +545,14 @@ struct ManagedFileRefs {
     uri: String,
     filename: String,
     filemime: String,
+    visibility: i16,
     alt_text: Option<String>,
     item_ids: Vec<Uuid>,
 }
 
 /// The [`ManagedFileRefs`] of every managed file whose URI is in `$1` or whose
 /// id is in `$2`.
-const MANAGED_FILE_REFS_SQL: &str = "SELECT f.id, f.owner_id, f.uri, f.filename, f.filemime, f.alt_text, \
+const MANAGED_FILE_REFS_SQL: &str = "SELECT f.id, f.owner_id, f.uri, f.filename, f.filemime, f.visibility, f.alt_text, \
      COALESCE(array_agg(fr.item_id) FILTER (WHERE fr.item_id IS NOT NULL), '{}') AS item_ids \
      FROM file_managed f LEFT JOIN file_reference fr ON fr.file_id = f.id \
      WHERE f.uri = ANY($1) OR f.id = ANY($2) GROUP BY f.id";
@@ -2117,6 +2125,7 @@ impl ItemService {
         Ok(if servable.contains(&file.id) {
             FileAccess::Allowed {
                 filemime: file.filemime,
+                visibility: crate::file::FileVisibility::from(file.visibility),
             }
         } else {
             FileAccess::Denied
@@ -2179,9 +2188,16 @@ impl ItemService {
                     .iter()
                     .filter_map(|id| by_id.get(id))
                     .map(|f| {
+                        let url = if crate::file::FileVisibility::from(f.visibility)
+                            == crate::file::FileVisibility::Private
+                        {
+                            format!("/file/{}/download", f.id)
+                        } else {
+                            public_url(&f.uri)
+                        };
                         serde_json::json!({
                             "id": f.id,
-                            "url": public_url(&f.uri),
+                            "url": url,
                             "filename": f.filename,
                             "mime": f.filemime,
                             "alt": f.alt_text,

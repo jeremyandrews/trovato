@@ -1,11 +1,13 @@
 //! File storage backends.
 //!
-//! Provides the [`FileStorage`] trait and the [`LocalFileStorage`] backend.
-//!
-//! An S3-compatible backend was dropped for the 1.0 release: it was an unused,
-//! non-default optional feature and the sole remaining carrier of the legacy
-//! AWS-SDK TLS chain (rustls 0.21 / webpki 0.101). It can return post-1.0 behind
-//! a current AWS SDK (rustls 0.23). Git history retains the prior implementation.
+//! Provides the [`FileStorage`] trait, the [`LocalFileStorage`] backend and
+//! the [`crate::file::s3::S3Storage`] backend (BL-109, reversed by Jeremy's
+//! ruling 2026-11-27: an S3-compatible backend was dropped for the 1.0
+//! release because it was an unused, non-default optional feature and the
+//! sole remaining carrier of the legacy AWS-SDK TLS chain, rustls 0.21 /
+//! webpki 0.101. The workspace is now on rustls 0.23 throughout, so the
+//! precondition the old header named is met; the new backend signs requests
+//! itself — see `crate::file::sigv4` — rather than bringing an AWS SDK back).
 
 use std::path::PathBuf;
 
@@ -24,22 +26,73 @@ pub trait FileStorage: Send + Sync {
     /// Read data from storage at the given URI.
     async fn read(&self, uri: &str) -> Result<Vec<u8>>;
 
+    /// Read data from storage at the given URI as a stream of chunks, for a
+    /// download route to pipe straight to the response body rather than
+    /// buffering the whole file. The default streams [`Self::read`]'s result
+    /// as one chunk; [`crate::file::s3::S3Storage`] overrides this with a
+    /// true streamed HTTP response body.
+    async fn read_stream(
+        &self,
+        uri: &str,
+    ) -> Result<std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<bytes::Bytes>> + Send>>>
+    {
+        let data = self.read(uri).await?;
+        Ok(Box::pin(tokio_stream::once(Ok(bytes::Bytes::from(data)))))
+    }
+
     /// Delete a file from storage.
     async fn delete(&self, uri: &str) -> Result<()>;
 
     /// Check if a file exists.
     async fn exists(&self, uri: &str) -> Result<bool>;
 
+    /// The size in bytes of the file at `uri`.
+    async fn size(&self, uri: &str) -> Result<u64>;
+
     /// Get the public URL for a file.
     fn public_url(&self, uri: &str) -> String;
 
+    /// A short-lived URL that serves `uri` directly from the backend without
+    /// going through the kernel, for a private file this backend can presign
+    /// (S3, valid for its configured `presign_ttl`). `Ok(None)` means this
+    /// backend has no such mechanism (local storage): the caller must stream
+    /// the bytes itself.
+    async fn presigned_get_url(&self, uri: &str) -> Result<Option<String>> {
+        let _ = uri;
+        Ok(None)
+    }
+
     /// Get the storage scheme (e.g., "local", "s3").
     fn scheme(&self) -> &'static str;
+
+    /// A one-line, secret-free description for the status report: backend
+    /// kind and location (directory, or endpoint and bucket).
+    fn describe(&self) -> String;
 
     /// The directory files are written to, for a storage that is a local
     /// directory: what the status report checks is writable.
     fn local_dir(&self) -> Option<&std::path::Path> {
         None
+    }
+
+    /// Prove this backend can write, read back and delete a probe object: the
+    /// status report's write/read check, generic over every backend because
+    /// it is expressed only in terms of this trait's own methods.
+    async fn probe(&self) -> Result<()> {
+        let key = format!("_trovato_probe/{}", uuid::Uuid::now_v7());
+        let uri = format!("{}://{key}", self.scheme());
+        let payload = uri.as_bytes();
+        self.write(&uri, payload)
+            .await
+            .context("could not write a probe object")?;
+        let read = self.read(&uri).await;
+        let deleted = self.delete(&uri).await;
+        let read = read.context("could not read the probe object back")?;
+        if read != payload {
+            anyhow::bail!("the probe object's contents differed after being read back");
+        }
+        deleted.context("could not delete the probe object")?;
+        Ok(())
     }
 }
 
@@ -164,6 +217,14 @@ impl FileStorage for LocalFileStorage {
         Ok(path.exists())
     }
 
+    async fn size(&self, uri: &str) -> Result<u64> {
+        let path = self.parse_uri(uri)?;
+        Ok(fs::metadata(&path)
+            .await
+            .context("failed to stat file")?
+            .len())
+    }
+
     fn public_url(&self, uri: &str) -> String {
         let path = uri.strip_prefix("local://").unwrap_or(uri);
         format!("{}/{}", self.base_url.trim_end_matches('/'), path)
@@ -171,6 +232,10 @@ impl FileStorage for LocalFileStorage {
 
     fn scheme(&self) -> &'static str {
         "local"
+    }
+
+    fn describe(&self) -> String {
+        format!("local ({})", self.base_path.display())
     }
 
     fn local_dir(&self) -> Option<&std::path::Path> {

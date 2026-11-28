@@ -135,6 +135,7 @@ impl DirectConfigStorage {
                 status: FileStatus::Permanent,
                 alt_text: file.alt_text.as_deref(),
                 tenant_id: None,
+                visibility: crate::file::FileVisibility::Public,
             })
             .await?;
         Ok(())
