@@ -55,7 +55,7 @@
                     <td>{{ file.created | date(format="%Y-%m-%d %H:%M") }}</td>
                     <td class="operations">
                         <a href="/admin/content/files/{{ file.id }}">{{ t(s="View {name}", name=file.filename) }}</a>
-                        {{ list::delete_button(action="/admin/content/files/" ~ file.id ~ "/delete", label=t(s="Delete {name}", name=file.filename), confirm_text=t(s="Are you sure you want to delete this file?"), csrf_token=csrf_token) }}
+                        <a class="link-button link-button--danger" href="/admin/content/files/{{ file.id }}/delete">{{ t(s="Delete {name}", name=file.filename) }}</a>
                     </td>
                 </tr>
                 {% endfor %}

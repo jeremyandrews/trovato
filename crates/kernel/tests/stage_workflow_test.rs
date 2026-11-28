@@ -334,8 +334,15 @@ async fn move_with_the_bulk_action(
     target: Uuid,
 ) -> StatusCode {
     let (_, html) = get(app, "/admin/content", cookies).await;
-    let token = input_value(&html, "_token").unwrap_or_default();
-    let mut body = format!("_token={}&action=move_to_stage&stage={target}", enc(&token));
+    // The list's bulk form; a viewer offered no bulk action has none, and
+    // the page's token with no build id is refused before the form is read.
+    let fields = if common::form_in(&html, "content_bulk_form").is_some() {
+        common::form_fields(&html, "content_bulk_form")
+    } else {
+        let token = input_value(&html, "_token").unwrap_or_default();
+        format!("_token={}&_form_build_id=", enc(&token))
+    };
+    let mut body = format!("{fields}&action=move_to_stage&stage={target}");
     for id in ids {
         body.push_str(&format!("&ids%5B%5D={id}"));
     }

@@ -10,7 +10,7 @@
 //! | `GET P/{vocabulary}` | the vocabulary's term list |
 //! | `GET`, `POST P/{vocabulary}/add` | the add-term form |
 //! | `GET`, `POST P/{vocabulary}/terms/{term}/edit` | the edit-term form |
-//! | `POST P/{vocabulary}/terms/{term}/delete` | delete a term |
+//! | `GET`, `POST P/{vocabulary}/terms/{term}/delete` | confirm, then delete a term |
 //!
 //! The term list and term form are the kernel's own (`admin_taxonomy`), with
 //! this route's URLs. Every request is admitted by
@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Form, Router};
 use tower_sessions::Session;
 
@@ -32,9 +32,7 @@ use crate::models::{Category, Tag};
 use crate::state::AppState;
 
 use super::admin_taxonomy::{self, TermForm, TermUrls};
-use super::helpers::{
-    CsrfOnlyForm, render_admin_template, render_forbidden, render_not_found, require_login,
-};
+use super::helpers::{render_admin_template, render_forbidden, render_not_found, require_login};
 
 /// Routes for every owner the loaded plugins declare.
 pub fn router(state: &AppState) -> Router<AppState> {
@@ -74,10 +72,12 @@ pub fn router(state: &AppState) -> Router<AppState> {
                 },
             ),
         );
-        let o = Arc::clone(&owner);
+        let (o, p) = (Arc::clone(&owner), Arc::clone(&owner));
         router = router.route(
             &format!("{base}/{{vocabulary}}/terms/{{term}}/delete"),
-            post(move |state, session, path, form| delete(o.clone(), state, session, path, form)),
+            get(move |state, session, path| delete_form(o.clone(), state, session, path)).post(
+                move |state, session, path, form| delete(p.clone(), state, session, path, form),
+            ),
         );
     }
     router
@@ -290,21 +290,50 @@ async fn edit_submit(
     }
 }
 
+/// GET P/{vocabulary}/terms/{term}/delete: confirm.
+async fn delete_form(
+    owner: Arc<RegisteredOwner>,
+    State(state): State<AppState>,
+    session: Session,
+    Path(params): Params,
+) -> Response {
+    let (category, urls) = match admit_vocabulary(&owner, &state, &session, &params).await {
+        Ok(found) => found,
+        Err(refusal) => return refusal,
+    };
+    let user = match require_login(&state, &session).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let term = params.get("term").map(String::as_str).unwrap_or("");
+    match term_of(&state, &category, term).await {
+        Ok(tag) => {
+            admin_taxonomy::term_delete_page(&state, &session, &user, &category, &tag, &urls).await
+        }
+        Err(refusal) => refusal,
+    }
+}
+
 /// POST P/{vocabulary}/terms/{term}/delete
 async fn delete(
     owner: Arc<RegisteredOwner>,
     State(state): State<AppState>,
     session: Session,
     Path(params): Params,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
     let (category, urls) = match admit_vocabulary(&owner, &state, &session, &params).await {
         Ok(found) => found,
         Err(refusal) => return refusal,
     };
+    let user = match require_login(&state, &session).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
     let term = params.get("term").map(String::as_str).unwrap_or("");
+    let posted = crate::content::submission::PostedForm(pairs);
     match term_of(&state, &category, term).await {
-        Ok(tag) => admin_taxonomy::term_delete(&state, &session, &tag, &form.token, &urls).await,
+        Ok(tag) => admin_taxonomy::term_delete(&state, &session, &user, &tag, &posted, &urls).await,
         Err(refusal) => refusal,
     }
 }

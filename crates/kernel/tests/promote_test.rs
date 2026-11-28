@@ -136,10 +136,17 @@ async fn flags(app: &TestApp, id: Uuid) -> (i16, i16) {
 
 async fn bulk(app: &TestApp, cookies: &str, ip: &str, action: &str, id: Uuid) -> StatusCode {
     let (_, page) = get(app, cookies, "/admin/content", ip).await;
-    let body = format!(
-        "_token={}&action={action}&ids%5B%5D={id}",
-        urlencoding::encode(&token_in(&page))
-    );
+    // The list's bulk form; a viewer offered no bulk action has none, and
+    // the page's token with no build id is refused before the form is read.
+    let fields = if common::form_in(&page, "content_bulk_form").is_some() {
+        common::form_fields(&page, "content_bulk_form")
+    } else {
+        format!(
+            "_token={}&_form_build_id=",
+            urlencoding::encode(&token_in(&page))
+        )
+    };
+    let body = format!("{fields}&action={action}&ids%5B%5D={id}");
     post_form(app, cookies, "/admin/content/bulk", body, ip).await
 }
 

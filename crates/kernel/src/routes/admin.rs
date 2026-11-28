@@ -9,8 +9,9 @@ use axum::{Form, Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
+use crate::content::submission::PostedForm;
 use crate::file::service::{FileStatus, MediaScope};
-use crate::form::AjaxRequest;
+use crate::form::{AjaxRequest, FormElement, ValidationError};
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::models::{Comment, CommentStatus, SiteConfig, UpdateComment};
 use crate::routes::auth::SESSION_ACTIVE_STAGE;
@@ -20,10 +21,11 @@ use crate::form::csrf::generate_csrf_token;
 
 use crate::error::AppError;
 
+use super::admin_form;
 use super::admin_list::{ListQuery, PER_PAGE};
 use super::helpers::{
-    CsrfOnlyForm, admin_user_context, render_admin_template, render_not_found, render_server_error,
-    require_csrf, require_permission,
+    admin_user_context, render_admin_template, render_error, render_not_found, render_server_error,
+    require_permission,
 };
 
 /// Stage switch request.
@@ -288,15 +290,12 @@ async fn list_files(
         }
     }
 
-    let csrf_token = generate_csrf_token(&session).await;
-
     let mut context = tera::Context::new();
     context.insert("files", &files);
     context.insert("list", &query.view(total, files.len(), Some(&sort)));
     context.insert("owners", &owners);
     context.insert("status_filter", &status_filter.map(|s| s as i16));
     context.insert("status_options", &[("0", "Temporary"), ("1", "Permanent")]);
-    context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/content/files");
 
     render_admin_template(
@@ -308,6 +307,63 @@ async fn list_files(
     .await
 }
 
+/// The alternative text form on a file's details page.
+const FILE_ALT_TEXT_FORM_ID: &str = "file_alt_text_form";
+
+/// The form on the page that confirms deleting a file.
+const FILE_DELETE_FORM_ID: &str = "file_delete_form";
+
+/// The longest alternative text the form takes, the limit its field shows.
+const ALT_TEXT_MAX_CHARS: usize = 1024;
+
+/// A delete confirmation form: one danger button posting to `action`, with a
+/// Cancel link beside it back to `cancel`, its word in the viewer's admin
+/// language. `cancel` is a path this file writes, so it is printed as it is.
+async fn delete_confirm_form(
+    state: &AppState,
+    user: &crate::models::User,
+    form_id: &str,
+    action: String,
+    cancel: &'static str,
+) -> crate::form::Form {
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let text = super::admin_nav::AdminText::for_page(state, &viewer, cancel).await;
+    crate::form::Form::new(form_id).action(action).element(
+        "op",
+        FormElement::submit("Delete")
+            .attribute("class", "button--danger")
+            .suffix(format!(
+                r#"<a href="{}" class="button button--secondary">{}</a>"#,
+                cancel,
+                text.html("Cancel", &[])
+            ))
+            .weight(10),
+    )
+}
+
+/// The alternative text form for `file`, showing `value`.
+fn alt_text_form(file: &crate::file::service::FileInfo, value: &str) -> crate::form::Form {
+    // With nothing recorded the hint says so first, so an image nobody has
+    // described is not mistaken for one marked decorative.
+    let hint = if file.alt_text.is_none() {
+        "Not set. What the image shows, for readers who cannot see it. Leave empty only if the image is decorative and carries no information."
+    } else {
+        "What the image shows, for readers who cannot see it. Leave empty only if the image is decorative and carries no information."
+    };
+    crate::form::Form::new(FILE_ALT_TEXT_FORM_ID)
+        .action(format!("/admin/content/files/{}/alt-text", file.id))
+        .element(
+            "alt_text",
+            FormElement::textfield()
+                .title("Alternative text")
+                .description(hint)
+                .default_value(value.to_string())
+                .max_length(ALT_TEXT_MAX_CHARS)
+                .weight(0),
+        )
+        .element("op", FormElement::submit("Save").weight(10))
+}
+
 /// Show file details.
 ///
 /// GET /admin/content/files/{id}
@@ -316,29 +372,88 @@ async fn file_details(
     session: Session,
     Path(file_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "access files").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "access files").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    render_file_details(&state, &session, &user, file_id, None, &[]).await
+}
 
+/// The file details page, its alternative text form showing `alt_value`
+/// (the stored text when `None`) and `errors`.
+async fn render_file_details(
+    state: &AppState,
+    session: &Session,
+    user: &crate::models::User,
+    file_id: uuid::Uuid,
+    alt_value: Option<&str>,
+    errors: &[ValidationError],
+) -> Response {
     let Some(file) = state.files().get(file_id).await.ok().flatten() else {
         return render_not_found();
     };
 
     let owner = state.users().find_by_id(file.owner_id).await.ok().flatten();
     let public_url = state.files().storage().public_url(&file.uri);
-    let csrf_token = generate_csrf_token(&session).await;
+    let value = alt_value.unwrap_or_else(|| file.alt_text.as_deref().unwrap_or_default());
+    let form_html =
+        match admin_form::render(state, session, user, alt_text_form(&file, value), errors).await {
+            Ok(html) => html,
+            Err(response) => return response,
+        };
 
     let mut context = tera::Context::new();
-    context.insert("csrf_token", &csrf_token);
     context.insert("file", &file);
     context.insert("owner", &owner);
     context.insert("public_url", &public_url);
+    context.insert("alt_text_form", &form_html);
     context.insert("path", &format!("/admin/content/files/{file_id}"));
 
     render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
+        state,
+        &super::helpers::user_context_for(state, user).await,
         "admin/file-details.html",
+        context,
+    )
+    .await
+}
+
+/// Confirm deleting a file.
+///
+/// GET /admin/content/files/{id}/delete
+async fn delete_file_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path(file_id): Path<uuid::Uuid>,
+) -> Response {
+    let user = match require_permission(&state, &session, "administer files").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let Some(file) = state.files().get(file_id).await.ok().flatten() else {
+        return render_not_found();
+    };
+    let path = format!("/admin/content/files/{file_id}/delete");
+    let form = delete_confirm_form(
+        &state,
+        &user,
+        FILE_DELETE_FORM_ID,
+        path.clone(),
+        "/admin/content/files",
+    )
+    .await;
+    let form_html = match admin_form::render(&state, &session, &user, form, &[]).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let mut context = tera::Context::new();
+    context.insert("file", &file);
+    context.insert("form", &form_html);
+    context.insert("path", &path);
+    render_admin_template(
+        &state,
+        &super::helpers::user_context_for(&state, &user).await,
+        "admin/file-delete.html",
         context,
     )
     .await
@@ -351,18 +466,34 @@ async fn delete_file(
     State(state): State<AppState>,
     session: Session,
     Path(file_id): Path<uuid::Uuid>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer files").await {
-        return redirect;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer files").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        FILE_DELETE_FORM_ID,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(_)) => {
+            return render_error("The form has expired. Reload the page and try again.");
+        }
+        Err(Err(response)) => return response,
+    };
 
     match state.files().delete(file_id).await {
         Ok(true) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(file_id = %file_id, "file deleted");
             Redirect::to("/admin/content/files").into_response()
         }
@@ -378,49 +509,61 @@ async fn delete_file(
 // Media Library
 // =============================================================================
 
-/// Form data for editing a file's alternative text.
-#[derive(Debug, Deserialize)]
-struct AltTextForm {
-    #[serde(rename = "_token")]
-    token: String,
-    /// The alt text. Empty means "explicitly decorative", which is a real answer
-    /// rather than an absent one.
-    alt_text: String,
-    /// Where to return to, so the media library and the file details page can
-    /// share one endpoint without one of them throwing the user to the other.
-    #[serde(default)]
-    redirect_to: Option<String>,
-}
-
 /// Set a file's alternative text.
 ///
 /// POST /admin/content/files/{id}/alt-text
+///
+/// An empty value means "explicitly decorative", which is a real answer
+/// rather than an absent one. An optional `redirect_to` names where to return
+/// to, so the media library and the file details page can share one endpoint
+/// without one of them throwing the user to the other.
 async fn set_file_alt_text(
     State(state): State<AppState>,
     session: Session,
     Path(file_id): Path<uuid::Uuid>,
-    Form(form): Form<AltTextForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer files").await {
-        return redirect;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer files").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
+    let alt_text = posted.get("alt_text").unwrap_or_default().to_string();
+    let mut errors = Vec::new();
+    if alt_text.chars().count() > ALT_TEXT_MAX_CHARS {
+        errors.push(ValidationError::field(
+            "alt_text",
+            "Alternative text must be at most 1024 characters.",
+        ));
     }
-
-    match state
-        .files()
-        .set_alt_text(file_id, Some(&form.alt_text))
-        .await
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        FILE_ALT_TEXT_FORM_ID,
+        errors,
+    )
+    .await
     {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            return render_file_details(&state, &session, &user, file_id, Some(&alt_text), &errors)
+                .await;
+        }
+        Err(Err(response)) => return response,
+    };
+
+    match state.files().set_alt_text(file_id, Some(&alt_text)).await {
         Ok(true) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             // Only a same-site path is honoured, so the return target cannot be
             // turned into an open redirect by a crafted form post.
-            let target = form
-                .redirect_to
+            let target = posted
+                .get("redirect_to")
                 .filter(|path| path.starts_with('/') && !path.starts_with("//"))
-                .unwrap_or_else(|| format!("/admin/content/files/{file_id}"));
+                .map_or_else(|| format!("/admin/content/files/{file_id}"), str::to_string);
             Redirect::to(&target).into_response()
         }
         Ok(false) => render_not_found(),
@@ -497,8 +640,6 @@ async fn media_library(
         .map(|f| (f.id.to_string(), storage.public_url(&f.uri)))
         .collect();
 
-    let csrf_token = generate_csrf_token(&session).await;
-
     let mut context = tera::Context::new();
     context.insert("files", &files);
     context.insert("file_urls", &file_urls);
@@ -512,7 +653,6 @@ async fn media_library(
             ("document", "Documents"),
         ],
     );
-    context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/media");
 
     render_admin_template(
@@ -576,30 +716,128 @@ async fn ajax_callback(
 // Comment Moderation
 // =============================================================================
 
-/// Form data for editing a comment.
-#[derive(Debug, Deserialize)]
-struct EditCommentForm {
-    #[serde(rename = "_token")]
-    token: String,
-    body: String,
-    status: i16,
-    /// Optional plain text subject. The form always carries the field's full,
-    /// current value, so empty clears it rather than meaning "unchanged".
-    #[serde(default)]
-    subject: String,
+/// The form the moderation list's approve, unpublish and mark-as-spam buttons
+/// belong to. One form serves the whole table: each button names it with the
+/// `form` attribute and posts to its own action with `formaction`, so the
+/// page builds one form rather than one per row.
+const COMMENT_ACTIONS_FORM_ID: &str = "comment_actions_form";
+
+/// The comment settings form under the moderation list.
+const COMMENT_SETTINGS_FORM_ID: &str = "comment_settings_form";
+
+/// The admin comment edit form.
+const COMMENT_EDIT_FORM_ID: &str = "comment_edit_form";
+
+/// The form on the page that confirms deleting a comment.
+const COMMENT_DELETE_FORM_ID: &str = "comment_delete_form";
+
+/// What the comment settings form shows: the default status for new comments
+/// (`published` or `pending`) and whether content authors are e-mailed.
+struct CommentSettingsValues {
+    /// `published` or `pending`, or what was posted when it was neither.
+    default_status: String,
+    /// The "E-mail content authors about new comments" checkbox.
+    notify_authors: bool,
 }
 
-/// Form data for the moderation default setting.
-#[derive(Debug, Deserialize)]
-struct CommentSettingsForm {
-    #[serde(rename = "_token")]
-    token: String,
-    /// `published` or `pending`.
-    default_status: String,
-    /// The "E-mail content authors about new comments" checkbox: posted as
-    /// `1` when ticked, absent when not.
-    #[serde(default)]
-    notify_authors: Option<String>,
+/// The comment settings form showing `values`.
+fn comment_settings_form(values: &CommentSettingsValues) -> crate::form::Form {
+    crate::form::Form::new(COMMENT_SETTINGS_FORM_ID)
+        .action("/admin/content/comments/settings")
+        .element(
+            "default_status",
+            FormElement::select(vec![
+                ("published".to_string(), "Publish immediately".to_string()),
+                ("pending".to_string(), "Hold for review".to_string()),
+            ])
+            .title("New comments")
+            .description(
+                "Whether a comment posted from now on is shown at once or waits in this list for approval. Comments already posted keep their status.",
+            )
+            .default_value(values.default_status.clone())
+            .required()
+            .weight(0),
+        )
+        .element(
+            "notify_authors",
+            FormElement::checkbox()
+                .title("E-mail content authors about new comments")
+                .description(
+                    "When ticked, the author of a post is e-mailed when a comment on it is published or approved. Their own comments never are.",
+                )
+                .default_value(values.notify_authors)
+                .weight(1),
+        )
+        .element(
+            "op",
+            FormElement::submit("Save")
+                .attribute("class", "button--secondary")
+                .weight(10),
+        )
+}
+
+/// What the comment edit form shows.
+struct CommentEditValues {
+    /// The subject, empty for none.
+    subject: String,
+    /// The body.
+    body: String,
+    /// The status, as its stored number.
+    status: String,
+}
+
+/// The comment edit form for comment `id`, showing `values`, with a Cancel
+/// link beside Save in the viewer's admin language.
+async fn comment_edit_form(
+    state: &AppState,
+    user: &crate::models::User,
+    id: uuid::Uuid,
+    values: &CommentEditValues,
+) -> crate::form::Form {
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let text =
+        super::admin_nav::AdminText::for_page(state, &viewer, "/admin/content/comments").await;
+    // Options come from CommentStatus, so this form offers every status the
+    // model stores and labels each one the way the moderation list does.
+    let statuses = COMMENT_STATUS_FILTERS
+        .iter()
+        .map(|s| (s.as_i16().to_string(), s.label().to_string()))
+        .collect();
+    crate::form::Form::new(COMMENT_EDIT_FORM_ID)
+        .action(format!("/admin/content/comments/{id}/edit"))
+        .element(
+            "subject",
+            FormElement::textfield()
+                .title("Subject")
+                .default_value(values.subject.clone())
+                .max_length(crate::models::comment::SUBJECT_MAX_CHARS)
+                .weight(0),
+        )
+        .element(
+            "body",
+            FormElement::textarea(6)
+                .title("Comment Body")
+                .default_value(values.body.clone())
+                .required()
+                .weight(1),
+        )
+        .element(
+            "status",
+            FormElement::select(statuses)
+                .title("Status")
+                .default_value(values.status.clone())
+                .required()
+                .weight(2),
+        )
+        .element(
+            "op",
+            FormElement::submit("Save")
+                .suffix(format!(
+                    r#"<a href="/admin/content/comments" class="button button--secondary">{}</a>"#,
+                    text.html("Cancel", &[])
+                ))
+                .weight(10),
+        )
 }
 
 /// A comment as the moderation list renders it.
@@ -678,12 +916,25 @@ async fn list_comments(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer comments").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer comments").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    render_comments(&state, &session, &user, &params, None, &[]).await
+}
 
+/// The moderation list for the query `params`, its settings form showing
+/// `settings` (the stored settings when `None`) and `settings_errors`.
+async fn render_comments(
+    state: &AppState,
+    session: &Session,
+    user: &crate::models::User,
+    params: &std::collections::HashMap<String, String>,
+    settings: Option<CommentSettingsValues>,
+    settings_errors: &[ValidationError],
+) -> Response {
     let status_filter = params.get("status").and_then(|s| s.parse::<i16>().ok());
-    let query = ListQuery::from_params(&params);
+    let query = ListQuery::from_params(params);
     let sort = query.sort(COMMENT_SORTS, ("posted", true));
     let like = query.like();
 
@@ -710,9 +961,9 @@ async fn list_comments(
         std::collections::HashMap::new();
     for comment in &comments {
         if !authors.contains_key(&comment.author_id)
-            && let Ok(Some(user)) = state.users().find_by_id(comment.author_id).await
+            && let Ok(Some(author)) = state.users().find_by_id(comment.author_id).await
         {
-            authors.insert(comment.author_id, user.name);
+            authors.insert(comment.author_id, author.name);
         }
     }
 
@@ -726,30 +977,54 @@ async fn list_comments(
         }
     }
 
-    let csrf_token = generate_csrf_token(&session).await;
-
     let rows: Vec<CommentRow<'_>> = comments.iter().map(CommentRow::new).collect();
 
-    // The status filter options, and the current default for new comments, so
-    // the screen that moderates comments is also where the queue is turned on.
-    let filters = comment_status_options();
-    let default_status = CommentStatus::default_for_new_comments(state.db()).await;
+    // The row buttons' one form, built only when there are rows to act on.
+    let actions_form = if rows.is_empty() {
+        String::new()
+    } else {
+        let form =
+            crate::form::Form::new(COMMENT_ACTIONS_FORM_ID).action("/admin/content/comments");
+        match admin_form::render(state, session, user, form, &[]).await {
+            Ok(html) => html,
+            Err(response) => return response,
+        }
+    };
+
+    // The current default for new comments, so the screen that moderates
+    // comments is also where the queue is turned on.
+    let settings = match settings {
+        Some(values) => values,
+        None => CommentSettingsValues {
+            default_status: if CommentStatus::default_for_new_comments(state.db())
+                .await
+                .awaits_review()
+            {
+                "pending".to_string()
+            } else {
+                "published".to_string()
+            },
+            notify_authors: crate::models::comment::notify_authors(state.db()).await,
+        },
+    };
+    let settings_form = match admin_form::render(
+        state,
+        session,
+        user,
+        comment_settings_form(&settings),
+        settings_errors,
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
 
     let mut context = tera::Context::new();
     context.insert("comments", &rows);
-    context.insert("status_options", &filters);
-    context.insert("default_status_pending", &default_status.awaits_review());
-    context.insert(
-        "notify_authors",
-        &crate::models::comment::notify_authors(state.db()).await,
-    );
-    context.insert(
-        "default_status_options",
-        &[
-            ("published", "Publish immediately"),
-            ("pending", "Hold for review"),
-        ],
-    );
+    context.insert("status_options", &comment_status_options());
+    context.insert("actions_form", &actions_form);
+    context.insert("settings_form", &settings_form);
     context.insert("authors", &authors);
     context.insert("items", &items);
     context.insert("list", &query.view(total, rows.len(), Some(&sort)));
@@ -757,12 +1032,11 @@ async fn list_comments(
         "status_filter",
         &status_filter.map(|s| s.to_string()).unwrap_or_default(),
     );
-    context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/content/comments");
 
     render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
+        state,
+        &super::helpers::user_context_for(state, user).await,
         "admin/comments.html",
         context,
     )
@@ -777,10 +1051,23 @@ async fn edit_comment_form(
     session: Session,
     Path(id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer comments").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer comments").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    render_comment_edit(&state, &session, &user, id, None, &[]).await
+}
 
+/// The comment edit page for comment `id`, its form showing `values` (the
+/// stored comment when `None`) and `errors`.
+async fn render_comment_edit(
+    state: &AppState,
+    session: &Session,
+    user: &crate::models::User,
+    id: uuid::Uuid,
+    values: Option<CommentEditValues>,
+    errors: &[ValidationError],
+) -> Response {
     let comment = match state.comments().load(id).await {
         Ok(Some(c)) => c,
         Ok(None) => return render_not_found(),
@@ -806,19 +1093,27 @@ async fn edit_comment_form(
         .flatten()
         .map(|i| i.title);
 
-    let csrf_token = generate_csrf_token(&session).await;
+    let values = values.unwrap_or_else(|| CommentEditValues {
+        subject: comment.subject.clone().unwrap_or_default(),
+        body: comment.body.clone(),
+        status: comment.status.to_string(),
+    });
+    let form = comment_edit_form(state, user, id, &values).await;
+    let form_html = match admin_form::render(state, session, user, form, errors).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
 
     let mut context = tera::Context::new();
     context.insert("comment", &comment);
-    context.insert("status_options", &comment_status_options());
     context.insert("author_name", &author_name);
     context.insert("item_title", &item_title);
-    context.insert("csrf_token", &csrf_token);
+    context.insert("form", &form_html);
     context.insert("path", "/admin/content/comments");
 
     render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
+        state,
+        &super::helpers::user_context_for(state, user).await,
         "admin/comment-form.html",
         context,
     )
@@ -832,42 +1127,84 @@ async fn edit_comment_submit(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<uuid::Uuid>,
-    Form(form): Form<EditCommentForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = PostedForm(pairs);
     let user = match require_permission(&state, &session, "administer comments").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
 
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
+    let values = CommentEditValues {
+        subject: posted.get("subject").unwrap_or_default().to_string(),
+        body: posted.get("body").unwrap_or_default().to_string(),
+        status: posted.get("status").unwrap_or_default().to_string(),
+    };
+    let mut errors = Vec::new();
+    // The form always carries the subject's full, current value, so empty
+    // clears it rather than meaning "unchanged".
+    let subject = match crate::routes::comment::validate_subject(Some(&values.subject)) {
+        Ok(subject) => subject,
+        Err(_) => {
+            errors.push(ValidationError::field(
+                "subject",
+                format!(
+                    "Subject cannot exceed {} characters",
+                    crate::models::comment::SUBJECT_MAX_CHARS
+                ),
+            ));
+            None
+        }
+    };
+    if values.body.trim().is_empty() {
+        errors.push(ValidationError::field("body", "Comment Body is required."));
     }
-
     // A status the model does not recognise is a malformed submission, not a new
     // state to store.
-    if CommentStatus::from_i16(form.status).is_none() {
-        return render_server_error("Unknown comment status");
+    let status = values
+        .status
+        .parse::<i16>()
+        .ok()
+        .filter(|s| CommentStatus::from_i16(*s).is_some());
+    if status.is_none() {
+        errors.push(ValidationError::field("status", "Unknown comment status"));
     }
 
-    let Ok(subject) = crate::routes::comment::validate_subject(Some(&form.subject)) else {
-        return render_server_error(&format!(
-            "Subject cannot exceed {} characters",
-            crate::models::comment::SUBJECT_MAX_CHARS
-        ));
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        COMMENT_EDIT_FORM_ID,
+        errors,
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            return render_comment_edit(&state, &session, &user, id, Some(values), &errors).await;
+        }
+        Err(Err(response)) => return response,
+    };
+    let Some(status) = status else {
+        return render_not_found();
     };
 
     let user_ctx = admin_user_context(&state, &user).await;
     let input = UpdateComment {
-        body: Some(form.body),
+        body: Some(values.body),
         body_format: None,
-        status: Some(form.status),
+        status: Some(status),
         subject: Some(subject),
     };
 
     // Approving out of the queue notifies the content author; re-saving an
     // already published comment does not.
     match update_comment_notifying(&state, id, input, &user_ctx).await {
-        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
+        Ok(Some(_)) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
+            Redirect::to("/admin/content/comments").into_response()
+        }
         Ok(None) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to update comment");
@@ -928,12 +1265,13 @@ async fn update_comment_notifying(
     }
 }
 
-/// Set a comment's publication status (shared by approve/unpublish).
+/// Set a comment's publication status (shared by approve, unpublish and
+/// mark as spam), from a submission of the moderation list's row form.
 async fn set_comment_status(
     state: &AppState,
     session: &Session,
     id: uuid::Uuid,
-    token: &str,
+    posted: &PostedForm,
     status: i16,
     action: &str,
 ) -> Response {
@@ -942,9 +1280,22 @@ async fn set_comment_status(
         Err(redirect) => return redirect,
     };
 
-    if let Err(resp) = require_csrf(session, token).await {
-        return resp;
-    }
+    let form_state = match admin_form::check(
+        state,
+        session,
+        &user,
+        posted,
+        COMMENT_ACTIONS_FORM_ID,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(_)) => {
+            return render_error("The form has expired. Reload the page and try again.");
+        }
+        Err(Err(response)) => return response,
+    };
 
     let user_ctx = admin_user_context(state, &user).await;
     let input = UpdateComment {
@@ -955,7 +1306,10 @@ async fn set_comment_status(
     };
 
     match update_comment_notifying(state, id, input, &user_ctx).await {
-        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
+        Ok(Some(_)) => {
+            admin_form::submitted(state, &user, &form_state, posted).await;
+            Redirect::to("/admin/content/comments").into_response()
+        }
         Ok(None) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to {} comment", action);
@@ -971,13 +1325,13 @@ async fn approve_comment(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<uuid::Uuid>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
     set_comment_status(
         &state,
         &session,
         id,
-        &form.token,
+        &PostedForm(pairs),
         CommentStatus::Published.as_i16(),
         "approve",
     )
@@ -991,13 +1345,13 @@ async fn unpublish_comment(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<uuid::Uuid>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
     set_comment_status(
         &state,
         &session,
         id,
-        &form.token,
+        &PostedForm(pairs),
         CommentStatus::Unpublished.as_i16(),
         "unpublish",
     )
@@ -1014,25 +1368,19 @@ async fn mark_comment_spam(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<uuid::Uuid>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
     set_comment_status(
         &state,
         &session,
         id,
-        &form.token,
+        &PostedForm(pairs),
         CommentStatus::Spam.as_i16(),
         "mark as spam",
     )
     .await
 }
 
-/// Set whether new comments are published immediately or held for review.
-///
-/// The setting lives on the moderation screen because that is where its
-/// consequences are: turning the queue on fills the list below it.
-///
-/// POST /admin/content/comments/settings
 /// The comment settings form.
 ///
 /// GET /admin/content/comments/settings
@@ -1049,28 +1397,71 @@ async fn comment_settings_page(State(state): State<AppState>, session: Session) 
     .await
 }
 
+/// Set whether new comments are published immediately or held for review,
+/// and whether content authors are e-mailed about new comments.
+///
+/// The setting lives on the moderation screen because that is where its
+/// consequences are: turning the queue on fills the list below it.
+///
+/// POST /admin/content/comments/settings
 async fn save_comment_settings(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<CommentSettingsForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer comments").await {
-        return redirect;
-    }
-
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    // Only the two statuses a new comment can meaningfully take.
-    let value = match form.default_status.as_str() {
-        "published" => "published",
-        "pending" => "pending",
-        other => {
-            tracing::warn!(value = %other, "rejected unknown comment default status");
-            return render_server_error("Unknown comment status");
-        }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer comments").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
     };
+
+    // The checkbox is posted as `1` when ticked, absent when not.
+    let values = CommentSettingsValues {
+        default_status: posted.get("default_status").unwrap_or_default().to_string(),
+        notify_authors: posted.get("notify_authors").is_some(),
+    };
+    // Only the two statuses a new comment can meaningfully take.
+    let value = match values.default_status.as_str() {
+        "published" => Some("published"),
+        "pending" => Some("pending"),
+        _ => None,
+    };
+    let mut errors = Vec::new();
+    if value.is_none() {
+        tracing::warn!(value = %values.default_status, "rejected unknown comment default status");
+        errors.push(ValidationError::field(
+            "default_status",
+            "Unknown comment status",
+        ));
+    }
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        COMMENT_SETTINGS_FORM_ID,
+        errors,
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            return render_comments(
+                &state,
+                &session,
+                &user,
+                &std::collections::HashMap::new(),
+                Some(values),
+                &errors,
+            )
+            .await;
+        }
+        Err(Err(response)) => return response,
+    };
+    let Some(value) = value else {
+        return render_not_found();
+    };
+    let notify_authors = values.notify_authors;
 
     let saved = async {
         SiteConfig::set(
@@ -1082,17 +1473,66 @@ async fn save_comment_settings(
         SiteConfig::set(
             state.db(),
             crate::models::comment::NOTIFY_AUTHORS_KEY,
-            serde_json::Value::Bool(form.notify_authors.is_some()),
+            serde_json::Value::Bool(notify_authors),
         )
         .await
     };
     match saved.await {
-        Ok(_) => Redirect::to("/admin/content/comments").into_response(),
+        Ok(_) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
+            Redirect::to("/admin/content/comments").into_response()
+        }
         Err(e) => {
             tracing::error!(error = %e, "failed to save comment settings");
             render_server_error("Failed to save setting")
         }
     }
+}
+
+/// Confirm deleting a comment.
+///
+/// GET /admin/content/comments/{id}/delete
+async fn delete_comment_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<uuid::Uuid>,
+) -> Response {
+    let user = match require_permission(&state, &session, "administer comments").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let comment = match state.comments().load(id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return render_not_found(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load comment");
+            return render_server_error("Failed to load comment");
+        }
+    };
+    let path = format!("/admin/content/comments/{id}/delete");
+    let form = delete_confirm_form(
+        &state,
+        &user,
+        COMMENT_DELETE_FORM_ID,
+        path.clone(),
+        "/admin/content/comments",
+    )
+    .await;
+    let form_html = match admin_form::render(&state, &session, &user, form, &[]).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let mut context = tera::Context::new();
+    context.insert("comment", &comment);
+    context.insert("form", &form_html);
+    context.insert("path", &path);
+    render_admin_template(
+        &state,
+        &super::helpers::user_context_for(&state, &user).await,
+        "admin/comment-delete.html",
+        context,
+    )
+    .await
 }
 
 /// Delete a comment.
@@ -1102,20 +1542,37 @@ async fn delete_comment_admin(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<uuid::Uuid>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = PostedForm(pairs);
     let user = match require_permission(&state, &session, "administer comments").await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
 
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        COMMENT_DELETE_FORM_ID,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(_)) => {
+            return render_error("The form has expired. Reload the page and try again.");
+        }
+        Err(Err(response)) => return response,
+    };
 
     let user_ctx = admin_user_context(&state, &user).await;
     match state.comments().delete(id, &user_ctx).await {
-        Ok(true) => Redirect::to("/admin/content/comments").into_response(),
+        Ok(true) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
+            Redirect::to("/admin/content/comments").into_response()
+        }
         Ok(false) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to delete comment");
@@ -1140,7 +1597,10 @@ pub fn router() -> Router<AppState> {
         // File management
         .route("/admin/content/files", get(list_files))
         .route("/admin/content/files/{id}", get(file_details))
-        .route("/admin/content/files/{id}/delete", post(delete_file))
+        .route(
+            "/admin/content/files/{id}/delete",
+            get(delete_file_form).post(delete_file),
+        )
         .route(
             "/admin/content/files/{id}/alt-text",
             post(set_file_alt_text),
@@ -1226,7 +1686,7 @@ pub fn comment_admin_router() -> Router<AppState> {
         )
         .route(
             "/admin/content/comments/{id}/delete",
-            post(delete_comment_admin),
+            get(delete_comment_form).post(delete_comment_admin),
         )
         .layer(axum::middleware::from_fn(super::admin_confirm::ask_first))
 }

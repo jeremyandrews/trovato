@@ -1,0 +1,11 @@
+{% extends "page--admin.html" %}
+
+{% block page_title %}{{ t(s="Remove the weight of {name}", name=field.label) }}{% endblock page_title %}
+
+{% block content %}
+<div class="admin-card">
+    <p>{{ t(s="Remove the search weight of {name}? It is searched at the default weight until you set another.", name=field.label) }}</p>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+    <p><a href="/admin/structure/types/{{ type_name }}/search">{{ t(s="Cancel") }}</a></p>
+</div>
+{% endblock content %}
