@@ -1602,16 +1602,6 @@ html {
    comes later in the sheet at the same specificity, would win over the link
    style and leave Logout larger than its neighbours. The focus ring is the
    global :focus-visible one, the same as the links'. */
-.site-nav__logout-form {
-    display: inline;
-}
-
-/* The form renderer wraps the button in a markup element's form item. */
-.site-nav__logout-form > .form-item {
-    display: inline;
-    margin: 0;
-}
-
 .site-nav__logout {
     appearance: none;
     margin: 0;

@@ -64,7 +64,7 @@
             {{ menu::items(links=user_tree, prefix="site-nav") }}
             {% if user_authenticated %}
             <li class="site-nav__item">
-            {{ logout_form | default(value="") | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::helpers::inject_site_context_for); its one markup element is a fixed button #}
+            <button type="submit" form="site_logout_form" class="site-nav__link site-nav__logout">Logout</button>
             </li>
             {% endif %}
             </ul>
@@ -148,4 +148,9 @@
     {% endif %}
     &copy; {{ site_name | default(value="Trovato") }}. Powered by Trovato.
 </div>
+{#- The header's Logout button posts this form (its `form` attribute), which
+    FormService built: last on the page, so a page's own form comes first. #}
+{%- if logout_form is defined %}
+{{ logout_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::helpers::inject_site_context_for); it holds only its token and build id #}
+{%- endif %}
 {% endblock %}

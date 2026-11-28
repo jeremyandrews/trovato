@@ -408,21 +408,16 @@ pub async fn inject_site_context_for(
     }
 
     // For a signed-in viewer: a CSRF token for the page's scripts (the
-    // `csrf-token` meta tag), and the header's Log out button, a form built
-    // by `FormService` like every other (`site_logout_form`). The button is
-    // one markup element so it keeps the header link's look.
+    // `csrf-token` meta tag), and the form the header's Log out button posts,
+    // built by `FormService` like every other (`site_logout_form`). The form is
+    // hidden at the foot of the page and the button, in the header, joins it
+    // through its `form` attribute, so it keeps the header link's look.
     if viewer.authenticated {
         let csrf_token = crate::form::csrf::generate_csrf_token(session).await;
         context.insert("csrf_token", &csrf_token);
         let logout = crate::form::Form::new("site_logout_form")
             .action("/user/logout")
-            .attribute("class", "site-nav__logout-form")
-            .element(
-                "logout",
-                crate::form::FormElement::markup(
-                    r#"<button type="submit" class="site-nav__link site-nav__logout">Logout</button>"#,
-                ),
-            );
+            .attribute("hidden", "hidden");
         if let Ok(html) = super::admin_form::render_as(state, session, viewer, logout, &[]).await {
             context.insert("logout_form", &html);
         }

@@ -90,26 +90,23 @@ fn logout_reset_leaves_the_link_style_alone() {
     }
 }
 
-/// Logout stays a button in a POST form with its CSRF token, styled by class
-/// and not by an inline style. The form is built by `FormService`
-/// (`site_logout_form`, B83c), which gives it the token; the button is its one
-/// markup element.
+/// Logout stays a button posting a POST form with its CSRF token, styled by
+/// class and not by an inline style. The form is built by `FormService`
+/// (`site_logout_form`, B83c), which gives it the token; it sits hidden at
+/// the foot of the page and the header's button joins it through `form=`.
 #[test]
 fn logout_stays_a_post_button_with_the_link_class() {
     let page = repo_file("templates/page.html");
-    assert!(page.contains("{{ logout_form | default(value=\"\") | safe }}"));
+    assert!(page.contains(
+        r#"<button type="submit" form="site_logout_form" class="site-nav__link site-nav__logout">Logout</button>"#
+    ));
+    assert!(page.contains("{{ logout_form | safe }}"));
     assert!(!page.contains(r#"action="/user/logout""#));
     let helpers = repo_file("crates/kernel/src/routes/helpers.rs");
     let at = helpers
         .find(r#"Form::new("site_logout_form")"#)
         .expect("the logout form is built in routes/helpers.rs");
-    let build = &helpers[at..at + 600];
+    let build = &helpers[at..at + 200];
     assert!(build.contains(r#".action("/user/logout")"#));
-    assert!(build.contains(r#".attribute("class", "site-nav__logout-form")"#));
-    assert!(build.contains(r#"<button type="submit" class="site-nav__link site-nav__logout">"#));
     assert!(!build.contains("style="));
-    // The renderer's form item around the button stays inline in the header.
-    let css = repo_file("static/css/theme.css");
-    let item = properties(rule_body(&css, ".site-nav__logout-form > .form-item"));
-    assert!(item.iter().any(|p| p == "display"), "{item:?}");
 }

@@ -1,7 +1,11 @@
-{#- The admin form presentation layer: every admin field, hand written or
-    built in Rust, is drawn by these macros (docs/admin/design.md section 8).
-    The form builder's admin templates (admin/form/*.html) call them too, so
-    the two kinds of form cannot drift apart.
+{#- The admin form presentation layer: every admin field is drawn by these
+    macros (docs/admin/design.md section 8). The form renderer's admin
+    templates (admin/form/*.html) call them; the form itself, its token and
+    build id and its buttons are the renderer's, so no admin template writes a
+    form by hand (tests/form_marker_test.rs). A few field groups whose names
+    come from data (the gather builder, an AI provider's model rows, the
+    assistant's scopes) call them from a partial rendered into a pipeline
+    form as one markup element.
 
     The pattern: label above the field, always shown; a hint under the label,
     tied to the field with aria-describedby; "(required)" or "(optional)" in
@@ -151,45 +155,3 @@
     </div>
 </fieldset>
 {% endmacro fieldset_end %}
-
-{#- Long or advanced settings, collapsed: native details, so the keyboard
-    and every screen reader can open it with no script. -#}
-{% macro details_start(summary, open=false, id="") %}
-<details class="form-details"{% if open %} open{% endif %}{% if id %} id="{{ id }}"{% endif %}>
-    <summary class="form-details__summary">{{ summary }}</summary>
-    <div class="form-details__content">
-{% endmacro details_start %}
-
-{% macro details_end() %}
-    </div>
-</details>
-{% endmacro details_end %}
-
-{#- Hidden CSRF token field. -#}
-{% macro csrf(csrf_token) %}
-<input type="hidden" name="_token" value="{{ csrf_token }}">
-{% endmacro csrf %}
-
-{#- Hidden CSRF and form build ID fields. -#}
-{% macro hidden_fields(csrf_token, form_build_id="") %}
-<input type="hidden" name="_token" value="{{ csrf_token }}">
-{% if form_build_id %}
-<input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
-{% endif %}
-{% endmacro hidden_fields %}
-
-{#- What saving a settings form changes, where that is not obvious: one
-    short, factual sentence above Save. -#}
-{% macro effect(text) %}
-<p class="form__effect"><strong class="form__effect-label">{{ t(s="What this changes:") }}</strong> {{ text }}</p>
-{% endmacro effect %}
-
-{#- The action bar: the primary action first, then Cancel. The submit label
-    arrives translated. On a long form the bar stays in view (sticky) and the
-    page keeps the focused field clear of it (scroll-padding). -#}
-{% macro actions(submit_label, cancel_url="", name="", value="", sticky=false) %}
-<div class="form-actions{% if sticky %} form-actions--sticky{% endif %}">
-    <button type="submit" class="button button--primary"{% if name %} name="{{ name }}" value="{{ value }}"{% endif %}>{{ submit_label }}</button>
-    {% if cancel_url %}<a href="{{ cancel_url }}" class="button button--secondary">{{ t(s="Cancel") }}</a>{% endif %}
-</div>
-{% endmacro actions %}
