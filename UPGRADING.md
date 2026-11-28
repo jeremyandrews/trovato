@@ -97,6 +97,34 @@ applied, so `trovato migrate` finds nothing to do.
 
 ## Unreleased
 
+### Edge caching headers (B303): private by default, public opt-in
+
+**Who is affected:** every deployment, for the private half; only one that
+sets `EDGE_CACHE_S_MAXAGE`, for the public half.
+
+**What changed.** A response to a signed-in visitor, a caller holding an
+`Authorization` header, a form POST, or anything that sets a cookie, now
+answers `Cache-Control: private, no-store` wherever the route itself set no
+`Cache-Control`. This is new: before B303 those responses carried no
+`Cache-Control` at all. Nothing else about them changed — no cookie, no
+header, no body is different — and a correct cache was never supposed to
+store a personal response anyway, so this should be invisible to every
+visitor and tightens, not loosens, what a misconfigured intermediate cache
+could have done with one of these pages.
+
+An anonymous page is unaffected until `EDGE_CACHE_S_MAXAGE` (seconds for a
+shared cache) is set above 0: that is the switch that turns on `Cache-Control:
+public` and a cache tag header (`EDGE_CACHE_TAG_HEADER`, default
+`Surrogate-Key`) for an anonymous, cookie-free `GET`/`HEAD` that answers 200
+with HTML in a language the URL alone decided. Unset, as every existing
+deployment is, nothing changes. See `docs/deployment/cdn.md` before setting
+it: it covers which pages qualify, the tag vocabulary, and how to configure
+Cloudflare (or another CDN) to respect these headers and accept a purge.
+
+**How to find out.** Nothing to grep for; this is a runtime behavior change,
+not an API change. Set `EDGE_CACHE_S_MAXAGE=0` (the default) to keep every
+anonymous page exactly as it rendered before.
+
 ### `AdminNavDefinition` is `#[non_exhaustive]`, with a new `keywords` field
 
 **Who is affected:** a plugin that builds `trovato_sdk::types::AdminNavDefinition`

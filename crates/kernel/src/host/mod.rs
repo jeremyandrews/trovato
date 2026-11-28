@@ -31,9 +31,9 @@ pub use ai::register_ai_functions;
 pub use cache::register_cache_functions;
 pub use crypto::register_crypto_functions;
 pub use db::register_db_functions;
-pub use http::register_http_functions;
 #[doc(hidden)]
 pub use http::allow_loopback_http_for_tests;
+pub use http::register_http_functions;
 pub use item::register_item_functions;
 pub use logging::register_logging_functions;
 pub use mail::register_mail_functions;

@@ -413,8 +413,9 @@ fn check_url_policy(parsed: &Url) -> std::result::Result<(), UrlPolicyReject> {
 /// [`allow_loopback_http_for_tests`]. Empty in every production process: the
 /// setter is `#[doc(hidden)]` and nothing in production or configuration
 /// calls it.
-static TEST_LOOPBACK_URLS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+static TEST_LOOPBACK_URLS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 
 /// Let plugin HTTP reach exactly one loopback URL, for a test that runs a
 /// mock server on `127.0.0.1`. Mirrors

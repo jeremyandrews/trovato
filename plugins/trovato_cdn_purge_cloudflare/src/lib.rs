@@ -48,7 +48,11 @@ fn tap_queue_worker(job: Value) -> Result<Value, String> {
     let api_token = match host::variables_get("api_token", "") {
         Ok(v) if !v.is_empty() => v,
         _ => {
-            host::log("warn", PLUGIN, "no api_token configured; dropping the purge");
+            host::log(
+                "warn",
+                PLUGIN,
+                "no api_token configured; dropping the purge",
+            );
             return Ok(json!({ "status": "dropped", "reason": "no api_token configured" }));
         }
     };

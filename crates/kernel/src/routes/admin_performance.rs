@@ -229,11 +229,14 @@ async fn handle_post(
         Err(ProcessError::Csrf) => {
             return render_error("Invalid or expired form token. Please try again.");
         }
-        Err(ProcessError::Invalid(errors)) => match errors.into_iter().find(|e| e.field.is_some())
-        {
-            Some(error) => serde_json::json!({ "kind": "error", "message": error.message }),
-            None => return render_error("The form has expired. Reload the page and try again."),
-        },
+        Err(ProcessError::Invalid(errors)) => {
+            match errors.into_iter().find(|e| e.field.is_some()) {
+                Some(error) => serde_json::json!({ "kind": "error", "message": error.message }),
+                None => {
+                    return render_error("The form has expired. Reload the page and try again.");
+                }
+            }
+        }
     };
     let _ = session.insert(FLASH_KEY, flash).await;
     Redirect::to(PATH).into_response()
@@ -282,9 +285,7 @@ fn purge_flash_message(outcome: DrainOutcome) -> String {
         DrainOutcome::Dispatched { tags, all: false } => {
             format!("Purge sent: {}.", tags.join(", "))
         }
-        DrainOutcome::NoPlugin => {
-            "No CDN purge plugin is enabled; nothing was sent.".to_string()
-        }
+        DrainOutcome::NoPlugin => "No CDN purge plugin is enabled; nothing was sent.".to_string(),
         DrainOutcome::Nothing => "Nothing to purge.".to_string(),
     }
 }

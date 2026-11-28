@@ -8,9 +8,9 @@
 //! ([`crate::edge_cache::tags::record_items`]) on the request's own task
 //! records itself, then decides the headers on the finished response.
 //!
-//! See `docs/deployment/cdn.md` for the full policy; [`decide`] is where it
-//! is pinned, as a pure function the real middleware below is a thin wrapper
-//! around (`crate::middleware::security_headers` is this shape too).
+//! See `docs/deployment/cdn.md` for the full policy; `decide` (below) is
+//! where it is pinned, as a pure function the real middleware is a thin
+//! wrapper around (`crate::middleware::security_headers` is this shape too).
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
@@ -43,7 +43,7 @@ pub struct EdgeCacheConfig {
     /// `EDGE_CACHE_MAX_AGE`, seconds for browsers (default 0).
     pub max_age: u64,
     /// `EDGE_CACHE_S_MAXAGE`, seconds for shared caches (default 0, which
-    /// keeps the public half off: see [`decide`]).
+    /// keeps the public half off: see `decide`, below).
     pub s_maxage: u64,
     /// `EDGE_CACHE_TAG_HEADER` (default [`DEFAULT_TAG_HEADER`]).
     pub tag_header: String,
@@ -83,9 +83,7 @@ impl EdgeCacheConfig {
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| DEFAULT_TAG_HEADER.to_string());
         if !is_valid_header_token(&tag_header) {
-            anyhow::bail!(
-                "EDGE_CACHE_TAG_HEADER ({tag_header:?}) is not a valid HTTP header name"
-            );
+            anyhow::bail!("EDGE_CACHE_TAG_HEADER ({tag_header:?}) is not a valid HTTP header name");
         }
 
         Ok(Self {
@@ -206,7 +204,11 @@ fn request_has_cookie(headers: &HeaderMap, name: &str) -> bool {
 fn merge_vary_cookie(headers: &mut HeaderMap) {
     const COOKIE: &str = "Cookie";
     let merged = match headers.get(header::VARY).and_then(|v| v.to_str().ok()) {
-        Some(existing) if existing.split(',').any(|v| v.trim().eq_ignore_ascii_case(COOKIE)) => {
+        Some(existing)
+            if existing
+                .split(',')
+                .any(|v| v.trim().eq_ignore_ascii_case(COOKIE)) =>
+        {
             return;
         }
         Some(existing) => format!("{existing}, {COOKIE}"),
@@ -244,8 +246,7 @@ pub async fn set_cache_headers(
     let has_authorization = request.headers().contains_key(header::AUTHORIZATION);
 
     let collected: Arc<Mutex<BTreeSet<String>>> = Arc::new(Mutex::new(BTreeSet::new()));
-    let mut response =
-        crate::edge_cache::tags::scope(collected.clone(), next.run(request)).await;
+    let mut response = crate::edge_cache::tags::scope(collected.clone(), next.run(request)).await;
 
     let settings = &state.runtime().edge_cache;
     let handler_set_cache_control = response.headers().contains_key(header::CACHE_CONTROL);
@@ -286,8 +287,10 @@ pub async fn set_cache_headers(
             );
         }
         Decision::Public => {
-            let cache_control =
-                format!("public, max-age={}, s-maxage={}", settings.max_age, settings.s_maxage);
+            let cache_control = format!(
+                "public, max-age={}, s-maxage={}",
+                settings.max_age, settings.s_maxage
+            );
             if let Ok(value) = HeaderValue::from_str(&cache_control) {
                 response.headers_mut().insert(header::CACHE_CONTROL, value);
             }
@@ -443,7 +446,9 @@ mod tests {
     #[test]
     fn an_unparseable_max_age_refuses_to_start() {
         let settings: std::collections::HashMap<&str, &str> =
-            [("EDGE_CACHE_MAX_AGE", "not-a-number")].into_iter().collect();
+            [("EDGE_CACHE_MAX_AGE", "not-a-number")]
+                .into_iter()
+                .collect();
         let err =
             EdgeCacheConfig::from_lookup(&|name| settings.get(name).map(|v| (*v).to_string()))
                 .expect_err("not a number must refuse to start");
@@ -453,7 +458,9 @@ mod tests {
     #[test]
     fn an_invalid_tag_header_name_refuses_to_start() {
         let settings: std::collections::HashMap<&str, &str> =
-            [("EDGE_CACHE_TAG_HEADER", "Not A Header")].into_iter().collect();
+            [("EDGE_CACHE_TAG_HEADER", "Not A Header")]
+                .into_iter()
+                .collect();
         let err =
             EdgeCacheConfig::from_lookup(&|name| settings.get(name).map(|v| (*v).to_string()))
                 .expect_err("an invalid header name must refuse to start");
@@ -512,7 +519,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         merge_vary_cookie(&mut headers);
-        assert_eq!(headers.get(header::VARY).unwrap(), "Accept-Encoding, Cookie");
+        assert_eq!(
+            headers.get(header::VARY).unwrap(),
+            "Accept-Encoding, Cookie"
+        );
 
         // Already present: unchanged, not duplicated.
         let mut headers = HeaderMap::new();

@@ -487,10 +487,14 @@ pub async fn negotiate_language(
     );
 
     request.extensions_mut().insert(ResolvedLanguage(language));
-    request.extensions_mut().insert(ResolvedLanguageSource(source));
+    request
+        .extensions_mut()
+        .insert(ResolvedLanguageSource(source));
 
     let mut response = next.run(request).await;
-    response.extensions_mut().insert(ResolvedLanguageSource(source));
+    response
+        .extensions_mut()
+        .insert(ResolvedLanguageSource(source));
     response
 }
 

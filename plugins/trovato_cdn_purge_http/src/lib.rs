@@ -37,12 +37,18 @@ fn tap_queue_worker(job: Value) -> Result<Value, String> {
     let url = match host::variables_get("url", "") {
         Ok(url) if !url.is_empty() => url,
         _ => {
-            host::log("warn", PLUGIN, "no purge URL configured; dropping the purge");
+            host::log(
+                "warn",
+                PLUGIN,
+                "no purge URL configured; dropping the purge",
+            );
             return Ok(json!({ "status": "dropped", "reason": "no url configured" }));
         }
     };
 
-    let secret = host::variables_get("secret", "").ok().filter(|s| !s.is_empty());
+    let secret = host::variables_get("secret", "")
+        .ok()
+        .filter(|s| !s.is_empty());
     let request = build_request(&url, secret.as_deref(), &job);
 
     interpret_response(&url, host::http_request(&request))
@@ -77,7 +83,11 @@ fn interpret_response(url: &str, result: Result<HttpResponse, i32>) -> Result<Va
             Err(format!("purge endpoint answered HTTP {}", response.status))
         }
         Err(code) => {
-            host::log("error", PLUGIN, &format!("purge POST to {url} failed: {code}"));
+            host::log(
+                "error",
+                PLUGIN,
+                &format!("purge POST to {url} failed: {code}"),
+            );
             Err(format!("purge request failed with code {code}"))
         }
     }
@@ -108,7 +118,7 @@ mod tests {
             request.headers.get("Content-Type").map(String::as_str),
             Some("application/json")
         );
-        assert!(request.headers.get("Authorization").is_none());
+        assert!(!request.headers.contains_key("Authorization"));
         let body: Value = serde_json::from_str(request.body.as_deref().unwrap()).unwrap();
         assert_eq!(body, job);
     }

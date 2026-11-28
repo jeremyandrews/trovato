@@ -30,8 +30,8 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use axum::response::Response;
 use common::{TestApp, run_test, username};
-use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::models::CreateItem;
+use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::tap::UserContext;
 use uuid::Uuid;
 
@@ -199,18 +199,21 @@ fn assert_public(response: &Response, tag_header: &str) -> Vec<String> {
     );
     let vary = header_str(response, header::VARY.as_str()).unwrap_or_default();
     assert!(
-        vary.split(',').any(|v| v.trim().eq_ignore_ascii_case("cookie")),
+        vary.split(',')
+            .any(|v| v.trim().eq_ignore_ascii_case("cookie")),
         "Vary must include Cookie, got {vary:?}"
     );
     assert!(
         response.headers().get(header::SET_COOKIE).is_none(),
         "a public response never sets a cookie"
     );
-    let tags = header_str(response, tag_header).unwrap_or_else(|| {
-        panic!("a public response must carry the {tag_header} tag header")
-    });
+    let tags = header_str(response, tag_header)
+        .unwrap_or_else(|| panic!("a public response must carry the {tag_header} tag header"));
     let tags: Vec<String> = tags.split(',').map(|t| t.trim().to_string()).collect();
-    assert!(tags.contains(&"site".to_string()), "every public page carries site: {tags:?}");
+    assert!(
+        tags.contains(&"site".to_string()),
+        "every public page carries site: {tags:?}"
+    );
     tags
 }
 
@@ -239,7 +242,10 @@ fn assert_never_public(response: &Response, context: &str) {
         "{context} must never be public"
     );
     if let Some(cc) = &cache_control {
-        assert!(!cc.contains("public"), "{context} must never carry public: {cc}");
+        assert!(
+            !cc.contains("public"),
+            "{context} must never carry public: {cc}"
+        );
     }
     assert!(
         header_str(response, "surrogate-key").is_none(),
@@ -345,7 +351,10 @@ fn a_gather_listing_carries_the_items_tag() {
             panic!("expected 200, got {status}: {body}");
         }
         let tags = assert_public(&response, "surrogate-key");
-        assert!(tags.contains(&"items".to_string()), "a gather run: {tags:?}");
+        assert!(
+            tags.contains(&"items".to_string()),
+            "a gather run: {tags:?}"
+        );
         // The listed item's own id is not required on a listing page (only
         // the pages that load a single item record it), but the listing
         // must not accidentally miss `items` because something else ran
@@ -363,7 +372,11 @@ fn a_signed_in_session_cookie_is_always_private_no_store() {
         let id = create_published_item(&app, "B303 signed in item", 0).await;
         let name = username("b303signedin");
         let cookies = app
-            .create_and_login_admin(&name, "correct-horse-battery-staple-1", &format!("{name}@test.local"))
+            .create_and_login_admin(
+                &name,
+                "correct-horse-battery-staple-1",
+                &format!("{name}@test.local"),
+            )
             .await;
 
         let response = get_with_cookies(&app, &prefixed_item_path(id), &cookies).await;
@@ -448,7 +461,11 @@ fn with_settings_unset_the_anonymous_page_carries_no_public_and_the_signed_in_on
 
         let name = username("b303unset");
         let cookies = app
-            .create_and_login_admin(&name, "correct-horse-battery-staple-2", &format!("{name}@test.local"))
+            .create_and_login_admin(
+                &name,
+                "correct-horse-battery-staple-2",
+                &format!("{name}@test.local"),
+            )
             .await;
         let response = get_with_cookies(&app, &prefixed_item_path(id), &cookies).await;
         assert_private_no_store(&response, "signed in, EDGE_CACHE_S_MAXAGE unset");
@@ -567,9 +584,10 @@ async fn recording_server() -> (String, std::sync::Arc<Mutex<Vec<String>>>) {
 /// see `plugins_dir`'s docs, and a fresh test database starts with no
 /// `plugin_status` rows either way).
 fn load_purge_http_dispatcher() -> std::sync::Arc<trovato_kernel::tap::TapDispatcher> {
-    let mut runtime =
-        trovato_kernel::plugin::PluginRuntime::new(&trovato_kernel::plugin::PluginConfig::default())
-            .expect("create runtime");
+    let mut runtime = trovato_kernel::plugin::PluginRuntime::new(
+        &trovato_kernel::plugin::PluginConfig::default(),
+    )
+    .expect("create runtime");
     runtime
         .load_plugin(&plugins_dir().join("trovato_cdn_purge_http"))
         .expect("load trovato_cdn_purge_http (build its wasm first)");
@@ -603,14 +621,20 @@ fn trovato_cdn_purge_http_delivers_item_tile_and_everything_purges() {
         let id = create_published_item(&app, "B303 purge-on-save item", 0).await;
         let outcome = trovato_kernel::edge_cache::drain_now_with(&dispatcher, &app.db).await;
         assert!(
-            matches!(outcome, trovato_kernel::edge_cache::DrainOutcome::Dispatched { .. }),
+            matches!(
+                outcome,
+                trovato_kernel::edge_cache::DrainOutcome::Dispatched { .. }
+            ),
             "expected a dispatch, got {outcome:?}"
         );
         let stats = cron
             .drain_plugin_queues()
             .await
             .expect("drain the plugin queue");
-        assert!(stats.succeeded >= 1, "the purge job should have succeeded: {stats:?}");
+        assert!(
+            stats.succeeded >= 1,
+            "the purge job should have succeeded: {stats:?}"
+        );
 
         {
             let bodies = bodies.lock().unwrap_or_else(|e| e.into_inner());
@@ -671,7 +695,11 @@ fn trovato_cdn_purge_http_delivers_item_tile_and_everything_purges() {
             .expect("drain the plugin queue");
         {
             let bodies = bodies.lock().unwrap_or_else(|e| e.into_inner());
-            assert_eq!(bodies.len(), 1, "exactly one purge POST for the tile update");
+            assert_eq!(
+                bodies.len(),
+                1,
+                "exactly one purge POST for the tile update"
+            );
             let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
             let tags: Vec<String> = sent["tags"]
                 .as_array()
@@ -690,7 +718,11 @@ fn trovato_cdn_purge_http_delivers_item_tile_and_everything_purges() {
             .await
             .expect("drain the plugin queue");
         let bodies = bodies.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(bodies.len(), 1, "exactly one purge POST for purge-everything");
+        assert_eq!(
+            bodies.len(),
+            1,
+            "exactly one purge POST for purge-everything"
+        );
         let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
         assert_eq!(sent["all"], true);
     });
@@ -704,21 +736,25 @@ fn plugin_http_to_an_unallowed_loopback_address_is_still_refused() {
         let (mock_url, bodies) = recording_server().await;
         // Deliberately not calling `allow_loopback_http_for_tests`.
 
-        let mut runtime =
-            trovato_kernel::plugin::PluginRuntime::new(&trovato_kernel::plugin::PluginConfig::default())
-                .expect("create runtime");
+        let mut runtime = trovato_kernel::plugin::PluginRuntime::new(
+            &trovato_kernel::plugin::PluginConfig::default(),
+        )
+        .expect("create runtime");
         runtime
             .load_plugin(&plugins_dir().join("trovato_cdn_purge_http"))
             .expect("load trovato_cdn_purge_http (build its wasm first)");
         let runtime = std::sync::Arc::new(runtime);
-        let registry = std::sync::Arc::new(trovato_kernel::tap::TapRegistry::from_plugins(&runtime));
+        let registry =
+            std::sync::Arc::new(trovato_kernel::tap::TapRegistry::from_plugins(&runtime));
         let dispatcher = trovato_kernel::tap::TapDispatcher::new(runtime, registry);
 
         trovato_test_utils::env::load_dotenv();
         let pool = sqlx::PgPool::connect(&trovato_test_utils::env::database_url())
             .await
             .expect("connect");
-        trovato_kernel::db::run_migrations(&pool).await.expect("migrate");
+        trovato_kernel::db::run_migrations(&pool)
+            .await
+            .expect("migrate");
         trovato_kernel::models::SiteConfig::set(
             &pool,
             "plugin.trovato_cdn_purge_http.url",
@@ -754,4 +790,3 @@ fn plugin_http_to_an_unallowed_loopback_address_is_still_refused() {
         );
     });
 }
-
