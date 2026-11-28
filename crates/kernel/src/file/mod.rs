@@ -13,5 +13,5 @@ pub use service::{
 };
 pub use storage::{
     FileStorage, LocalFileStorage, S3Config, S3FileStorage, StorageConfig, StorageNotFound,
-    build_storage, check_writable, is_not_found,
+    StoreUnreachable, build_storage, check_writable, is_not_found, is_unreachable,
 };

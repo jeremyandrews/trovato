@@ -10,7 +10,10 @@
 //! the site's file store, not the medium: item bodies, file fields and
 //! `file_managed` rows keep the same URI when a site moves its files from a
 //! directory to a bucket (`trovato files migrate-to-s3`), so nothing in the
-//! database is rewritten and the move can be repeated or undone.
+//! database is rewritten. The move can be repeated while writes are stopped,
+//! and undone only before the first upload or delete on the bucket: after that
+//! the directory still holds files deleted since, which would be served with no
+//! row (docs/cli-reference.md, `trovato files migrate-to-s3`).
 //!
 //! Neither backend hands out a URL into the store. Every file is served by
 //! Trovato's own `/files/` route, which checks access first
@@ -51,6 +54,33 @@ pub fn is_not_found(e: &anyhow::Error) -> bool {
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
     })
+}
+
+/// The startup check's error when the store could not be reached at all (a
+/// connection, timeout or server error), as opposed to a definite answer
+/// (no such bucket, access denied, other bytes read back).
+///
+/// A server refuses to start on a definite answer: that is a setting or
+/// permission to fix, and the deploy should fail. On an unreachable store it
+/// logs the error and starts, because the store being down is an outage that
+/// heals itself, and a pod restarted during it would otherwise crash loop
+/// until it ends (and, once every pod had turned over, take reads of the app
+/// down with it).
+#[derive(Debug)]
+pub struct StoreUnreachable(pub String);
+
+impl std::fmt::Display for StoreUnreachable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StoreUnreachable {}
+
+/// Whether `e` is [`StoreUnreachable`].
+pub fn is_unreachable(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|cause| cause.downcast_ref::<StoreUnreachable>().is_some())
 }
 
 /// File storage backend trait.
@@ -323,25 +353,40 @@ impl FileStorage for S3FileStorage {
 
     async fn check_usable(&self) -> Result<()> {
         let uri = format!("local://.trovato-write-check-{}", uuid::Uuid::now_v7());
-        let fail = |step: &str, e: &dyn std::fmt::Display| {
-            anyhow::anyhow!(
-                "the file store {} is not usable: could not {step} a test file ({e}). \
+        let fail = |step: &str, e: &anyhow::Error| {
+            let message = format!(
+                "the file store {} is not usable: could not {step} a test file ({e:#}). \
                  Check S3_BUCKET, S3_REGION and S3_ENDPOINT, and that this server's \
                  role may put, get and delete objects there.",
                 self.describe()
-            )
+            );
+            // A transport failure or server error is the store being down;
+            // anything else (not found, denied) is a definite answer.
+            let transient = e.chain().any(|cause| {
+                matches!(
+                    cause.downcast_ref::<object_store::Error>(),
+                    Some(object_store::Error::Generic { .. })
+                )
+            });
+            if transient {
+                anyhow::Error::new(StoreUnreachable(message))
+            } else {
+                anyhow::anyhow!(message)
+            }
         };
         self.write(&uri, uri.as_bytes())
             .await
-            .map_err(|e| fail("write", &format!("{e:#}")))?;
+            .map_err(|e| fail("write", &e))?;
         let read = self.read(&uri).await;
         let removed = self.delete(&uri).await;
         match read {
             Ok(bytes) if bytes == uri.as_bytes() => {}
-            Ok(_) => return Err(fail("read back", &"its contents differed")),
-            Err(e) => return Err(fail("read back", &format!("{e:#}"))),
+            Ok(_) => {
+                return Err(fail("read back", &anyhow::anyhow!("its contents differed")));
+            }
+            Err(e) => return Err(fail("read back", &e)),
         }
-        removed.map_err(|e| fail("delete", &format!("{e:#}")))?;
+        removed.map_err(|e| fail("delete", &e))?;
         Ok(())
     }
 

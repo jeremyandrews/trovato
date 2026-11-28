@@ -368,6 +368,11 @@ fn image_derivatives_are_stored_in_the_bucket_and_still_access_checked() {
             .await
             .unwrap();
         let again = get(&f.app, &url, None).await;
+        assert_eq!(
+            header_of(&again, "x-content-type-options".parse().unwrap()),
+            "nosniff",
+            "a derivative read back from the bucket carries nosniff"
+        );
         let again = to_bytes(again.into_body(), usize::MAX).await.unwrap();
         assert_eq!(
             again.to_vec(),

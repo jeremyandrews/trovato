@@ -290,9 +290,12 @@ every command. The design is in
   still stopped). A file the bucket holds with other bytes is copied again.
   Every check downloads the object to compare, so a rerun over a large bucket
   takes as long as reading it back.
-- **Nothing deleted.** Neither side loses a file. Keep the directory until the
-  servers have run on the bucket for a while: it is the way back
-  (`FILE_STORAGE=local`).
+- **Nothing deleted.** Neither side loses a file. Switching back to
+  `FILE_STORAGE=local` is safe only before any file is uploaded or deleted on
+  the bucket. After that the directory still holds files deleted since, which
+  would be served to anyone as unmanaged files, and lacks the new uploads: past
+  that point the way back is a copy from the bucket, not the old directory, so
+  move the directory out of `UPLOADS_DIR`.
 - **Skipped:** symbolic links (one could name a file outside the directory)
   and Trovato's own write-check and temporary files.
 - **Output:** after its log lines, one summary line, `<total> files under <dir>: <n> copied, <n> already in

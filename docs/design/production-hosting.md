@@ -223,7 +223,9 @@ directory, so single server and self hosted installs work exactly as before.
 - **URIs do not change.** Every backend stores a file under the URI it always
   had, `local://<key>`: the scheme names the site's file store, not the medium.
   No `file_managed` row, file field or item body is rewritten when a site moves
-  to a bucket, and the move can be repeated or undone.
+  to a bucket. The move can be repeated while writes are stopped, and undone
+  only before the first upload or delete on the bucket (after that the
+  directory holds files deleted since, which would be served with no row).
 - **Served through Trovato, never from the bucket.** `public_url` stays
   `FILES_URL/<key>`. Every request reaches `/files/`, which checks access first
   and sends the `public, max-age=604800` header only for what an anonymous
@@ -268,7 +270,8 @@ directory, so single server and self hosted installs work exactly as before.
   row, and so public). Symbolic links are not
   followed (one could name a file outside the directory), and Trovato's own
   sentinel and temporary files are skipped. Nothing is deleted on either side:
-  the directory stays as the way back. Exits nonzero, listing each file, if
+  the directory is the way back only until the first upload or delete on the
+  bucket. Exits nonzero, listing each file, if
   any was not copied.
 - **Credentials are never Trovato settings.** The client reads the standard AWS
   sources: EKS Pod Identity (`AWS_CONTAINER_CREDENTIALS_FULL_URI`), IRSA web
@@ -279,10 +282,13 @@ directory, so single server and self hosted installs work exactly as before.
 - **Failures are reported quickly:** 5 seconds to connect, 30 to finish, and a
   failed request retried at most three times while less than ten seconds have
   passed (so a hung request is one 30 second attempt). A request is waiting; a
-  store down for longer is better reported than hidden. A server that cannot
-  reach the store at startup exits and Kubernetes restarts it with backoff, so
-  it heals by itself when the store returns: a morning item, and a page only
-  through the writes-failing rule if every pod is down.
+  store down for longer is better reported than hidden. At startup a definite
+  answer (no such bucket, access denied, other bytes read back) stops the
+  server, which fails a deploy with a bad setting; a store that cannot be
+  reached at all, or does not answer within 20 seconds, is logged and the
+  server starts anyway (`StoreUnreachable`), so a pod restarted during an S3
+  outage serves reads and other writes instead of crash looping. Uploads fail
+  until the store returns, which is rule 1's business if it lasts.
 - **Style names are machine names.** The image style route accepts only
   `[A-Za-z0-9_-]` for the style and holds the original's path to the `/files/`
   route's own rules. A style of `w400%2F2026%2F11` (axum decodes `%2F`) or an
@@ -332,10 +338,13 @@ store.
   restart picks up, with no volume mounts to reason about.
 - **Least privilege per service (EKS Pod Identity).** `trovato-web`:
   `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on
-  `arn:aws:s3:::<files-bucket>/<S3_PREFIX>/*`, `s3:ListBucket` on the bucket
-  with the condition `s3:prefix` like `<S3_PREFIX>/*` (without it S3 answers a
-  missing key with 403 rather than 404, which Trovato would report as a store
-  failure), `kms:GenerateDataKey` and `kms:Decrypt` on the bucket's key only,
+  `arn:aws:s3:::<files-bucket>/<S3_PREFIX>/*`, and `s3:ListBucket` on the
+  bucket with no condition (trovato.blog has one bucket per install, so it
+  lists only its own keys; without `ListBucket` S3 answers a missing key with
+  403 rather than 404, which Trovato reports as a store failure, and a
+  `s3:prefix` condition probably does not help because a GET carries no
+  prefix: part 2 proves against a real bucket that a missing key answers 404
+  under the role), `kms:GenerateDataKey` and `kms:Decrypt` on the bucket's key only,
   and `secretsmanager:GetSecretValue` on its own secrets; no `s3:*`, no bucket
   policy or ACL action. `trovato files migrate-to-s3` runs as a one-off Job
   under the same role. Two sites sharing a bucket get one role each, scoped to
@@ -482,9 +491,12 @@ store.
    than N minutes" rule, with N = 10.
 2. Data loss risk: RDS instance not available for 10 minutes (a failover that
    did not heal), database free storage under 5% with autoscaling at its
-   maximum. (Uploads failing count toward rule 1: they are writes.)
+   maximum. (Uploads failing count toward rule 1: they are writes.) Held
+   back while rule 1 is firing, so one outage is one page.
 3. Backups failing: no new AWS Backup recovery point in 48 hours (two missed
-   days, not one late job), or point in time recovery disabled.
+   days, not one late job), or point in time recovery disabled. Paged in
+   daytime only (normal priority, which keeps quiet hours): point in time
+   recovery covers the night.
 4. Certificate or DNS: trovato.blog not resolving, or the origin's TLS
    handshake failing, from the external checker for 10 minutes. A failure
    seen through Cloudflare only (its DNS or edge certificate) is a morning

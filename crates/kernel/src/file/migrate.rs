@@ -11,7 +11,9 @@
 //! store already holds with the same SHA-256 is counted as already there and
 //! not written again, so a run that was interrupted, or that failed on some
 //! files, is finished by running it again. Nothing is ever deleted, from
-//! either side; the local directory stays as it was, as the way back.
+//! either side. The local directory stays as it was: the way back only until
+//! the first upload or delete on the bucket, after which it holds files deleted
+//! since, with no row, which `/files/` would serve to anyone.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

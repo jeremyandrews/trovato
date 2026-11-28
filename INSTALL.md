@@ -74,7 +74,7 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `S3_BUCKET` | none | The bucket, required with `FILE_STORAGE=s3`. The server checks at startup that it can write, read and delete an object there. |
 | `S3_REGION` | `AWS_REGION` or `AWS_DEFAULT_REGION`, else `us-east-1` | The bucket's region. |
 | `S3_ENDPOINT` | AWS | A non-AWS S3 compatible store, for example `http://127.0.0.1:9000` for MinIO. The standard `AWS_ENDPOINT_URL_S3`, if set, overrides it; `AWS_ENDPOINT` is used when neither is set. |
-| `S3_PREFIX` | none | A key prefix, for a bucket shared with other data or other sites. |
+| `S3_PREFIX` | none | A key prefix, for a bucket shared with other sites. Everything under it (or in the whole bucket, without one) is served as this site's files, and an object with no record is served to anyone, so store nothing else there: give each site sharing a bucket its own prefix, never one inside another's (`a` and `a/b`). |
 | `S3_ALLOW_HTTP` | `false` | Allow a plain `http://` endpoint (a local MinIO only). |
 | `TEMPLATES_DIR` | `./templates` | Tera template search path. Several directories may be given, separated by `:`; later ones override templates of the same name. |
 | `THEMES_DIR` | `./themes` | Where themes are found, one directory per theme holding `theme.toml` (`name`, `description`, optional `screenshot`), `templates/` laid over the stock templates, and `static/` served at `/static/themes/<name>/`. Several directories may be given, separated by `:`; a later one's theme replaces an earlier one of the same name. Chosen at `/admin/appearance`. |

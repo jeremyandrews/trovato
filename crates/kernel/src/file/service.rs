@@ -875,7 +875,7 @@ impl FileService {
         .await
         .context("failed to fetch temp files")?;
 
-        let count = files.len() as u64;
+        let mut count = 0u64;
 
         for file in files {
             // Keep the row (and the access check) when the bytes could not be
@@ -892,6 +892,8 @@ impl FileService {
                 .await
             {
                 warn!(error = %e, id = %file.id, "failed to delete temp file record");
+            } else {
+                count += 1;
             }
         }
 

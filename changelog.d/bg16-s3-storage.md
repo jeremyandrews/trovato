@@ -8,7 +8,7 @@ or item body is rewritten, and `trovato files migrate-to-s3` copies an existing
 directory into a bucket, reading every copy back to check its SHA-256 and
 skipping what is already there, so an interrupted run is finished by running it
 again. Files are still served only through `/files/` after the access check;
-the bucket is never read by anyone but the servers. Image style derivatives are
+the bucket is never public and never read by readers. Image style derivatives are
 read and written through the file store too, so one server makes a derivative
 and every server serves it. Each server checks at startup that it can write,
 read back and delete an object in the bucket, and the status report does the

@@ -172,3 +172,28 @@ async fn migrate_to_s3_copies_a_directory_and_reports_a_file_it_could_not() {
     assert!(out.contains("0 copied, 2 already in"), "{out}");
     assert!(out.contains("1 failed"), "{out}");
 }
+
+/// A store that cannot be reached at all is an outage, not a setting: `serve`
+/// says so and goes on starting (here it then stops at the database, which
+/// nothing serves), so a pod restarted during an S3 outage does not crash loop.
+#[tokio::test]
+async fn serve_starts_anyway_when_the_store_cannot_be_reached() {
+    let work = TempDir::new("serve-unreachable");
+    // Nothing listens on port 1.
+    let env = [
+        ("FILE_STORAGE", "s3"),
+        ("S3_BUCKET", "unreachable"),
+        ("S3_REGION", "us-east-1"),
+        ("S3_ENDPOINT", "http://127.0.0.1:1"),
+        ("S3_ALLOW_HTTP", "true"),
+        ("AWS_ACCESS_KEY_ID", "unused"),
+        ("AWS_SECRET_ACCESS_KEY", "unused-secret"),
+    ];
+    let (code, out) = run(&work.0, &env, &["serve"]).await;
+    assert_ne!(code, Some(0), "the database is not there: {out}");
+    assert!(out.contains("starting anyway"), "{out}");
+    assert!(
+        !out.contains("unused-secret"),
+        "the secret must never be printed"
+    );
+}

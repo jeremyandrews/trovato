@@ -427,9 +427,9 @@ async fn migration_to_s3_resumes_and_reports() {
     migration_resumes_and_reports(s3_storage(&config)).await;
 }
 
-/// The constructor reads no credential from Trovato's own settings: a store
-/// built with no AWS credentials anywhere still builds (the client asks the
-/// standard sources when a request is made).
+/// The constructor takes no credential from Trovato's own settings: a store
+/// builds from the `S3_*` settings alone (the client asks the standard AWS
+/// sources when a request is made).
 #[test]
 fn s3_storage_builds_from_settings_alone() {
     let storage = S3FileStorage::new(
