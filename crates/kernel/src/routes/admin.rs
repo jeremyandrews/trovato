@@ -248,9 +248,10 @@ async fn list_files(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "access files").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "access files").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let status_filter = params.get("status").and_then(|s| match s.as_str() {
         "0" => Some(FileStatus::Temporary),
@@ -290,12 +291,41 @@ async fn list_files(
         }
     }
 
+    let list = query.view(total, files.len(), Some(&sort));
+    let forms = match super::admin_list::render_forms(
+        &state,
+        &session,
+        &user,
+        &list,
+        "/admin/content/files",
+        "Filter files",
+        "File name contains",
+        vec![(
+            "status",
+            FormElement::select(vec![
+                ("0".to_string(), "Temporary".to_string()),
+                ("1".to_string(), "Permanent".to_string()),
+            ])
+            .title("Status")
+            .placeholder("- Any -")
+            .default_value(
+                status_filter
+                    .map(|s| (s as i16).to_string())
+                    .unwrap_or_default(),
+            ),
+        )],
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
+
     let mut context = tera::Context::new();
+    forms.insert_into(&mut context);
     context.insert("files", &files);
-    context.insert("list", &query.view(total, files.len(), Some(&sort)));
+    context.insert("list", &list);
     context.insert("owners", &owners);
-    context.insert("status_filter", &status_filter.map(|s| s as i16));
-    context.insert("status_options", &[("0", "Temporary"), ("1", "Permanent")]);
     context.insert("path", "/admin/content/files");
 
     render_admin_template(
@@ -582,9 +612,10 @@ async fn media_library(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "access files").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "access files").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let type_filter = params.get("type").map(String::as_str);
     // "All files" is the type select's default, not a filter: left in the
@@ -640,19 +671,42 @@ async fn media_library(
         .map(|f| (f.id.to_string(), storage.public_url(&f.uri)))
         .collect();
 
+    let list = query.view(total, files.len(), None);
+    // "All files" is the type select's empty choice; an older address's
+    // `type=all` still reads as no type.
+    let type_value = type_filter
+        .filter(|t| matches!(*t, "image" | "document"))
+        .unwrap_or_default();
+    let forms = match super::admin_list::render_forms(
+        &state,
+        &session,
+        &user,
+        &list,
+        "/admin/media",
+        "Filter media",
+        "File name contains",
+        vec![(
+            "type",
+            FormElement::select(vec![
+                ("image".to_string(), "Images".to_string()),
+                ("document".to_string(), "Documents".to_string()),
+            ])
+            .title("Type")
+            .placeholder("All files")
+            .default_value(type_value),
+        )],
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
+
     let mut context = tera::Context::new();
+    forms.insert_into(&mut context);
     context.insert("files", &files);
     context.insert("file_urls", &file_urls);
-    context.insert("list", &query.view(total, files.len(), None));
-    context.insert("type_filter", &type_filter.unwrap_or("all"));
-    context.insert(
-        "type_options",
-        &[
-            ("all", "All files"),
-            ("image", "Images"),
-            ("document", "Documents"),
-        ],
-    );
+    context.insert("list", &list);
     context.insert("path", "/admin/media");
 
     render_admin_template(
@@ -878,16 +932,13 @@ impl<'a> CommentRow<'a> {
     }
 }
 
-/// The status options both comment screens render, as `{value, label}` pairs.
-fn comment_status_options() -> Vec<serde_json::Value> {
+/// The comment listing's status filter choices, as value and English label.
+/// They come from `CommentStatus`, so the filter cannot drift from the
+/// statuses the model stores.
+fn comment_status_options() -> Vec<(String, String)> {
     COMMENT_STATUS_FILTERS
         .iter()
-        .map(|s| {
-            serde_json::json!({
-                "value": s.as_i16().to_string(),
-                "label": s.label(),
-            })
-        })
+        .map(|s| (s.as_i16().to_string(), s.label().to_string()))
         .collect()
 }
 
@@ -1020,18 +1071,37 @@ async fn render_comments(
         Err(response) => return response,
     };
 
+    let list = query.view(total, rows.len(), Some(&sort));
+    let forms = match super::admin_list::render_forms(
+        state,
+        session,
+        user,
+        &list,
+        "/admin/content/comments",
+        "Filter comments",
+        "Comment or author contains",
+        vec![(
+            "status",
+            FormElement::select(comment_status_options())
+                .title("Status")
+                .placeholder("- Any -")
+                .default_value(status_filter.map(|s| s.to_string()).unwrap_or_default()),
+        )],
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
+
     let mut context = tera::Context::new();
+    forms.insert_into(&mut context);
     context.insert("comments", &rows);
-    context.insert("status_options", &comment_status_options());
     context.insert("actions_form", &actions_form);
     context.insert("settings_form", &settings_form);
     context.insert("authors", &authors);
     context.insert("items", &items);
-    context.insert("list", &query.view(total, rows.len(), Some(&sort)));
-    context.insert(
-        "status_filter",
-        &status_filter.map(|s| s.to_string()).unwrap_or_default(),
-    );
+    context.insert("list", &list);
     context.insert("path", "/admin/content/comments");
 
     render_admin_template(

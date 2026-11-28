@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {#- The media library, a grid. `list` is its filter and page
@@ -9,10 +8,7 @@
 
 {% block content %}
 <div class="admin-card">
-    {{ list::filter_start(action="/admin/media", label=t(s="Filter media")) }}
-        {{ form::field(name="q", type="search", label=t(s="File name contains"), value=list.q, width="20", wrapper="filter-item") }}
-        {{ form::select(name="type", label=t(s="Type"), options=type_options, value=type_filter, translate_options=true, wrapper="filter-item") }}
-    {{ list::filter_end(list=list, action="/admin/media") }}
+    {{ filter_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::admin_list::render_forms); every value is escaped by the form templates #}
 </div>
 
 {% if files | length > 0 %}

@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {% block page_title %}{{ t(s="Moderated content") }}{% endblock page_title %}
@@ -7,14 +6,7 @@
 
 {% block content %}
 <div class="admin-card">
-    <form class="filter-form" method="get" action="/admin/content/moderated">
-        <div class="filter-row">
-            {{ form::select(name="state", label=t(s="Moderation state"), options=state_options, value=state_filter, empty=t(s="- Any not published -"), translate_options=true, wrapper="filter-item") }}
-            <div class="filter-item">
-                <button type="submit" class="button button--secondary">{{ t(s="Filter") }}</button>
-            </div>
-        </div>
-    </form>
+    {{ filter_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::admin_content::list_moderated); every value is escaped by the form templates #}
 </div>
 
 {% if items %}

@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {#- The file listing. `list` is its filter, sort and page
@@ -9,13 +8,9 @@
 
 {% block content %}
 <div class="admin-card">
-    {{ list::filter_start(action="/admin/content/files", label=t(s="Filter files")) }}
-        {{ form::field(name="q", type="search", label=t(s="File name contains"), value=list.q, width="20", wrapper="filter-item") }}
-        {% if status_filter is defined and status_filter is number %}{% set status_value = status_filter %}{% else %}{% set status_value = "" %}{% endif %}
-        {{ form::select(name="status", label=t(s="Status"), options=status_options, value=status_value, empty=t(s="- Any -"), translate_options=true, wrapper="filter-item") }}
-    {{ list::filter_end(list=list, action="/admin/content/files") }}
+    {{ filter_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::admin_list::render_forms); every value is escaped by the form templates #}
 </div>
-{{ list::sort_form(list=list, action="/admin/content/files") }}
+{{ sort_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
 {% if files %}
 <div class="admin-card">

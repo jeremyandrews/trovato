@@ -699,3 +699,63 @@ fn the_audit_log_filters_sorts_and_pages() {
         );
     });
 }
+
+// =============================================================================
+// B83c PR 5: the gather, menu, menu link, tile, category and tag listings'
+// filter and sort forms are GET forms built by the form pipeline.
+// =============================================================================
+
+/// Assert `html` has the GET pipeline form `form_id`, with the pipeline
+/// marker and, changing nothing, no CSRF token or build id.
+fn assert_get_pipeline_form(html: &str, form_id: &str, what: &str) {
+    let form = common::form_in(html, form_id)
+        .unwrap_or_else(|| panic!("{what}: no pipeline form {form_id}: {html}"));
+    assert!(form.contains("data-form-pipeline"), "{what}: {form}");
+    assert!(
+        form.contains(r#"method="get""#),
+        "{what}: a GET form: {form}"
+    );
+    assert!(
+        !form.contains(r#"name="_token""#) && !form.contains(r#"name="_form_build_id""#),
+        "{what}: a GET form carries no token or build id: {form}"
+    );
+}
+
+#[test]
+fn the_structure_listings_filter_through_pipeline_get_forms() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_plugin_enabled("trovato_categories").await;
+        let cookies = admin(app, "lstpipe").await;
+        let t = tag();
+        let category_id = format!("lst_{t}_p");
+        category(app, &category_id, &format!("pipe-{t}")).await;
+        let menu = format!("pipe-{t}");
+        menu_link(app, &menu, &format!("link-{t}"), "/pipe").await;
+
+        // The sorting listings also print the sort form; the others do not sort.
+        for (base, sorts) in [
+            ("/admin/gather".to_string(), true),
+            ("/admin/structure/menus".to_string(), true),
+            (format!("/admin/structure/menus/{menu}"), false),
+            ("/admin/structure/tiles".to_string(), false),
+            ("/admin/structure/categories".to_string(), true),
+            (
+                format!("/admin/structure/categories/{category_id}/tags"),
+                false,
+            ),
+        ] {
+            let html = page(app, &cookies, &format!("{base}?q=kept-{t}")).await;
+            assert_get_pipeline_form(&html, "list-filter", &base);
+            let filter = common::form_in(&html, "list-filter").unwrap();
+            assert!(
+                filter.contains(&format!(r#"value="kept-{t}""#)),
+                "{base}: the filter keeps q: {filter}"
+            );
+            assert!(filter.contains("Clear filter"), "{base}: {filter}");
+            if sorts {
+                assert_get_pipeline_form(&html, "list-sort", &base);
+            }
+        }
+    });
+}

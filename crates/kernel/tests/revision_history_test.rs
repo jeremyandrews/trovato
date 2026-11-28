@@ -459,3 +459,56 @@ fn the_revision_forms_are_pipeline_forms_and_refuse_a_post_without_a_build_id() 
         assert!(revision_exists(app, oldest).await, "the revision stays");
     });
 }
+
+// =============================================================================
+// B83c PR 5: the revision list's compare form is a GET form built by the
+// form pipeline; its rows' radio buttons join it through `form=`.
+// =============================================================================
+
+#[test]
+fn the_compare_form_is_a_pipeline_get_form_the_rows_join() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_type(app).await;
+        let name = common::username("b83crevcmp");
+        let cookies = app
+            .create_and_login_admin(
+                &name,
+                "correct-horse-battery-staple",
+                &format!("{name}@test.local"),
+            )
+            .await;
+        let (id, revisions) = seed_item(app).await;
+
+        let (status, html) = get(app, &cookies, &format!("/item/{id}/revisions")).await;
+        assert_eq!(status, StatusCode::OK);
+        let form = common::form_in(&html, "revision-compare").expect("the compare form");
+        assert!(form.contains("data-form-pipeline"), "{form}");
+        assert!(form.contains(r#"method="get""#), "{form}");
+        assert!(
+            !form.contains(r#"name="_token""#),
+            "a GET form has no token"
+        );
+        let html = html.replace("&#x2F;", "/");
+        assert!(
+            html.contains(&format!(r#"action="/item/{id}/revisions/compare""#)),
+            "the form compares this item's revisions"
+        );
+        assert_eq!(
+            html.matches(r#"form="revision-compare""#).count(),
+            revisions.len() * 2 + 1,
+            "every From and To radio and the Compare button join the form"
+        );
+
+        let (status, _) = get(
+            app,
+            &cookies,
+            &format!(
+                "/item/{id}/revisions/compare?from={}&to={}",
+                revisions[0], revisions[2]
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the form's address compares");
+    });
+}

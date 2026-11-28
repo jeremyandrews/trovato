@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {#- A category's tags, in weight order. `list` is the filter and page
@@ -16,9 +15,7 @@
 {% block content %}
 {% if tags or list.filtered %}
 <div class="admin-card">
-    {{ list::filter_start(action=urls.list, label=t(s="Filter tags")) }}
-        {{ form::field(name="q", type="search", label=t(s="Name or slug contains"), value=list.q, width="20", wrapper="filter-item") }}
-    {{ list::filter_end(list=list, action=urls.list) }}
+    {{ filter_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::admin_list::render_forms); every value is escaped by the form templates #}
 </div>
 {% endif %}
 {% if tags %}

@@ -8,13 +8,14 @@
 {% block local_tasks %}{% if local_tasks is defined %}{{ tabs::tab_bar(local_tasks=local_tasks) }}{% endif %}{% endblock local_tasks %}
 
 {% block content %}
-{# The compare form and the revert form stand alone, before the table: a form
-   nested in another is ended by the browser at the inner one. The radio
-   buttons and the Compare button join the compare form through their form
-   attribute; each row's Revert button joins the revert form
+{# The compare form (routes::item::COMPARE_FORM_ID, a GET form) and the
+   revert form stand alone, before the table: a form nested in another is
+   ended by the browser at the inner one. The radio buttons and the Compare
+   button join the compare form through their form attribute; each row's
+   Revert button joins the revert form
    (routes::item::REVERT_FORM_ID) the same way and posts to its own revision
    with formaction. #}
-<form id="revision-compare" method="get" action="/item/{{ item_id }}/revisions/compare"></form>
+{{ compare_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 {% if revert_form %}{{ revert_form | safe }}{% endif %} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
 {% if revisions %}
@@ -36,12 +37,12 @@
             {% for rev in revisions %}
             <tr>
                 <td>
-                    <input type="radio" name="from" value="{{ rev.id }}" form="revision-compare"
+                    <input type="radio" name="from" value="{{ rev.id }}" form="{{ compare_form_id }}"
                         aria-label="{{ t(s='Compare from the revision of {date}', date=rev.date) }}"
                         {% if loop.index == 2 or (loop.first and loop.last) %}checked{% endif %}>
                 </td>
                 <td>
-                    <input type="radio" name="to" value="{{ rev.id }}" form="revision-compare"
+                    <input type="radio" name="to" value="{{ rev.id }}" form="{{ compare_form_id }}"
                         aria-label="{{ t(s='Compare to the revision of {date}', date=rev.date) }}"
                         {% if loop.first %}checked{% endif %}>
                 </td>
@@ -68,7 +69,7 @@
     </table>
 </div>
 {% if revisions | length > 1 %}
-<p><button type="submit" class="button" form="revision-compare">{{ t(s="Compare selected") }}</button></p>
+<p><button type="submit" class="button" form="{{ compare_form_id }}">{{ t(s="Compare selected") }}</button></p>
 {% endif %}
 {% else %}
 {{ list::empty(message=t(s="No revisions found.")) }}
