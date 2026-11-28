@@ -1739,15 +1739,13 @@ async fn apply_role_membership_in(
     Ok(changed)
 }
 
-/// What follows the committed membership changes of a form.
+/// What follows the committed membership changes of a form. A form that
+/// changed no membership has no cache to drop.
 async fn membership_committed(
     state: &AppState,
     target_id: uuid::Uuid,
     changed: &[crate::services::role::MembershipChange],
 ) {
-    if changed.is_empty() {
-        state.roles().membership_committed(target_id, None).await;
-    }
     for change in changed {
         state
             .roles()
