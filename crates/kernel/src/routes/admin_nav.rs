@@ -816,6 +816,23 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        icon: Some("hourglass"),
+        synonyms: &[
+            "timer",
+            "scheduled at",
+            "delayed jobs",
+            "precise schedule",
+            "publish at",
+        ],
+        ..page(
+            Reports,
+            "Timers",
+            "/admin/reports/timers",
+            AnyPermission(&["view timers", "administer timers"]),
+            "Work set to run at an exact second, once or repeating: when each runs next, and whether it worked.",
+        )
+    },
+    Link {
         synonyms: &["queries", "searches", "top searches", "no results"],
         ..page(
             Reports,

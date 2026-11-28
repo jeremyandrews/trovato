@@ -35,6 +35,7 @@ pub mod admin_shell;
 pub mod admin_stage;
 pub mod admin_taxonomy;
 pub mod admin_text_format;
+pub mod admin_timers;
 pub mod admin_translation;
 pub mod admin_user;
 pub mod admin_who_can;
