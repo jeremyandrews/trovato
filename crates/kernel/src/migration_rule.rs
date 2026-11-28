@@ -723,4 +723,30 @@ mod tests {
             failures.join("\n")
         );
     }
+
+    /// The `moderation.workflows` JSON seeded by
+    /// `migrations/20261211000001_moderation_workflows.sql` parses to exactly
+    /// [`crate::content::moderation::builtin_editorial`]: a site upgrading
+    /// from before B301 keeps the same workflow it always had.
+    #[test]
+    fn the_seeded_moderation_workflows_json_is_the_builtin_editorial_workflow() {
+        use crate::content::moderation;
+
+        const SEED_JSON: &str = r#"{"workflows":[{"id":"editorial","label":"Editorial","default_state":"draft","states":[{"id":"draft","label":"Draft","published":false,"default_revision":false},{"id":"published","label":"Published","published":true,"default_revision":true},{"id":"archived","label":"Archived","published":false,"default_revision":true}],"transitions":[{"id":"create_new_draft","label":"Create New Draft","from":["draft","published"],"to":"draft"},{"id":"publish","label":"Publish","from":["draft","published"],"to":"published"},{"id":"archive","label":"Archive","from":["published"],"to":"archived"},{"id":"archived_draft","label":"Restore to Draft","from":["archived"],"to":"draft"},{"id":"archived_published","label":"Restore","from":["archived"],"to":"published"}]}]}"#;
+
+        let migration = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("migrations/20261211000001_moderation_workflows.sql"),
+        )
+        .expect("read the moderation workflows migration");
+        assert!(
+            migration.contains(SEED_JSON),
+            "this test's copy of the seed JSON no longer matches the migration file; update one \
+             to match the other"
+        );
+
+        let value: serde_json::Value = serde_json::from_str(SEED_JSON).unwrap();
+        let workflows = moderation::resolve_workflows(Some(&value));
+        assert_eq!(workflows, vec![moderation::builtin_editorial()]);
+    }
 }

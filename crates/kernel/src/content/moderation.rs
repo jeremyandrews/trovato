@@ -35,6 +35,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
+use sqlx::PgPool;
 use tracing::warn;
 
 use crate::tap::UserContext;
@@ -469,6 +470,26 @@ pub fn resolve_workflows(value: Option<&serde_json::Value>) -> Vec<ModerationWor
     } else {
         workflows
     }
+}
+
+/// Every transition permission of every workflow stored in [`WORKFLOWS_KEY`]:
+/// `use <workflow id> transition <transition id>` for each. Read fresh, as
+/// [`resolve_workflows`] is everywhere else; a read failure is logged and
+/// answered with the built-in workflow's permissions, never an empty set,
+/// so a storage hiccup at boot cannot let a plugin register a name that
+/// collides with the default workflow's.
+pub async fn derived_permission_names(pool: &PgPool) -> HashSet<String> {
+    let value = match crate::models::SiteConfig::get(pool, WORKFLOWS_KEY).await {
+        Ok(value) => value,
+        Err(e) => {
+            warn!(error = %e, "reading moderation workflows failed while checking plugin permission names");
+            None
+        }
+    };
+    resolve_workflows(value.as_ref())
+        .iter()
+        .flat_map(ModerationWorkflow::transition_permissions)
+        .collect()
 }
 
 /// What is wrong with a `moderation.workflows` value `config import` is about

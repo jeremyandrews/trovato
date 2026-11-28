@@ -744,13 +744,14 @@ impl AppState {
         let plugin_permissions = {
             let perm_state = RequestState::without_services(UserContext::anonymous());
             let results = tap_dispatcher.dispatch("tap_perm", "{}", perm_state).await;
-            let registry =
+            let mut registry =
                 crate::plugin::permission_registry::PluginPermissionRegistry::from_tap_results(
                     results
                         .into_iter()
                         .map(|r| (r.plugin_name, r.output))
                         .collect(),
                 );
+            registry.reject_reserved(&crate::content::moderation::derived_permission_names(&db).await);
             if !registry.is_empty() {
                 info!(count = registry.len(), "registered plugin permissions");
             }

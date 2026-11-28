@@ -1082,6 +1082,7 @@ async fn validate_references(
     validate_menu_link_parents(storage, parsed, failures).await;
     validate_role_permissions(pool, parsed, failures).await;
     validate_workflow(pool, parsed, failures).await;
+    validate_moderation_workflows(pool, parsed, failures).await;
     validate_item_field_values(pool, parsed, failures).await;
 }
 
@@ -1557,6 +1558,10 @@ async fn known_permissions(pool: &PgPool) -> std::result::Result<HashSet<String>
         .await
         .map_err(|e| format!("failed to read the text formats: {e:#}"))?;
     known.extend(formats.iter().filter_map(|f| f.permission()));
+    // `use <workflow id> transition <transition id>` for every stored
+    // moderation workflow, so an existing site's role files keep validating
+    // and a new one can name a workflow's transitions.
+    known.extend(crate::content::moderation::derived_permission_names(pool).await);
     Ok(known)
 }
 
@@ -1621,6 +1626,181 @@ async fn validate_workflow(
     }
 }
 
+/// Reject a `moderation.workflows` variable, or a type naming one, that the
+/// kernel could not use as written (B301).
+///
+/// Three checks, all against the same imported value:
+///
+/// - [`moderation::problems`] on the incoming variable itself: an unknown
+///   transition state, no published state, a bad `default_state` or state id,
+///   a duplicate id, inconsistent `published`/`default_revision` flags for the
+///   same state id in two workflows.
+/// - An incoming content type whose `moderation_workflow` setting names a
+///   workflow neither this import nor the database has.
+/// - A workflow this import changes that drops a state while a revision of a
+///   content type stored under it still holds that state: dropping the
+///   variable is not the same as dropping the data a prior release wrote
+///   under it, and an unknown state reads from `status` same as it always
+///   did, which is not what dropping a state silently here would mean for
+///   every row already written under it.
+async fn validate_moderation_workflows(
+    pool: &PgPool,
+    parsed: &BTreeMap<String, Vec<ParsedEntity>>,
+    failures: &mut Vec<ConfigImportFailure>,
+) {
+    use crate::content::moderation;
+
+    let incoming = parsed.get(entity_types::VARIABLE).and_then(|vars| {
+        vars.iter().find_map(|pe| match &pe.entity {
+            ConfigEntity::Variable { key, value } if key == moderation::WORKFLOWS_KEY => {
+                Some((pe, value))
+            }
+            _ => None,
+        })
+    });
+
+    if let Some((pe, value)) = incoming {
+        for error in moderation::problems(value) {
+            failures.push(ConfigImportFailure {
+                filename: pe.filename.clone(),
+                error,
+            });
+        }
+    }
+
+    // The workflow ids left in place once this import lands: the incoming
+    // value's, when this import touches the variable, else the stored ones.
+    let workflow_ids: HashSet<String> = match incoming {
+        Some((_, value)) => moderation::resolve_workflows(Some(value))
+            .into_iter()
+            .map(|w| w.id)
+            .collect(),
+        None => {
+            let stored = match crate::models::SiteConfig::get(pool, moderation::WORKFLOWS_KEY).await {
+                Ok(value) => value,
+                Err(e) => {
+                    failures.push(ConfigImportFailure {
+                        filename: "(moderation workflows)".to_string(),
+                        error: format!("failed to read the stored moderation workflows: {e:#}"),
+                    });
+                    return;
+                }
+            };
+            moderation::resolve_workflows(stored.as_ref())
+                .into_iter()
+                .map(|w| w.id)
+                .collect()
+        }
+    };
+
+    if let Some(types) = parsed.get(entity_types::ITEM_TYPE) {
+        for pe in types {
+            let Some(item_type) = pe.entity.as_item_type() else {
+                continue;
+            };
+            if !moderation::is_moderated(&item_type.settings) {
+                continue;
+            }
+            let name = moderation::workflow_name(&item_type.settings);
+            if !workflow_ids.contains(name) {
+                failures.push(ConfigImportFailure {
+                    filename: pe.filename.clone(),
+                    error: format!(
+                        "content type '{}' names moderation workflow '{name}', which this \
+                         import does not have",
+                        item_type.type_name
+                    ),
+                });
+            }
+        }
+    }
+
+    // A workflow this import edits (present both before and after) that drops
+    // a state some stored revision of a type stored under it still holds.
+    let Some((pe, value)) = incoming else {
+        return;
+    };
+    let stored_value = match crate::models::SiteConfig::get(pool, moderation::WORKFLOWS_KEY).await {
+        Ok(value) => value,
+        Err(e) => {
+            failures.push(ConfigImportFailure {
+                filename: pe.filename.clone(),
+                error: format!("failed to read the stored moderation workflows: {e:#}"),
+            });
+            return;
+        }
+    };
+    let Some(stored_value) = stored_value else {
+        return;
+    };
+    let old_workflows = moderation::resolve_workflows(Some(&stored_value));
+    let new_workflows = moderation::resolve_workflows(Some(value));
+    let stored_types = match crate::models::ItemType::list(pool).await {
+        Ok(types) => types,
+        Err(e) => {
+            failures.push(ConfigImportFailure {
+                filename: pe.filename.clone(),
+                error: format!("failed to read the content types: {e:#}"),
+            });
+            return;
+        }
+    };
+    for old in &old_workflows {
+        let Some(new) = new_workflows.iter().find(|w| w.id == old.id) else {
+            continue;
+        };
+        let removed: Vec<&str> = old
+            .states
+            .iter()
+            .map(|s| s.id.as_str())
+            .filter(|id| !new.states.iter().any(|s| s.id == *id))
+            .collect();
+        if removed.is_empty() {
+            continue;
+        }
+        let type_names: Vec<&str> = stored_types
+            .iter()
+            .filter(|t| moderation::is_moderated(&t.settings) && moderation::workflow_name(&t.settings) == old.id)
+            .map(|t| t.type_name.as_str())
+            .collect();
+        for state in removed {
+            for type_name in &type_names {
+                let count: i64 = match sqlx::query_scalar(
+                    "SELECT count(*) FROM item_revision r JOIN item i ON i.id = r.item_id \
+                     WHERE i.type = $1 AND r.moderation_state = $2",
+                )
+                .bind(type_name)
+                .bind(state)
+                .fetch_one(pool)
+                .await
+                {
+                    Ok(count) => count,
+                    Err(e) => {
+                        failures.push(ConfigImportFailure {
+                            filename: pe.filename.clone(),
+                            error: format!(
+                                "failed to check whether a stored revision of '{type_name}' \
+                                 holds state '{state}': {e:#}"
+                            ),
+                        });
+                        continue;
+                    }
+                };
+                if count > 0 {
+                    failures.push(ConfigImportFailure {
+                        filename: pe.filename.clone(),
+                        error: format!(
+                            "workflow '{}' drops state '{state}', which {count} stored \
+                             revision(s) of type '{type_name}' still hold",
+                            old.id
+                        ),
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// Reject a role file that names a permission the kernel cannot account for.
 ///
 /// A permission is a bare string in `role_permissions`, so a typo is not a
@@ -1676,6 +1856,21 @@ async fn validate_role_permissions(
         for pe in formats {
             if let ConfigEntity::TextFormat(format) = &pe.entity {
                 known.extend(format.permission());
+            }
+        }
+    }
+
+    // A `moderation.workflows` variable in the same import: its transition
+    // permissions count too, so a role file and a new workflow can arrive
+    // together.
+    if let Some(vars) = parsed.get(entity_types::VARIABLE) {
+        for pe in vars {
+            if let ConfigEntity::Variable { key, value } = &pe.entity
+                && key == crate::content::moderation::WORKFLOWS_KEY
+            {
+                for workflow in crate::content::moderation::resolve_workflows(Some(value)) {
+                    known.extend(workflow.transition_permissions());
+                }
             }
         }
     }

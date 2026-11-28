@@ -1688,12 +1688,13 @@ struct GridPermission {
     description: String,
 }
 
-/// Every permission the grid renders: the kernel's, then each plugin's.
+/// Every permission the grid renders: the kernel's, then each plugin's, then
+/// each stored moderation workflow's.
 ///
 /// This is also the exact set the save is allowed to revoke, which is why both
 /// sides go through one function. A permission missing from here is one the
 /// screen cannot show, cannot grant, and must not take away.
-fn grid_permissions(state: &AppState) -> Vec<GridPermission> {
+async fn grid_permissions(state: &AppState) -> Vec<GridPermission> {
     let mut rows: Vec<GridPermission> = KERNEL_PERMISSIONS
         .iter()
         .map(|name| GridPermission {
@@ -1713,6 +1714,22 @@ fn grid_permissions(state: &AppState) -> Vec<GridPermission> {
                 name: permission,
                 provider: "Text formats".to_string(),
                 description: format!("Use the {} text format.", format.name),
+            });
+        }
+    }
+
+    // `use <workflow id> transition <transition id>` for each stored content
+    // moderation workflow (B301): the built-in `editorial` workflow included,
+    // read fresh so a workflow change is seen at once.
+    let value = crate::models::SiteConfig::get(state.db(), crate::content::moderation::WORKFLOWS_KEY)
+        .await
+        .unwrap_or_default();
+    for workflow in crate::content::moderation::resolve_workflows(value.as_ref()) {
+        for transition in &workflow.transitions {
+            rows.push(GridPermission {
+                name: workflow.permission(transition),
+                provider: "Moderation workflows".to_string(),
+                description: format!("{}: {}.", workflow.label, transition.label),
             });
         }
     }
@@ -1762,7 +1779,7 @@ async fn permissions_matrix(State(state): State<AppState>, session: Session) -> 
     let mut context = tera::Context::new();
     context.insert("roles", &roles);
     context.insert("role_permissions", &role_permissions);
-    context.insert("available_permissions", &grid_permissions(&state));
+    context.insert("available_permissions", &grid_permissions(&state).await);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("path", "/admin/people/permissions");
@@ -1838,6 +1855,7 @@ async fn save_permissions(
     // it is neither granted nor revoked on any role: the grid is the
     // `apply_role_membership` rule applied one box at a time.
     let known: std::collections::HashSet<String> = grid_permissions(&state)
+        .await
         .into_iter()
         .map(|p| p.name)
         .collect();

@@ -162,6 +162,30 @@ impl PluginPermissionRegistry {
         });
     }
 
+    /// Reject any already-registered permission whose name collides with one
+    /// derived from a stored content moderation workflow
+    /// (`content::moderation::ModerationWorkflow::transition_permissions`),
+    /// the same rule [`Self::from_tap_results`] applies against
+    /// [`crate::models::role::KERNEL_PERMISSIONS`].
+    ///
+    /// A stored workflow is not known when `from_tap_results` runs — it needs
+    /// a `PgPool`, and that check is synchronous and pool-free — so this is a
+    /// second pass over what it kept, run once the caller has read the
+    /// workflows.
+    pub fn reject_reserved(&mut self, reserved: &HashSet<String>) {
+        let (kept, collided): (Vec<_>, Vec<_>) = std::mem::take(&mut self.permissions)
+            .into_iter()
+            .partition(|p| !reserved.contains(&p.name));
+        self.permissions = kept;
+        for p in collided {
+            self.rejections.push(PermissionRejection {
+                plugin: p.plugin,
+                name: p.name,
+                reason: "the kernel already defines this permission".to_string(),
+            });
+        }
+    }
+
     pub fn permissions(&self) -> &[PluginPermission] {
         &self.permissions
     }

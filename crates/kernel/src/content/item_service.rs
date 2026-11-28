@@ -876,9 +876,16 @@ impl ItemService {
         {
             let from = &workflow.default_state;
             let requested = match (moderation_state, input.status) {
-                (Some(name), _) => name.to_string(),
+                (Some(name), _) => Some(name.to_string()),
                 (None, Some(1)) => Self::status_target(&workflow, from, 1),
-                (None, _) => from.clone(),
+                (None, _) => Some(from.clone()),
+            };
+            let Some(requested) = requested else {
+                return Err(WriteDenied::Transition {
+                    from: from.clone(),
+                    to: workflow.default_state.clone(),
+                }
+                .into());
             };
             let to = Self::gate_transition(&workflow, user, from, &requested)?;
             input.status = Some(workflow.status_of(&to));
@@ -1191,17 +1198,22 @@ impl ItemService {
     /// to on `workflow`: a status of 1 is the first published state (in
     /// workflow order) reachable from `from`; a status of 0 from a published
     /// state is the first state with `published: false, default_revision:
-    /// true` reachable from `from`; anything else that finds no reachable
-    /// match is the workflow's `default_state`, and [`Self::gate_transition`]
-    /// decides it as any other requested state. This is what a bare status
-    /// flip on the form and a background save of `{"status": N}` (scheduled
-    /// publishing) ask for.
-    fn status_target(workflow: &moderation::ModerationWorkflow, from: &str, status: i16) -> String {
+    /// true` reachable from `from`. `None` when nothing is reachable — a gap
+    /// in the workflow's graph, not a permission question, so the caller
+    /// refuses outright rather than asking [`Self::gate_transition`], which
+    /// would otherwise allow a same-state move meant for a different purpose
+    /// (creating a new item) to pass as if the requested status change had
+    /// succeeded. This is what a bare status flip on the form and a
+    /// background save of `{"status": N}` (scheduled publishing) ask for.
+    fn status_target(
+        workflow: &moderation::ModerationWorkflow,
+        from: &str,
+        status: i16,
+    ) -> Option<String> {
         let reachable = |published: bool| {
-            workflow
-                .states
-                .iter()
-                .find(|s| s.published == published && s.default_revision && workflow.transition(from, &s.id).is_some())
+            workflow.states.iter().find(|s| {
+                s.published == published && s.default_revision && workflow.transition(from, &s.id).is_some()
+            })
         };
         let target = if status == 1 {
             reachable(true)
@@ -1210,9 +1222,7 @@ impl ItemService {
         } else {
             None
         };
-        target
-            .map(|s| s.id.clone())
-            .unwrap_or_else(|| workflow.default_state.clone())
+        target.map(|s| s.id.clone())
     }
 
     /// A content type's promote and sticky defaults for a new item, from its
@@ -1763,7 +1773,14 @@ impl ItemService {
             let requested = match (moderation_state, input.status) {
                 (Some(name), _) => Some(name.to_string()),
                 (None, Some(status)) if status != existing.status => {
-                    Some(Self::status_target(&workflow, &from, status))
+                    let Some(target) = Self::status_target(&workflow, &from, status) else {
+                        return Err(WriteDenied::Transition {
+                            from: from.clone(),
+                            to: workflow.default_state.clone(),
+                        }
+                        .into());
+                    };
+                    Some(target)
                 }
                 (None, _) => workflow.default_target(&from, user),
             };
