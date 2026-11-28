@@ -344,9 +344,9 @@ impl GatherService {
     /// Whether every late binding `AppState` makes after construction is in
     /// place: the item-access seam, the record type registry, the content type
     /// registry (without it every field reads as text, from the document) and
-    /// the user service. A caller handed this service before then could read rows that
-    /// skipped a seam, so startup checks it before releasing gather to work
-    /// that runs concurrently with the rest of startup.
+    /// the user service. A caller handed this service before then could read
+    /// rows that skipped a seam, so startup checks it before releasing gather
+    /// to work that runs concurrently with the rest of startup.
     pub fn late_bindings_complete(&self) -> bool {
         self.item_access.get().is_some()
             && self.record_types.get().is_some()
