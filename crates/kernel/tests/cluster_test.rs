@@ -251,6 +251,21 @@ impl Client {
         })
     }
 
+    /// The pipeline form `form_id` the page at `path` serves on `on`, posted
+    /// back to `path` with its own `_token` and `_form_build_id` and `fields`.
+    async fn submit_form(
+        &self,
+        on: On,
+        path: &str,
+        form_id: &str,
+        fields: &[(&str, String)],
+    ) -> Resp {
+        let page = self.get(on, path).await;
+        let mut all: Vec<(&str, String)> = pipeline_fields(&page.body, form_id);
+        all.extend(fields.iter().cloned());
+        self.post_form(on, path, &all).await
+    }
+
     /// A form post carrying a fresh `_token` (minted on the same node).
     async fn submit(&self, on: On, path: &str, fields: &[(&str, String)]) -> Resp {
         let token = self.csrf(on).await;
@@ -532,7 +547,10 @@ async fn create_user(
         ("password", password.to_string()),
     ];
     fields.extend(extra.iter().cloned());
-    let created = c.admin.submit(On::A, "/admin/people/add", &fields).await;
+    let created = c
+        .admin
+        .submit_form(On::A, "/admin/people/add", "user_form", &fields)
+        .await;
     assert!(
         created.status.is_redirection(),
         "create user: {}",
@@ -545,9 +563,10 @@ async fn create_user(
 async fn create_role_with(c: &Cluster, name: &str, permission: &str) -> uuid::Uuid {
     let created = c
         .admin
-        .submit(
+        .submit_form(
             On::A,
             "/admin/people/roles/add",
+            "role_form",
             &[("name", name.to_string())],
         )
         .await;
@@ -581,7 +600,12 @@ async fn create_role_with(c: &Cluster, name: &str, permission: &str) -> uuid::Uu
     }
     let saved = c
         .admin
-        .submit(On::A, "/admin/people/permissions", &fields)
+        .submit_form(
+            On::A,
+            "/admin/people/permissions",
+            "permissions_form",
+            &fields,
+        )
         .await;
     assert!(saved.status.is_redirection(), "grant: {}", saved.body);
     role
@@ -694,9 +718,10 @@ async fn s01_role_revoked_on_a_refuses_on_b() {
     // Every field resent except the role: the role is revoked.
     let revoked = c
         .admin
-        .submit(
+        .submit_form(
             On::A,
             &format!("/admin/people/{uid}/edit"),
+            "user_form",
             &[
                 ("name", name.clone()),
                 ("mail", format!("{name}@cluster.test")),
@@ -735,9 +760,10 @@ async fn s02_user_blocked_on_a_is_refused_on_b() {
     // No `status` field: the account is blocked.
     let blocked = c
         .admin
-        .submit(
+        .submit_form(
             On::A,
             &format!("/admin/people/{uid}/edit"),
+            "user_form",
             &[
                 ("name", name.clone()),
                 ("mail", format!("{name}@cluster.test")),
@@ -783,18 +809,11 @@ async fn s03_session_form_and_passkey_cross_nodes() {
     assert_eq!(page.served_by(), "b");
 
     let form = user.get(On::A, "/admin/people/roles/add").await;
-    let token = csrf_in(&form.body).expect("form token");
+    let mut fields: Vec<(&str, String)> = pipeline_fields(&form.body, "role_form");
     let role = format!("cross node {}", unique());
+    fields.push(("name", role.clone()));
     let posted = user
-        .post_form(
-            On::B,
-            "/admin/people/roles/add",
-            &[
-                ("_token", token),
-                ("_form_build_id", "x".to_string()),
-                ("name", role.clone()),
-            ],
-        )
+        .post_form(On::B, "/admin/people/roles/add", &fields)
         .await;
     assert!(
         posted.status.is_redirection(),

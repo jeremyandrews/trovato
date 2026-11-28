@@ -101,11 +101,6 @@ async fn account(app: &TestApp, prefix: &str) -> (Uuid, String) {
     (id, name)
 }
 
-/// The value of the first input named `name` on the page.
-fn input_value(html: &str, name: &str) -> String {
-    common::input_value_in(html, name).unwrap_or_else(|| panic!("an input named {name}"))
-}
-
 /// The page's `csrf-token` meta tag.
 fn meta_csrf(html: &str) -> String {
     let marker = "name=\"csrf-token\" content=\"";
@@ -269,8 +264,8 @@ fn an_admin_delete_whose_event_fails_keeps_the_account() {
         let admin = app
             .create_and_login_admin(&admin_name, PASSWORD, &format!("{admin_name}@example.com"))
             .await;
-        let html = get_page(app, &admin, "/admin/people").await;
-        let token = input_value(&html, "_token");
+        let html = get_page(app, &admin, &format!("/admin/people/{target}/delete")).await;
+        let fields = common::form_fields(&html, "user_delete_form");
 
         let agent = unique_agent("delete");
         refuse_events_from(app, &agent).await;
@@ -279,10 +274,7 @@ fn an_admin_delete_whose_event_fails_keeps_the_account() {
                 Request::post(format!("/admin/people/{target}/delete"))
                     .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .header(header::USER_AGENT, &agent)
-                    .body(Body::from(format!(
-                        "_token={}",
-                        urlencoding::encode(&token)
-                    )))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &admin,
             )
@@ -409,15 +401,12 @@ async fn admin(app: &TestApp, prefix: &str) -> String {
 /// token added).
 async fn post_edit(app: &TestApp, admin: &str, id: Uuid, fields: &str) -> (StatusCode, String) {
     let html = get_page(app, admin, &format!("/admin/people/{id}/edit")).await;
-    let token = input_value(&html, "_token");
+    let form = common::form_fields(&html, "user_form");
     let response = app
         .request_with_cookies(
             Request::post(format!("/admin/people/{id}/edit"))
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(format!(
-                    "_token={}&_form_build_id=x&{fields}",
-                    urlencoding::encode(&token)
-                )))
+                .body(Body::from(format!("{form}&{fields}")))
                 .unwrap(),
             admin,
         )
@@ -600,15 +589,14 @@ fn an_admin_add_whose_role_event_fails_creates_no_account() {
         )
         .await;
         let html = get_page(app, &admin, "/admin/people/add").await;
-        let token = input_value(&html, "_token");
+        let form = common::form_fields(&html, "user_form");
         let response = app
             .request_with_cookies(
                 Request::post("/admin/people/add")
                     .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .body(Body::from(format!(
-                        "_token={}&_form_build_id=x&name={name}&mail={}&password={PASSWORD}\
+                        "{form}&name={name}&mail={}&password={PASSWORD}\
                          &status=1&role_{role}=1",
-                        urlencoding::encode(&token),
                         urlencoding::encode(&format!("{name}@example.com"))
                     )))
                     .unwrap(),
@@ -680,16 +668,13 @@ fn account_deleted_counts_only_the_sessions_it_ended() {
         );
 
         let admin = admin(app, "b277_sesscount_admin").await;
-        let html = get_page(app, &admin, "/admin/people").await;
-        let token = input_value(&html, "_token");
+        let html = get_page(app, &admin, &format!("/admin/people/{id}/delete")).await;
+        let fields = common::form_fields(&html, "user_delete_form");
         let response = app
             .request_with_cookies(
                 Request::post(format!("/admin/people/{id}/delete"))
                     .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .body(Body::from(format!(
-                        "_token={}",
-                        urlencoding::encode(&token)
-                    )))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &admin,
             )

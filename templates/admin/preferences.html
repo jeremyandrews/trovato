@@ -1,35 +1,15 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
-{#- Your admin preferences: colour theme and admin language. Context: theme,
-    language, languages (value, label, native), default_language, csrf_token,
-    flash, error_message, from routes::admin_shell. -#}
+{#- Your admin preferences: colour theme and admin language. Context: form
+    (the preferences form), form_id (its id), default_language, flash, from
+    routes::admin_shell. The sign out button belongs to the preferences form
+    (`form=`) and posts its CSRF token to /user/logout instead (`formaction`),
+    so the page has one form. -#}
 
 {% block content %}
-<form class="form" id="admin-preferences" method="post" action="/admin/preferences" novalidate>
-    <input type="hidden" name="_token" value="{{ csrf_token }}">
-
-    {% set theme_system = ["system", t(s="System")] %}
-    {% set theme_light = ["light", t(s="Light")] %}
-    {% set theme_dark = ["dark", t(s="Dark")] %}
-    {% set theme_options = [theme_system, theme_light, theme_dark] %}
-    {{ form::choices(name="theme", legend=t(s="Colour theme"), options=theme_options, value=theme, hint=t(s="System follows your device's light or dark setting.")) }}
-
-    {{ form::select(name="language", id="admin-language", label=t(s="Administration language"), options=languages, value=language, translate_options=true, hint=t(s="The language these pages are shown in. It does not change the language of your content.")) }}
-
-    {{ form::fieldset_start(legend=t(s="Search shortcuts")) }}
-        {{ form::checkbox(name="search_slash", label=t(s="Open search with /"), checked=search_slash, hint=t(s="Pressing / anywhere outside a text field opens search. Turn it off if it gets in the way of your screen reader or other keys.")) }}
-        {{ form::select(name="search_key", label=t(s="Another key to open search"), options=search_key_options, value=search_key, translate_options=true, hint=t(s="Works in text fields too. Control+K replaces the browser's own use of that key on these pages.")) }}
-    {{ form::fieldset_end() }}
-
-    {{ form::effect(text=t(s="only how this administration looks and reads for you. Nobody else is affected.")) }}
-    {{ form::actions(submit_label=t(s="Save preferences")) }}
-</form>
+{{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
 <section class="sign-out" aria-labelledby="sign-out-heading">
     <h2 id="sign-out-heading">{{ t(s="Sign out") }}</h2>
-    <form method="post" action="/user/logout" novalidate>
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <button class="button" type="submit">{{ t(s="Log out") }}</button>
-    </form>
+    <button class="button" type="submit" form="{{ form_id }}" formaction="/user/logout" formnovalidate>{{ t(s="Log out") }}</button>
 </section>
 {% endblock content %}

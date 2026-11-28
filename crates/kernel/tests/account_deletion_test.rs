@@ -914,7 +914,8 @@ fn an_admin_can_delete_an_account_that_authored_content() {
         let victim = seed_account(app, "delvictim", false).await;
         let admin = seed_account(app, "deladmin2", true).await;
 
-        let (cookies, token, build) = form_token(app, &admin.cookies, "/admin/people").await;
+        let delete_page = format!("/admin/people/{}/delete", victim.id);
+        let (cookies, token, build) = form_token(app, &admin.cookies, &delete_page).await;
         let response = post_form(
             app,
             &cookies,
@@ -961,7 +962,8 @@ fn an_admin_deletion_is_audited_as_account_deleted() {
         let victim = seed_account(app, "deladmin4victim", false).await;
         let admin = seed_account(app, "deladmin4", true).await;
 
-        let (cookies, token, build) = form_token(app, &admin.cookies, "/admin/people").await;
+        let delete_page = format!("/admin/people/{}/delete", victim.id);
+        let (cookies, token, build) = form_token(app, &admin.cookies, &delete_page).await;
         let response = post_form(
             app,
             &cookies,
@@ -1078,7 +1080,8 @@ fn an_admin_deletion_ends_the_accounts_sessions_and_empties_its_index() {
         let before = app.state.session_registry().list(victim.id).await.unwrap();
         assert_eq!(before.len(), 1, "the victim's session is indexed");
 
-        let (cookies, token, build) = form_token(app, &admin.cookies, "/admin/people").await;
+        let delete_page = format!("/admin/people/{}/delete", victim.id);
+        let (cookies, token, build) = form_token(app, &admin.cookies, &delete_page).await;
         let response = post_form(
             app,
             &cookies,

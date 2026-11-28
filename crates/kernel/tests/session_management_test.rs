@@ -670,14 +670,6 @@ async fn profile_status(app: &TestApp, cookies: &str, ua: &str) -> StatusCode {
     .status()
 }
 
-/// The `_token` value of the first form on `html`.
-fn form_token_from(html: &str) -> String {
-    let marker = r#"name="_token" value=""#;
-    let start = html.find(marker).expect("a CSRF form field") + marker.len();
-    let end = start + html[start..].find('"').unwrap();
-    html[start..end].to_string()
-}
-
 /// The cookies a response re-issued, or the ones the request carried.
 fn cookies_after(response: &axum::response::Response, before: &str) -> String {
     let issued = common::extract_cookies(response);
@@ -710,10 +702,9 @@ async fn admin_edit(
         .request_with_cookies(Request::get(&path).body(Body::empty()).unwrap(), admin)
         .await;
     assert_eq!(page.status(), StatusCode::OK, "the edit form renders");
-    let token = form_token_from(&html_of(page).await);
+    let fields = common::form_fields(&html_of(page).await, "user_form");
     let mut body = format!(
-        "_token={}&_form_build_id=x&name={}&mail={}",
-        urlencoding::encode(&token),
+        "{fields}&name={}&mail={}",
         urlencoding::encode(target_name),
         urlencoding::encode(&format!("{target_name}@example.com")),
     );

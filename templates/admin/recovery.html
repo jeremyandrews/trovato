@@ -1,9 +1,8 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {#- Account recovery settings: which built-in recovery paths the site offers.
     An ordinary form, so it works with JavaScript off; routes::recovery
-    accepts it beside the JSON body scripts send. Context: csrf_token,
-    email_enabled, codes_enabled, smtp_configured, flash. -#}
+    accepts it beside the JSON body scripts send. Context: form (the
+    pipeline form, routes::recovery::admin_recovery_form), flash. -#}
 
 {% block page_title %}{{ t(s="Account recovery") }}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="Which built-in recovery paths this site offers. Plugins can add their own methods; those are configured by the plugin, not here.") }}</p>{% endblock page_intro %}
@@ -14,22 +13,5 @@
     <p>{{ t(s="A passkey sign-in cannot be phished; an emailed recovery code can. Whichever recovery paths you leave on set the real strength of every account on this site. A high-assurance deployment should turn email recovery off and require saved codes or a plugin-provided method.") }}</p>
 </div>
 
-<form class="admin-card" method="post" action="/admin/recovery" novalidate>
-    <input type="hidden" name="_token" value="{{ csrf_token }}">
-    {{ form::fieldset_start(legend=t(s="Recovery paths offered")) }}
-        {% if smtp_configured %}
-        {{ form::checkbox(name="email_enabled", id="email-enabled", label=t(s="Emailed recovery code"), checked=email_enabled, hint=t(s="Sends a one-time code to the address on the account. Phishable.")) }}
-        {% else %}
-        {{ form::checkbox(name="email_enabled", id="email-enabled", label=t(s="Emailed recovery code"), checked=email_enabled, disabled=true, hint=t(s="SMTP is not configured, so this path is inert regardless of this setting.")) }}
-        {#- A disabled checkbox is not sent, so its value travels here and
-            saving the form cannot switch the path off by accident. -#}
-        {% if email_enabled %}<input type="hidden" name="email_enabled" value="1">{% endif %}
-        {% endif %}
-
-        {{ form::checkbox(name="codes_enabled", id="codes-enabled", label=t(s="Saved recovery codes"), checked=codes_enabled, hint=t(s="Users generate codes and keep them. No email, no second device.")) }}
-    {{ form::fieldset_end() }}
-
-    {{ form::effect(text=t(s="which ways back into an account the sign-in page offers to everyone who has lost access.")) }}
-    {{ form::actions(submit_label=t(s="Save recovery settings")) }}
-</form>
+{{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 {% endblock content %}

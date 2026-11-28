@@ -1503,14 +1503,16 @@ fn e2e_admin_delete_user() {
             .create_and_login_admin("admin_users_5", "password123", "users5@test.com")
             .await;
 
-        // Fetch CSRF token from user list page
-        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/people").await;
+        // The delete form, from the confirmation the list links to.
+        let (cookies, html) =
+            fetch_page(app, &cookies, &format!("/admin/people/{user_id}/delete")).await;
+        let fields = common::form_fields(&html, "user_delete_form");
 
         let response = app
             .request_with_cookies(
                 Request::post(format!("/admin/people/{user_id}/delete"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &cookies,
             )
@@ -1556,14 +1558,36 @@ fn e2e_admin_cannot_delete_self() {
         // Login as the same admin user we're trying to delete
         let cookies = app.login(&username, "testpass123").await;
 
-        // Fetch CSRF token
-        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/people").await;
+        // Not offered the confirmation for one's own account.
+        let confirm = app
+            .request_with_cookies(
+                Request::get(format!("/admin/people/{user_id}/delete"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(confirm.status(), StatusCode::BAD_REQUEST);
+
+        // And refused a real delete form posted for it: the one for another
+        // account.
+        let other = format!("selfother_{}", &unique_id[..16]);
+        app.create_test_user(&other, "testpass123", &format!("{other}@test.com"))
+            .await;
+        let other_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
+            .bind(&other)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        let (cookies, html) =
+            fetch_page(app, &cookies, &format!("/admin/people/{other_id}/delete")).await;
+        let fields = common::form_fields(&html, "user_delete_form");
 
         let response = app
             .request_with_cookies(
                 Request::post(format!("/admin/people/{user_id}/delete"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &cookies,
             )
@@ -1712,14 +1736,20 @@ fn e2e_admin_delete_role() {
             .create_and_login_admin("admin_roles_3", "password123", "roles3@test.com")
             .await;
 
-        // Fetch CSRF token from roles list page
-        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/people/roles").await;
+        // The delete form, from the confirmation the roles list links to.
+        let (cookies, html) = fetch_page(
+            app,
+            &cookies,
+            &format!("/admin/people/roles/{role_id}/delete"),
+        )
+        .await;
+        let fields = common::form_fields(&html, "role_delete_form");
 
         let response = app
             .request_with_cookies(
                 Request::post(format!("/admin/people/roles/{role_id}/delete"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &cookies,
             )
@@ -1752,19 +1782,38 @@ fn e2e_admin_cannot_delete_builtin_roles() {
             .create_and_login_admin("admin_roles_4", "password123", "roles4@test.com")
             .await;
 
-        // Fetch CSRF token from the add-role page (the list page only has tokens
-        // on non-built-in role delete buttons, which may not exist in a clean DB).
-        let (cookies, csrf_token) =
-            fetch_csrf_token(app, &cookies, "/admin/people/roles/add").await;
-
         // Try to delete anonymous role (UUID 1)
         let anonymous_role_id = uuid::Uuid::from_u128(1);
+
+        // Not offered the confirmation for it.
+        let confirm = app
+            .request_with_cookies(
+                Request::get(format!("/admin/people/roles/{anonymous_role_id}/delete"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(confirm.status(), StatusCode::BAD_REQUEST);
+
+        // And refused a real delete form posted for it: the one for a role of
+        // this test's own.
+        let unique_id = uuid::Uuid::now_v7().simple().to_string();
+        let own_role =
+            common::create_test_role(app, &format!("BuiltinGuard_{}", &unique_id[..16])).await;
+        let (cookies, html) = fetch_page(
+            app,
+            &cookies,
+            &format!("/admin/people/roles/{own_role}/delete"),
+        )
+        .await;
+        let fields = common::form_fields(&html, "role_delete_form");
 
         let response = app
             .request_with_cookies(
                 Request::post(format!("/admin/people/roles/{anonymous_role_id}/delete"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(fields))
                     .unwrap(),
                 &cookies,
             )
@@ -3999,11 +4048,6 @@ fn url_encode(value: &str) -> String {
         }
     }
     result
-}
-
-/// Build a form-urlencoded POST body with the given CSRF token.
-fn csrf_form_body(csrf_token: &str) -> Body {
-    Body::from(format!("_token={}", url_encode(csrf_token)))
 }
 
 // =============================================================================

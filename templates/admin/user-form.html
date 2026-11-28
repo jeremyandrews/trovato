@@ -1,54 +1,15 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/tabs.html" as tabs %}
 
-{% block page_title %}{% if editing %}{{ t(s="Edit user {name}", name=values.name | default(value="")) }}{% else %}{{ t(s="Add user") }}{% endif %}{% endblock page_title %}
+{#- The add and edit user page. `form` is the user form
+    (routes::admin_user::user_form), `user_name` the name it shows. -#}
+
+{% block page_title %}{% if editing %}{{ t(s="Edit user {name}", name=user_name) }}{% else %}{{ t(s="Add user") }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{% if editing %}{{ t(s="Change this account's name, email address, password, status and roles.") }}{% else %}{{ t(s="Create an account and choose its roles.") }}{% endif %}</p>{% endblock page_intro %}
 {% block local_tasks %}{% if local_tasks is defined %}{{ tabs::tab_bar(local_tasks=local_tasks) }}{% endif %}{% endblock local_tasks %}
 
 {% block content %}
 <div class="admin-card">
-    <form id="user-form" method="post" action="{{ action }}" novalidate>
-        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
-
-        {{ form::error_summary(errors=errors | default(value=[])) }}
-        {% set errs = errors | default(value=[]) %}
-
-        {{ form::field(name="name", label=t(s="Username"), value=values.name | default(value=""), hint=t(s="The unique username for this account."), required=true, errors=errs, width="20", autocomplete="username", attrs='spellcheck="false" autocapitalize="none"') }}
-
-        {{ form::field(name="mail", type="email", label=t(s="Email"), value=values.mail | default(value=""), hint=t(s="A valid email address for this user."), required=true, errors=errs, width="30", autocomplete="email", attrs='spellcheck="false"') }}
-
-        {% if editing %}{% set password_hint = t(s="Leave blank to keep the current password. Minimum 12 characters.") %}{% else %}{% set password_hint = t(s="Minimum 12 characters.") %}{% endif %}
-        {{ form::field(name="password", type="password", label=t(s="Password"), hint=password_hint, required=not editing, errors=errs, width="20", autocomplete="new-password", attrs='minlength="12"') }}
-
-        {{ form::fieldset_start(legend=t(s="Status and permissions")) }}
-            {{ form::checkbox(name="status", label=t(s="Active"), checked=values.status | default(value=false), hint=t(s="Blocked users cannot log in."), errors=errs) }}
-            {{ form::checkbox(name="is_admin", label=t(s="Administrator"), checked=values.is_admin | default(value=false), hint=t(s="Administrators have full access to the site. Only an administrator can grant or remove this."), errors=errs) }}
-            {% if not editing %}
-            {{ form::checkbox(name="notify", label=t(s="Notify user of new account"), checked=values.notify | default(value=false), hint=t(s="Mails the new user a welcome message with a one-time link to sign in and choose their own password."), errors=errs) }}
-            {% endif %}
-        {{ form::fieldset_end() }}
-
-        {#- Role membership. The checkbox key carries the role id, because
-            `serde_urlencoded` cannot collect repeated same-name fields into a
-            list; the server iterates its own role list and reads each key back,
-            so an unknown key names nothing. -#}
-        {% if roles %}
-        {% set held = values.roles | default(value=[]) %}
-        {{ form::fieldset_start(legend=t(s="Roles"), id="roles", hint=t(s="A role grants its permissions to every user who holds it.")) }}
-            <p><a href="/admin/people/permissions">{{ t(s="See the permissions") }}</a></p>
-            {% for role in roles %}
-            {{ form::checkbox(name="role_" ~ role.id, label=role.name, checked=role.id in held, errors=errs) }}
-            {% endfor %}
-        {{ form::fieldset_end() }}
-        {% endif %}
-
-        {% if editing %}
-        {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/people") }}
-        <p class="user-form__cancel-account"><a href="/user/{{ user_id }}/cancel">{{ t(s="Cancel account") }}</a></p>
-        {% else %}
-        {{ form::actions(submit_label=t(s="Create user"), cancel_url="/admin/people") }}
-        {% endif %}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}

@@ -1,8 +1,9 @@
 {% extends "page--admin.html" %}
-{#- One account's active sessions, for an administrator. Each Sign out is an
-    ordinary form, so it works with JavaScript off (routes::sessions accepts
-    the form beside the JSON a script sends). Context: user, sessions,
-    csrf_token, flash. -#}
+{#- One account's active sessions, for an administrator. Each Sign out is a
+    button of the one pipeline form `form` (its id `form_id`), posting to its
+    own revoke address through `formaction`, so it works with JavaScript off
+    (routes::sessions accepts the form beside the JSON a script sends).
+    Context: user, sessions, form, form_id, flash. -#}
 
 {% block page_title %}{{ t(s="Active sessions for {name}", name=user.name) }}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="Every device currently signed in to this account. Signing one out ends its session on its next request.") }}</p>{% endblock page_intro %}
@@ -32,16 +33,14 @@
                 <td>{{ s.created_at }}</td>
                 <td>{{ s.last_seen }}</td>
                 <td class="operations">
-                    <form method="post" action="/admin/users/{{ user.id }}/sessions/{{ s.device_id }}/revoke" class="inline-form" novalidate>
-                        <input type="hidden" name="_token" value="{{ csrf_token }}">
-                        <button type="submit" class="link-button link-button--danger">{{ t(s="Sign out {device}", device=s.device_name) }}</button>
-                    </form>
+                    <button type="submit" form="{{ form_id }}" formaction="/admin/users/{{ user.id }}/sessions/{{ s.device_id }}/revoke" class="link-button link-button--danger">{{ t(s="Sign out {device}", device=s.device_name) }}</button>
                 </td>
             </tr>
         {% endfor %}
         </tbody>
     </table>
 </div>
+{{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 {% else %}
 <div class="empty-state"><p>{{ t(s="No active sessions are recorded for this account.") }}</p></div>
 {% endif %}
