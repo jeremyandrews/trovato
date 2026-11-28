@@ -16,7 +16,10 @@
         {% if element.placeholder %}placeholder="{{ element.placeholder }}"{% endif %}
         {% if element.required %}required{% endif %}
         {% if element.disabled %}disabled{% endif %}
-        {% if field_error %}aria-describedby="error-{{ name }}" aria-invalid="true"{% endif %}
+        {% if element.description or field_error %}
+        aria-describedby="{% if element.description %}description-{{ name }}{% endif %}{% if element.description and field_error %} {% endif %}{% if field_error %}error-{{ name }}{% endif %}"
+        {% endif %}
+        {% if field_error %}aria-invalid="true"{% endif %}
         {% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}
         {% if element.ajax %}data-ajax-trigger="{{ element.ajax.callback }}" data-ajax-event="{{ element.ajax.event | default(value='change') }}"{% endif %}
     >
@@ -28,6 +31,6 @@
     {% endif %}
 
     {% if element.description %}
-    <p class="form-item__description">{{ element.description }}</p>
+    <p id="description-{{ name }}" class="form-item__description">{{ element.description }}</p>
     {% endif %}
 </div>

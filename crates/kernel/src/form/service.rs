@@ -196,7 +196,7 @@ impl FormService {
     /// API (B326).
     ///
     /// A JSON body keeps its own contract (no CSRF form, no `form_build_id`,
-    /// `fields` sent as is — see `routes::item::submitted_fields`), so it
+    /// `fields` sent as is, see `routes::item::submitted_fields`), so it
     /// never calls [`Self::process`]. But a plugin that owns an undeclared
     /// `fields` key (scheduled publishing's `field_publish_on` /
     /// `field_unpublish_on`, for one) still needs to refuse a bad value on

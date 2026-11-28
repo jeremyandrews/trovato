@@ -107,6 +107,9 @@ fn form_tokens(html: &str) -> String {
     )
 }
 
+/// GET a page as HTML, with Tera's escaped `/` (`&#x2F;`) read back as the
+/// browser reads it, so a URL or a zone name (`Europe/Rome`) can be matched
+/// as written (`form_pipeline_test.rs`'s `get_page` does the same).
 async fn get_page(app: &TestApp, cookies: &str, uri: &str) -> String {
     let page = app
         .request_with_cookies(
@@ -114,7 +117,7 @@ async fn get_page(app: &TestApp, cookies: &str, uri: &str) -> String {
             cookies,
         )
         .await;
-    body_string(page).await
+    body_string(page).await.replace("&#x2F;", "/")
 }
 
 async fn post_form(app: &TestApp, cookies: &str, uri: &str, body: String) -> (StatusCode, String) {
@@ -330,6 +333,55 @@ fn a_save_in_europe_rome_stores_utc_seconds_and_sets_the_timer() {
     });
 }
 
+/// The same conversion and timer, for "Unpublish on" on a published item:
+/// the goal is "goes live (or comes down)" and the plugin writes
+/// `field_unpublish_on`/arms an `unpublish:<id>` timer through code shared
+/// with "Publish on" (`apply_resolved`, `Change`'s two constants), but only
+/// a dedicated test of this direction would catch a field-name mix-up (the
+/// unpublish value landing under `field_publish_on`, or the wrong timer
+/// prefix).
+#[test]
+fn a_save_in_europe_rome_stores_an_unpublish_and_sets_its_timer() {
+    run(|app| async move {
+        let (uid, cookies) = editor(app, "b326romeun", "Europe/Rome").await;
+        let id = seed_page(app, uid, 1, json!({"body": "x"})).await;
+
+        let edit_path = format!("/item/{id}/edit");
+        let html = get_page(app, &cookies, &edit_path).await;
+        // `status` omitted: a rendered, unchecked "Published" checkbox asks
+        // to unpublish, which the item already is not (it is published),
+        // but nothing here changes it immediately: the schedule just arms a
+        // future unpublish instead.
+        let body = format!(
+            "{}&title=Schedule+probe&body=x&status=1&_status_rendered=1&\
+             schedule_unpublish_on=2027-09-15T12%3A00",
+            form_tokens(&html)
+        );
+        let (status, text) = post_form(app, &cookies, &edit_path, body).await;
+        assert!(status.is_success(), "{status}: {text}");
+
+        // 2027-09-15 12:00 CEST (UTC+2) == 2027-09-15 10:00 UTC.
+        let expected: i64 = 1_821_002_400;
+        assert_eq!(
+            stored_fields(app, id).await["field_unpublish_on"],
+            json!(expected)
+        );
+        assert!(
+            stored_fields(app, id)
+                .await
+                .get("field_publish_on")
+                .is_none(),
+            "only the field actually set must be written"
+        );
+        assert_eq!(timer_run_at(app, id, "unpublish").await, Some(expected));
+        assert_eq!(
+            item_status(app, id).await,
+            1,
+            "still published, just scheduled"
+        );
+    });
+}
+
 /// Clearing the input removes the stored key and cancels the timer.
 #[test]
 fn clearing_the_input_removes_the_key_and_cancels_the_timer() {
@@ -387,10 +439,7 @@ fn a_past_date_is_refused() {
             form_tokens(&html)
         );
         let (status, text) = post_form(app, &cookies, &edit_path, body).await;
-        assert!(
-            !status.is_redirection() && status != StatusCode::OK,
-            "{status}"
-        );
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
         assert!(
             text.contains("future"),
             "the past date must be refused with its message: {text}"
@@ -418,7 +467,8 @@ fn unpublish_before_publish_is_refused() {
              schedule_unpublish_on=2029-01-01T00%3A00",
             form_tokens(&html)
         );
-        let (_status, text) = post_form(app, &cookies, &edit_path, body).await;
+        let (status, text) = post_form(app, &cookies, &edit_path, body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
         assert!(
             text.contains("after publish on"),
             "the bad order must be refused with its message: {text}"
@@ -446,10 +496,51 @@ fn publish_on_is_refused_on_an_already_published_item() {
              schedule_publish_on=2030-01-01T00%3A00",
             form_tokens(&html)
         );
-        let (_status, text) = post_form(app, &cookies, &edit_path, body).await;
+        let (status, text) = post_form(app, &cookies, &edit_path, body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
         assert!(
             text.contains("already published"),
             "scheduling a publish on an already published item must be refused: {text}"
+        );
+        assert!(
+            stored_fields(app, id)
+                .await
+                .get("field_publish_on")
+                .is_none()
+        );
+    });
+}
+
+/// Checking "Published" and setting a future "Publish on" in the very same
+/// save must be refused too, not only scheduling one on an item that was
+/// already published before this save: the item is unpublished a moment
+/// before the save, but this save's own status change makes a future
+/// publish date meaningless at the instant it lands, and `sync_timers`
+/// would never arm a timer for it (it only arms one for the status the
+/// save leaves the item in, which here is already published).
+#[test]
+fn publishing_and_scheduling_a_publish_in_the_same_save_is_refused() {
+    run(|app| async move {
+        let (uid, cookies) = editor(app, "b326pubsave", "UTC").await;
+        let id = seed_page(app, uid, 0, json!({"body": "x"})).await;
+
+        let edit_path = format!("/item/{id}/edit");
+        let html = get_page(app, &cookies, &edit_path).await;
+        let body = format!(
+            "{}&title=Schedule+probe&body=x&status=1&_status_rendered=1&\
+             schedule_publish_on=2030-01-01T00%3A00",
+            form_tokens(&html)
+        );
+        let (status, text) = post_form(app, &cookies, &edit_path, body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
+        assert!(
+            text.contains("already published"),
+            "publishing and scheduling a publish in the same save must be refused: {text}"
+        );
+        assert_eq!(
+            item_status(app, id).await,
+            0,
+            "a refused save must not publish the item either"
         );
         assert!(
             stored_fields(app, id)
@@ -475,7 +566,8 @@ fn a_dst_gap_time_is_refused() {
             "{}&title=Schedule+probe&body=x&schedule_publish_on=2030-03-10T02%3A30",
             form_tokens(&html)
         );
-        let (_status, text) = post_form(app, &cookies, &edit_path, body).await;
+        let (status, text) = post_form(app, &cookies, &edit_path, body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
         assert!(
             text.contains("does not exist"),
             "a DST gap time must be refused with its own message: {text}"
@@ -587,6 +679,13 @@ fn the_json_item_api_refuses_a_publish_on_an_already_published_item() {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
         assert!(text.contains("already published"), "{text}");
+        assert!(
+            stored_fields(app, id)
+                .await
+                .get("field_publish_on")
+                .is_none(),
+            "a refused JSON save must not write"
+        );
     });
 }
 
@@ -651,6 +750,53 @@ fn an_item_scheduled_through_the_form_is_published_within_a_second() {
         assert_eq!(item_status(app, id).await, 1, "published by its timer");
         let late_ms = live_at.timestamp_millis() - publish_at * 1000;
         eprintln!("timer fired {late_ms} ms after the scheduled publish date");
+        assert!(
+            (0..1000).contains(&late_ms),
+            "within a second: {late_ms} ms"
+        );
+    });
+}
+
+/// The other direction: a published item scheduled through the form to
+/// unpublish a few seconds out comes down within a second of it, through
+/// the real timer, the goal's "or comes down" half.
+#[test]
+fn an_item_scheduled_through_the_form_comes_down_within_a_second() {
+    run(|app| async move {
+        let (uid, cookies) = editor(app, "b326e2eun", "UTC").await;
+        let id = seed_page(app, uid, 1, json!({"body": "x"})).await;
+
+        let unpublish_at = chrono::Utc::now().timestamp() + 3;
+        let local = chrono::DateTime::from_timestamp(unpublish_at, 0)
+            .unwrap()
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
+        let edit_path = format!("/item/{id}/edit");
+        let html = get_page(app, &cookies, &edit_path).await;
+        let body = format!(
+            "{}&title=Schedule+probe&body=x&status=1&_status_rendered=1&\
+             schedule_unpublish_on={}",
+            form_tokens(&html),
+            urlencoding::encode(&local)
+        );
+        let (status, text) = post_form(app, &cookies, &edit_path, body).await;
+        assert!(status.is_success(), "{status}: {text}");
+        assert_eq!(timer_run_at(app, id, "unpublish").await, Some(unpublish_at));
+        assert_eq!(item_status(app, id).await, 1);
+
+        let timers = app.state.timers().clone();
+        timers.set_owner_scope(Some(vec![PLUGIN.to_string()]));
+        let (token, handle) = start_scheduler(&timers);
+        let until = tokio::time::Instant::now() + Duration::from_secs(15);
+        while item_status(app, id).await == 1 && tokio::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let down_at = chrono::Utc::now();
+        stop_scheduler(token, handle).await;
+
+        assert_eq!(item_status(app, id).await, 0, "taken down by its timer");
+        let late_ms = down_at.timestamp_millis() - unpublish_at * 1000;
+        eprintln!("timer fired {late_ms} ms after the scheduled unpublish date");
         assert!(
             (0..1000).contains(&late_ms),
             "within a second: {late_ms} ms"

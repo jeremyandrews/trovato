@@ -379,7 +379,7 @@ pub fn tap_timer(input: TimerInput) -> serde_json::Value {
 // `datetime-local` inputs read in the viewer's own time zone and converted to
 // and from UTC seconds through Postgres (`AT TIME ZONE`), the same mechanism
 // B278's admin timers report already uses from the kernel side
-// (`routes/admin_timers.rs`) — no time zone library in this plugin.
+// (`routes/admin_timers.rs`), so no time zone library in this plugin.
 //
 // `content::submission::build_item_fields` (the item form's save path) only
 // ever writes a content type's *declared* fields, so an input this plugin adds
@@ -387,7 +387,7 @@ pub fn tap_timer(input: TimerInput) -> serde_json::Value {
 // `item.fields` that way. Taking the values from `tap_form_submit` instead
 // (posted, after the save, filtered to what the form rendered rather than to
 // the type's schema) and writing them through `host::save_item`, with no
-// kernel change, closes that gap — but only with the item's *complete*
+// kernel change, closes that gap, but only with the item's *complete*
 // current `fields`, read once just before the write and changed in just the
 // two schedule keys: `host::save_item` with a *partial* `fields` object would
 // silently wipe every other field (`gate_field_writes` starts from the
@@ -396,13 +396,13 @@ pub fn tap_timer(input: TimerInput) -> serde_json::Value {
 // dodge that trap too, but would not invalidate the item cache the way a real
 // `ItemService` write does, so a raw-written date would not reliably show
 // back on the edit form, or reach `tap_item_update`'s `sync_timers`, until
-// some unrelated save happened to refresh it — `tap_form_submit`, below, has
+// some unrelated save happened to refresh it. `tap_form_submit`, below, has
 // the detail.
 //
 // The one kernel seam this needed: `tap_form_validate`'s dispatched input
 // gained `item_id` (it carried only `form_id`/`values`), and a new
 // `FormService::validate_fields` dispatches that same tap for the JSON item
-// API, with a synthetic `json_item_{type}` form id — so the one
+// API, with a synthetic `json_item_{type}` form id, so the one
 // `tap_form_validate` below guards both paths, as the form is not the only
 // guard a client can reach.
 
@@ -442,7 +442,7 @@ fn is_uuid(s: &str) -> bool {
 }
 
 /// The item id in an item form's action url (`/item/{id}/edit` or
-/// `/admin/content/{id}/edit`) — the one place the built `Form` carries it,
+/// `/admin/content/{id}/edit`), the one place the built `Form` carries it,
 /// since `tap_form_alter`'s input has no `item_id` of its own (unlike
 /// `tap_form_validate` and `tap_form_submit`, below, which do). `None` for an
 /// add form, whose action names no id.
@@ -460,16 +460,16 @@ fn item_id_from_action(action: &str) -> Option<String> {
 /// (`host::query_raw`), not through `host::get_item`.
 ///
 /// `host::get_item` decides the call as the acting user and answers a
-/// denied **view** the same as a missing item — but an editor often holds
+/// denied **view** the same as a missing item, but an editor often holds
 /// `edit` on their own unpublished draft without separately holding `view
 /// own unpublished content`, a different permission axis, and every caller
 /// here (`tap_form_alter`, `tap_form_validate`, `tap_form_submit`) only ever
 /// reads an item the kernel's own route has *already* decided this request
 /// may edit (the form would not have built, or the save would not have
 /// happened, otherwise). Reading past `get_item`'s view gate is therefore not
-/// a new read this user was not already allowed, and the alternative —
+/// a new read this user was not already allowed, and the alternative,
 /// `get_item` wrongly answering "no such item" for the very item being
-/// edited — would hide an already-stored schedule from the reopened form,
+/// edited, would hide an already-stored schedule from the reopened form,
 /// mis-score "already published" in validation, and silently drop a write in
 /// `tap_form_submit`. `item` is not a protected table (`db_policy.rs`), so
 /// `query_raw` carries it.
@@ -487,8 +487,8 @@ fn read_item(item_id: &str) -> Option<(std::collections::HashMap<String, serde_j
 }
 
 /// The signed-in user's time zone: `host::load_users` (`users` is a
-/// protected table, off limits to `query_raw` — see
-/// `crates/kernel/src/plugin/db_policy.rs`'s `PROTECTED_TABLES` — so this is
+/// protected table, off limits to `query_raw`, see
+/// `crates/kernel/src/plugin/db_policy.rs`'s `PROTECTED_TABLES`, so this is
 /// the one sanctioned way to read it), checked against Postgres, else UTC
 /// when it is unset or empty or Postgres does not know it. No site-wide
 /// default time zone exists in this codebase to fall back to first. The
@@ -514,7 +514,7 @@ fn viewer_zone() -> String {
     }
 }
 
-/// `secs` (Unix seconds) as a `datetime-local` value in `zone` — the shape
+/// `secs` (Unix seconds) as a `datetime-local` value in `zone`, the shape
 /// the input re-reads, `YYYY-MM-DDTHH:MM`. `None` on a host error: the SQL is
 /// fixed and `secs` always ours, so this should not happen, but a form that
 /// cannot prefill a value shows it empty rather than refusing to render.
@@ -531,7 +531,7 @@ fn utc_to_local(secs: i64, zone: &str) -> Option<String> {
 /// The result of reading one `datetime-local` value typed in a time zone.
 enum Converted {
     /// A real instant. The earlier of two when the typed time fell in a DST
-    /// overlap (occurs twice, each a real moment — the earlier is as good an
+    /// overlap (occurs twice, each a real moment, so the earlier is as good an
     /// answer as the later, and a deterministic one).
     At(i64),
     /// The typed time does not exist in the zone: a DST gap, where clocks
@@ -548,7 +548,7 @@ enum Converted {
 /// to one answer with no way to ask it for the other (always the *later* of
 /// the two real instants for an overlap, confirmed against a live Postgres;
 /// and for a gap, the offset that applies *after* the skip, which silently
-/// shifts the result by the jump rather than refusing it) — so this asks
+/// shifts the result by the jump rather than refusing it), so this asks
 /// twice instead: with the UTC offset in force two hours before `local` and
 /// two hours after, both safely outside any real-world transition window
 /// (under two hours everywhere), applied to `local` by plain interval
@@ -670,19 +670,42 @@ enum Which {
     Unpublish,
 }
 
-/// The refusals one submission's resolved publish and unpublish values earn,
-/// against the item's current stored state. The one function both
-/// `tap_form_validate` call sites run (the form, and the JSON item API's
-/// synthetic form id), so a submission cannot reach a rule the other path
-/// enforced.
+/// The status this save will leave the item in, for the "already
+/// published"/"already unpublished" checks in [`schedule_errors`]: the
+/// stored status alone is not enough, because the "Published" checkbox is
+/// posted in the very same submission as the schedule, on the form path.
+/// `_status_rendered` is the hidden marker the kernel's own checkbox always
+/// posts when offered at all (`content/form.rs`), so its presence, not
+/// `status`'s, says whether this submission could have changed the status;
+/// `status`'s own presence says whether it asked to (a checkbox posts
+/// nothing unchecked). The JSON item API's status travels outside `fields`
+/// entirely (top level, alongside `fields`, not in it), so this plugin
+/// cannot see it there and falls back to the stored status.
+fn status_after_this_save(is_json: bool, values: &serde_json::Value, stored_status: i64) -> i64 {
+    if !is_json && values.get("_status_rendered").is_some() {
+        i64::from(values.get("status").is_some())
+    } else {
+        stored_status
+    }
+}
+
+/// The refusals one submission's resolved publish and unpublish values earn.
+/// The one function both `tap_form_validate` call sites run (the form, and
+/// the JSON item API's synthetic form id), so a submission cannot reach a
+/// rule the other path enforced.
 ///
 /// - A past date is refused unless it is unchanged from what is stored
 ///   (resaving an item whose time passed a second ago must not fail).
 /// - "Publish on" is refused on an item that is already published;
 ///   "Unpublish on" is refused on an item that is unpublished with no
 ///   "Publish on" pending (effective, after this submission, not only
-///   stored) — either way nothing to schedule, and a plain early refusal
-///   reads better than a timer that would silently never fire.
+///   stored), either way nothing to schedule, and a plain early refusal
+///   reads better than a timer that would silently never fire. Checked
+///   against `effective_status`, the status this very save will leave the
+///   item in (the caller's job to work out, since the "Published" checkbox is
+///   posted in the very same submission, so an editor who publishes an item
+///   and sets a future "Publish on" in the same save must be refused too,
+///   not just one who does it as a second, separate save).
 /// - "Unpublish on" must be after "Publish on" when both will end up set,
 ///   checked only when at least one of the two was actually touched by this
 ///   submission: a save that touches neither must not newly fail on a pair
@@ -690,7 +713,7 @@ enum Which {
 fn schedule_errors(
     publish: &Resolved,
     unpublish: &Resolved,
-    current_status: i64,
+    effective_status: i64,
     stored_publish: Option<i64>,
     stored_unpublish: Option<i64>,
     now: i64,
@@ -727,7 +750,7 @@ fn schedule_errors(
                 "Publish on must be a date and time in the future.".to_string(),
             ));
         }
-        if current_status == 1 {
+        if effective_status == 1 {
             errors.push((
                 Which::Publish,
                 "This item is already published; unpublish it or clear the date.".to_string(),
@@ -741,7 +764,7 @@ fn schedule_errors(
                 "Unpublish on must be a date and time in the future.".to_string(),
             ));
         }
-        if current_status == 0 && effective_publish.is_none() {
+        if effective_status == 0 && effective_publish.is_none() {
             errors.push((
                 Which::Unpublish,
                 "This item is already unpublished; publish it, schedule a publish date, or \
@@ -774,25 +797,24 @@ fn schedule_fieldset(
     weight: i32,
 ) -> serde_json::Value {
     let zone_html = escape_html(zone);
-    let mut children = serde_json::Map::new();
 
-    let field = |name: &str, label: &str, default: Option<i64>, weight: i32| {
+    // The hint goes through `element.description`, the kernel's own way to
+    // tie a field's help text to it with `aria-describedby` (`form/input.html`;
+    // merged with the error's id when the field also carries one), rather
+    // than a markup element this plugin wires up with its own id: it is
+    // tied the same way every other field's hint is, on both the front end
+    // form and the admin content form's own macro, which does the same
+    // merge from its own `hint` parameter.
+    let field = |label: &str, default: Option<i64>, weight: i32| {
         serde_json::json!({
             "type": "input",
             "input_type": "datetime-local",
             "title": format!("{label} ({zone})"),
-            "default_value": default.and_then(|s| utc_to_local(s, zone)).unwrap_or_default(),
-            "attributes": {"aria-describedby": format!("{name}-hint"), "step": "60"},
-            "weight": weight,
-        })
-    };
-    let hint = |name: &str, weight: i32| {
-        serde_json::json!({
-            "type": "markup",
-            "value": format!(
-                "<p id=\"{name}-hint\" class=\"form-item__description\">Read and saved in your \
-                 account's time zone, {zone_html}. Leave empty for none.</p>"
+            "description": format!(
+                "Read and saved in your account's time zone, {zone_html}. Leave empty for none."
             ),
+            "default_value": default.and_then(|s| utc_to_local(s, zone)).unwrap_or_default(),
+            "attributes": {"step": "60"},
             "weight": weight,
         })
     };
@@ -810,26 +832,25 @@ fn schedule_fieldset(
         })
     };
 
+    let mut children = serde_json::Map::new();
     children.insert(
         IN_PUBLISH.to_string(),
-        field(IN_PUBLISH, "Publish on", stored_publish, 0),
+        field("Publish on", stored_publish, 0),
     );
-    children.insert(format!("_{IN_PUBLISH}_hint"), hint(IN_PUBLISH, 1));
     if let Some(secs) = stored_publish {
         children.insert(
             "_schedule_publish_status".to_string(),
-            status("Scheduled to publish on", secs, 2),
+            status("Scheduled to publish on", secs, 1),
         );
     }
     children.insert(
         IN_UNPUBLISH.to_string(),
-        field(IN_UNPUBLISH, "Unpublish on", stored_unpublish, 3),
+        field("Unpublish on", stored_unpublish, 2),
     );
-    children.insert(format!("_{IN_UNPUBLISH}_hint"), hint(IN_UNPUBLISH, 4));
     if let Some(secs) = stored_unpublish {
         children.insert(
             "_schedule_unpublish_status".to_string(),
-            status("Scheduled to unpublish on", secs, 5),
+            status("Scheduled to unpublish on", secs, 3),
         );
     }
 
@@ -846,7 +867,7 @@ fn schedule_fieldset(
 /// holder of [`PERM`]; nothing otherwise. After the kernel's own "Publishing
 /// options" group (weight `STATUS_WEIGHT + 5`) and the stage selector
 /// (`STATUS_WEIGHT + 10`), before the revision log (`LOG_WEIGHT`) and Save
-/// (`SUBMIT_WEIGHT`) — see `crates/kernel/src/content/form.rs`.
+/// (`SUBMIT_WEIGHT`); see `crates/kernel/src/content/form.rs`.
 #[plugin_tap]
 pub fn tap_form_alter(mut form: serde_json::Value) -> serde_json::Value {
     const WEIGHT: i32 = 920;
@@ -943,6 +964,8 @@ pub fn tap_form_validate(input: serde_json::Value) -> serde_json::Value {
         .as_ref()
         .and_then(|(fields, _)| item_date(fields, "field_unpublish_on"));
 
+    let effective_status = status_after_this_save(is_json, &values, current_status);
+
     let zone = (!is_json).then(viewer_zone);
     let publish = resolve(raw_publish.as_ref(), zone.as_deref());
     let unpublish = resolve(raw_unpublish.as_ref(), zone.as_deref());
@@ -950,7 +973,7 @@ pub fn tap_form_validate(input: serde_json::Value) -> serde_json::Value {
     let errors = schedule_errors(
         &publish,
         &unpublish,
-        current_status,
+        effective_status,
         stored_publish,
         stored_unpublish,
         now(),
@@ -987,31 +1010,30 @@ fn apply_resolved(
 }
 
 /// A save of the item form's schedule group: write the resolved values (the
-/// JSON item API needs no help — its own `field_publish_on`/`field_unpublish_on`
+/// JSON item API needs no help: its own `field_publish_on`/`field_unpublish_on`
 /// are ordinary, if undeclared, keys in the `fields` object it already sends
 /// whole, so they are stored like any other field with no plugin
 /// involvement).
 ///
 /// `tap_item_insert`/`tap_item_update` already ran earlier in this same save,
 /// against the item as it was *before* these dates existed on it (the form
-/// path never gets them into `item.fields`, see the module doc) — so without
+/// path never gets them into `item.fields`, see the module doc), so without
 /// this, an item scheduled through the form would get no timer until some
 /// later, unrelated save.
 ///
 /// This writes through `host::save_item` with the item's *complete* current
-/// `fields` ([`read_item`], not `host::get_item` — see its doc for why; read
+/// `fields` ([`read_item`], not `host::get_item`, see its doc for why; read
 /// once, before any write, so nothing this call itself did can make that
-/// read stale) with only the two schedule keys changed —
-/// never a partial object (the module doc explains why) — rather than the
-/// single-key raw SQL merge this plugin's own cron path uses for its
-/// claim-and-restore dance. A raw write does not invalidate the item cache
-/// (`ItemService::load`'s in-memory cache, `content/item_service.rs`), so a
-/// raw-written date would not reliably show back on the edit form or reach
-/// `tap_item_update`'s `sync_timers` on a later read until some unrelated
-/// save happened to refresh it. `save_item` is a real `ItemService` write: it
-/// invalidates that cache and fires `tap_item_update` itself, which is what
-/// actually sets or cancels the timer — no second call to `sync_timers`
-/// needed here.
+/// read stale) with only the two schedule keys changed, never a partial
+/// object (the module doc explains why), rather than the single-key raw SQL
+/// merge this plugin's own cron path uses for its claim-and-restore dance. A
+/// raw write does not invalidate the item cache (`ItemService::load`'s
+/// in-memory cache, `content/item_service.rs`), so a raw-written date would
+/// not reliably show back on the edit form or reach `tap_item_update`'s
+/// `sync_timers` on a later read until some unrelated save happened to
+/// refresh it. `save_item` is a real `ItemService` write: it invalidates that
+/// cache and fires `tap_item_update` itself, which is what actually sets or
+/// cancels the timer, so no second call to `sync_timers` needed here.
 #[plugin_tap]
 pub fn tap_form_submit(input: serde_json::Value) -> serde_json::Value {
     let form_id = input
@@ -1330,8 +1352,8 @@ mod tests {
     /// Permission and form-shape checks that do not need the database: a
     /// user without the permission sees no alteration (the stub always
     /// grants it, so this instead proves the function skips any form the
-    /// permission check would have gated past — every form other than an
-    /// item add/edit) and `tap_form_submit`/`tap_form_validate` ignore a
+    /// permission check would have gated past, every form other than an
+    /// item add/edit, and `tap_form_submit`/`tap_form_validate` ignore a
     /// form that is neither.
     #[test]
     fn the_new_taps_ignore_every_form_that_is_not_theirs() {
@@ -1390,14 +1412,83 @@ mod tests {
             "item_id": null,
         }));
         assert_eq!(result["errors"][0]["field"], "field_publish_on");
+        assert!(
+            result["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("future"),
+            "{result}"
+        );
+    }
+
+    /// Checking "Published" in the same submission as a future "Publish on"
+    /// must count as already published: the stored status alone (unpublished,
+    /// a moment ago) says nothing is wrong, but this submission's own status
+    /// change makes it an already-published item the instant it lands, and
+    /// nothing would ever have armed its timer (`sync_timers` only arms one
+    /// for the status the save leaves the item in).
+    #[test]
+    fn status_after_this_save_reads_the_forms_own_status_change() {
+        let publishing = serde_json::json!({"status": "1", "_status_rendered": "1"});
+        assert_eq!(status_after_this_save(false, &publishing, 0), 1);
+
+        let unpublishing = serde_json::json!({"_status_rendered": "1"});
+        assert_eq!(status_after_this_save(false, &unpublishing, 1), 0);
+    }
+
+    /// A submission that never rendered the "Published" checkbox (no
+    /// `publish content`) says nothing about status: the stored one stands.
+    /// The JSON item API's status is not part of `fields` at all, so the
+    /// same fallback applies there regardless of what `values` holds.
+    #[test]
+    fn status_after_this_save_falls_back_to_stored_when_the_save_cannot_say() {
+        let no_checkbox = serde_json::json!({});
+        assert_eq!(status_after_this_save(false, &no_checkbox, 1), 1);
+
+        let json_with_a_status_like_key = serde_json::json!({"status": "1"});
+        assert_eq!(
+            status_after_this_save(true, &json_with_a_status_like_key, 0),
+            0
+        );
+    }
+
+    /// The bug this closes: `tap_form_validate` used to check the schedule
+    /// against the item's stored status only, so publishing an item and
+    /// scheduling a future "Publish on" in the very same save slipped
+    /// through (the save had not happened yet when it read "unpublished").
+    #[test]
+    fn publishing_and_scheduling_a_publish_in_the_same_save_is_refused() {
+        let status = status_after_this_save(
+            false,
+            &serde_json::json!({"status": "1", "_status_rendered": "1"}),
+            0,
+        );
+        let errors = schedule_errors(
+            &Resolved::At(2_000_000_000),
+            &Resolved::Unset,
+            status,
+            None,
+            None,
+            1_700_000_000,
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|(w, m)| matches!(w, Which::Publish) && m.contains("already published")),
+            "{:?}",
+            error_messages(&errors)
+        );
     }
 
     #[test]
-    fn submit_ignores_a_form_with_neither_key_posted() {
-        // With the native stub, `execute_raw` always returns `Ok(0)`, so a
-        // call would not panic either way; this proves the short circuit by
-        // being here at all rather than by observing a side effect the
-        // stub cannot show.
+    fn submit_does_not_panic_when_neither_key_is_posted() {
+        // The native stub makes `read_item` always answer `None`, so this
+        // cannot distinguish the short circuit running from it falling
+        // through to that same `None` (the integration suite's
+        // `a_save_without_the_permission_keeps_the_stored_schedule`, and
+        // every other test here that saves a form without touching the
+        // schedule, is what actually proves an untouched save writes
+        // nothing); this only guards the call itself against a panic.
         let result = __inner_tap_form_submit(serde_json::json!({
             "form_id": "item_edit_blog",
             "values": {"title": "x"},

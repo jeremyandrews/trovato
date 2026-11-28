@@ -39,7 +39,7 @@ files = [
 # `current_user_id`/`current_user_has_permission` and, with `user_directory`
 # below, `load_users` (B326): the item form's "Publishing schedule" group is
 # shown only to a holder of `schedule publishing`, converted to and from
-# their own time zone — `users` is a protected table (`db_policy.rs`), so
+# their own time zone; `users` is a protected table (`db_policy.rs`), so
 # `load_users` is the one sanctioned way to read it.
 host_interfaces = ["db", "logging", "item-api", "timer", "user-api"]
 raw_sql = true
