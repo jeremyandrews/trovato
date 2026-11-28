@@ -14,8 +14,8 @@
 //! size) instead.
 //!
 //! The SSRF fence has three layers, all kernel-internal (p11i / G1):
-//! 1. A pre-send string/literal check ([`validate_url`]): scheme, internal
-//!    hostnames, and private/reserved IP literals.
+//! 1. A pre-send string/literal check ([`resolve_outbound_client`]): scheme,
+//!    internal hostnames, and private/reserved IP literals.
 //! 2. A validating DNS resolver ([`ValidatingResolver`]) that resolves the
 //!    hostname, rejects the request if any resolved address is private, and
 //!    pins the connection to the checked addresses — closing the DNS-rebinding
@@ -38,6 +38,21 @@
 //! [`crate::net_policy`], and they classify the host `url` already parsed
 //! rather than re-parsing its string form — which is what let bracketed IPv6
 //! literals past every one of them at once.
+//!
+//! # The operator allowlist (`PLUGIN_HTTP_PRIVATE_ALLOW`)
+//!
+//! An operator can name one plugin, one private/loopback destination and one
+//! port that plugin may reach ([`crate::plugin_http_allow`]), for example a
+//! self-hosted Varnish cache. [`resolve_outbound_client`] is where this is
+//! consulted: it is layer 1's job now, deciding, for a URL layer 1 would
+//! otherwise refuse, whether an entry names exactly this plugin, port and
+//! destination and, if so, handing back that entry's own client, built once
+//! at startup by [`build_plugin_http_allow_runtime`], with a resolver that
+//! relaxes only for a hostname entry's own name, and the same per-hop redirect
+//! revalidation (layer 3) every client carries, so a redirect away from the
+//! granted destination is refused exactly as it would be with no entry at
+//! all. Every other plugin, port and destination meets the same refusal as
+//! before: the default fence ([`ValidatingResolver`], `revalidating_redirect_policy`) is unchanged.
 
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -54,6 +69,7 @@ use super::trace::{HostCallGuard, TracedLinker};
 
 use crate::net_policy::is_disallowed_ip;
 use crate::plugin::{PluginState, WasmtimeExt};
+use crate::plugin_http_allow::{self, PluginHttpAllow};
 use trovato_sdk::host_errors;
 
 use super::{read_string_from_memory, write_bytes_to_memory, write_string_to_memory};
@@ -135,6 +151,7 @@ pub fn register_http_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         return host_errors::ERR_NO_SERVICES;
                     };
                     let http = services.http.clone();
+                    let http_allow = services.http_allow.clone();
                     let plugin_name = caller.data().plugin_name.clone();
 
                     // Deserialize request
@@ -151,13 +168,21 @@ pub fn register_http_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                             }
                         };
 
-                    // Validate URL: scheme, host, and SSRF protections
-                    if let Err(code) = validate_url(&request.url, &plugin_name) {
-                        return code;
-                    }
+                    // Validate URL (scheme, host, SSRF protections) and pick
+                    // the client: the default, or a plugin-allowlist entry's.
+                    let client = match resolve_outbound_client(
+                        &request.url,
+                        &plugin_name,
+                        &http,
+                        &http_allow,
+                    ) {
+                        Ok(c) => c,
+                        Err(code) => return code,
+                    };
 
                     // Execute request
-                    let response = match execute_http_request(&http, &request, &plugin_name).await {
+                    let response = match execute_http_request(client, &request, &plugin_name).await
+                    {
                         Ok(r) => r,
                         Err(code) => return code,
                     };
@@ -219,6 +244,7 @@ pub fn register_http_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         return host_errors::ERR_NO_SERVICES;
                     };
                     let http = services.http.clone();
+                    let http_allow = services.http_allow.clone();
                     let plugin_name = caller.data().plugin_name.clone();
                     let max_transfer = caller.data().http_max_transfer;
 
@@ -236,7 +262,9 @@ pub fn register_http_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         };
 
                     let stream =
-                        match open_stream(&http, &request, &plugin_name, max_transfer).await {
+                        match open_stream(&http, &http_allow, &request, &plugin_name, max_transfer)
+                            .await
+                        {
                             Ok(s) => s,
                             Err(code) => return code,
                         };
@@ -364,7 +392,7 @@ enum UrlPolicyReject {
 /// must be `http`/`https`, the host must be present and not a known-internal
 /// name, and any IP *literal* must not be private/reserved.
 ///
-/// This is the check shared by the pre-send [`validate_url`] and the
+/// This is the check shared by the pre-send [`resolve_outbound_client`] and the
 /// per-redirect-hop revalidation in [`revalidating_redirect_policy`]. It does
 /// **not** resolve DNS — a hostname that resolves to a private address is caught
 /// separately, at connect time, by [`ValidatingResolver`] (layer 2). Splitting
@@ -410,29 +438,76 @@ fn check_url_policy(parsed: &Url) -> std::result::Result<(), UrlPolicyReject> {
 }
 
 /// Validate a URL for safe outbound use before sending (scheme + string/literal
-/// SSRF protection).
+/// SSRF protection), with no allowlist consulted: equivalent to
+/// [`resolve_outbound_client`] with an empty [`PluginHttpAllowRuntime`].
 ///
-/// Blocks non-HTTP(S) schemes, private/loopback IP literals, and hostnames
-/// commonly used for internal services. This is the pre-send gate at both entry
-/// points (`request` and `open_stream`). DNS-based rebinding and redirect-based
-/// bypasses are closed by the client-level layers ([`ValidatingResolver`] and
-/// [`revalidating_redirect_policy`]) that every outbound client is built with.
+/// Kept for the tests and call sites that only need "is this URL acceptable
+/// at all", not the client it would use.
+#[cfg(test)]
 fn validate_url(raw_url: &str, plugin_name: &str) -> std::result::Result<(), i32> {
+    resolve_outbound_client(
+        raw_url,
+        plugin_name,
+        &reqwest::Client::new(),
+        &PluginHttpAllowRuntime::empty(),
+    )
+    .map(|_| ())
+}
+
+/// The pre-send gate at both entry points (`request` and `open_stream`):
+/// decide which client an outbound request uses, and refuse it outright when
+/// neither the default fence nor the operator allowlist accepts it.
+///
+/// The allowlist is consulted first, before the default fence's verdict: an
+/// entry in `allow` naming exactly this plugin, this port and this
+/// destination hands back that entry's own client (relaxed only for its own
+/// destination), regardless of whether the host happens to be a reserved
+/// internal-looking name. A hostname entry's destination is not a reserved
+/// suffix like `*.internal` — it is whatever hostname the operator wrote, so
+/// checking the allowlist only after [`check_url_policy`] already rejected
+/// the host would silently leave an entry for an ordinary-looking hostname
+/// inert, since that check only rejects `*.internal`/`*.local`/`localhost`
+/// names and private IP literals, never an arbitrary domain. No entry can
+/// match a bad scheme or a missing host ([`plugin_http_allow::Entry::matches`]
+/// requires both), so falling through to [`check_url_policy`] for anything
+/// the allowlist did not grant still blocks exactly what it blocks today.
+/// DNS-based rebinding and redirect-based bypasses are closed by the
+/// client-level layers ([`ValidatingResolver`] and
+/// [`revalidating_redirect_policy`]) every client, default or per-entry, is
+/// built with.
+fn resolve_outbound_client<'a>(
+    raw_url: &str,
+    plugin_name: &str,
+    default: &'a reqwest::Client,
+    allow: &'a PluginHttpAllowRuntime,
+) -> std::result::Result<&'a reqwest::Client, i32> {
     let parsed = Url::parse(raw_url).map_err(|_| {
         warn!(plugin = %plugin_name, url = %raw_url, "malformed URL");
         host_errors::ERR_HTTP_INVALID_URL
     })?;
 
-    check_url_policy(&parsed).map_err(|reason| {
-        let detail = match reason {
-            UrlPolicyReject::Scheme => "blocked HTTP request with non-HTTP scheme",
-            UrlPolicyReject::NoHost => "URL has no host",
-            UrlPolicyReject::InternalHost => "blocked HTTP request to private hostname",
-            UrlPolicyReject::PrivateIpLiteral => "blocked HTTP request to private/loopback IP",
-        };
-        warn!(plugin = %plugin_name, url = %raw_url, "{detail}");
-        host_errors::ERR_HTTP_INVALID_URL
-    })
+    if let Some(client) = allow.client_for(plugin_name, &parsed) {
+        return Ok(client);
+    }
+
+    match check_url_policy(&parsed) {
+        Ok(()) => Ok(default),
+        Err(reason) => {
+            let detail = match reason {
+                UrlPolicyReject::Scheme => "blocked HTTP request with non-HTTP scheme",
+                UrlPolicyReject::NoHost => "URL has no host",
+                UrlPolicyReject::InternalHost => "blocked HTTP request to private hostname",
+                UrlPolicyReject::PrivateIpLiteral => "blocked HTTP request to private/loopback IP",
+            };
+            warn!(
+                plugin = %plugin_name,
+                url = %raw_url,
+                has_allowlist_entries = allow.has_entries_for(plugin_name),
+                "{detail}"
+            );
+            Err(host_errors::ERR_HTTP_INVALID_URL)
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -570,6 +645,41 @@ fn revalidating_redirect_policy() -> reqwest::redirect::Policy {
     })
 }
 
+/// [`revalidating_redirect_policy`], plus one extra rule only a hostname
+/// entry's client needs: a hop back to the entry's own granted hostname is
+/// refused unless it is on the entry's exact granted port.
+///
+/// `check_url_policy` cannot see this by itself. An ordinary hostname (not a
+/// private IP literal or a reserved suffix like `*.internal`) always passes
+/// it, whatever port the URL names, because it never resolves DNS. Without
+/// this check, a redirect from the granted destination to the identical
+/// hostname on a different port would pass `check_url_policy` and then
+/// resolve under [`EntryAllowResolver`], whose own relaxation is scoped to
+/// the hostname only, not the port — exactly the "same destination, another
+/// port" case the allowlist must still refuse. A redirect to any other
+/// hostname is unaffected: it falls straight through to the same
+/// `check_url_policy` check every other redirect gets, and (unless it also
+/// resolves to a public address) is caught at connect time by
+/// [`EntryAllowResolver`]'s strict branch for a non-matching name.
+fn entry_redirect_policy(allow_host: String, allow_port: u16) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() > 10 {
+            return attempt.error(TooManyRedirects);
+        }
+        let url = attempt.url();
+        if let Some(url::Host::Domain(host)) = url.host()
+            && host.eq_ignore_ascii_case(&allow_host)
+            && url.port_or_known_default() != Some(allow_port)
+        {
+            return attempt.error(SsrfBlocked);
+        }
+        match check_url_policy(url) {
+            Ok(()) => attempt.follow(),
+            Err(_) => attempt.error(SsrfBlocked),
+        }
+    })
+}
+
 /// Build the SSRF-hardened outbound [`reqwest::ClientBuilder`] with the given
 /// resolver backend. Production callers use [`hardened_outbound_builder`]; the
 /// backend seam exists so tests can inject a rebinding resolver.
@@ -603,6 +713,165 @@ pub(crate) fn build_outbound_client() -> reqwest::Client {
     hardened_outbound_builder()
         .build()
         .expect("SSRF-hardened outbound HTTP client must build")
+}
+
+// -----------------------------------------------------------------------------
+// The operator allowlist (`PLUGIN_HTTP_PRIVATE_ALLOW`, p312)
+// -----------------------------------------------------------------------------
+
+/// A `reqwest` DNS resolver for one hostname [`plugin_http_allow::Entry`]'s own
+/// client: it resolves exactly as [`ValidatingResolver`] does for any name
+/// other than the entry's own, but for the entry's own hostname it denies only
+/// an address [`plugin_http_allow::is_never_allowable`] names (link-local,
+/// including the cloud-metadata address, multicast, broadcast or
+/// unspecified), and otherwise accepts it, private or loopback included. That
+/// relaxation is scoped to this one name because this client is only ever
+/// reached, via [`resolve_outbound_client`], by a request whose URL already
+/// matched this entry (same plugin, port and hostname); a redirect to a
+/// different hostname resolves under the same strict rule
+/// [`ValidatingResolver`] applies everywhere else.
+#[derive(Debug)]
+struct EntryAllowResolver {
+    backend: Arc<dyn HostResolver>,
+    /// The entry's hostname, already lowercased by
+    /// [`plugin_http_allow::Destination::Host`].
+    allow_host: String,
+}
+
+impl reqwest::dns::Resolve for EntryAllowResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let backend = Arc::clone(&self.backend);
+        let allow_host = self.allow_host.clone();
+        Box::pin(async move {
+            let host = name.as_str().to_string();
+            let relaxed = host.eq_ignore_ascii_case(&allow_host);
+            let ips = backend
+                .lookup(host)
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+            for ip in &ips {
+                let refuse = if relaxed {
+                    plugin_http_allow::is_never_allowable(*ip)
+                } else {
+                    is_disallowed_ip(*ip)
+                };
+                if refuse {
+                    return Err(Box::new(SsrfBlocked) as Box<dyn std::error::Error + Send + Sync>);
+                }
+            }
+            let addrs: reqwest::dns::Addrs =
+                Box::new(ips.into_iter().map(|ip| SocketAddr::new(ip, 0)));
+            Ok(addrs)
+        })
+    }
+}
+
+/// One configured entry plus the client built for it.
+///
+/// A literal or CIDR destination never triggers DNS resolution: `reqwest`
+/// connects to an IP-literal host directly, so that entry's client only ever
+/// differs from the default in which URL is let through layer 1; its resolver
+/// and redirect policy are the unmodified strict ones. Only a hostname entry
+/// needs [`EntryAllowResolver`]'s relaxation.
+struct AllowedEntry {
+    entry: plugin_http_allow::Entry,
+    client: reqwest::Client,
+}
+
+impl std::fmt::Debug for AllowedEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AllowedEntry")
+            .field("entry", &self.entry)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The built form of `PLUGIN_HTTP_PRIVATE_ALLOW`: every entry, each with its
+/// own client, built once at startup by [`build_plugin_http_allow_runtime`].
+#[derive(Debug, Default)]
+pub(crate) struct PluginHttpAllowRuntime {
+    entries: Vec<AllowedEntry>,
+}
+
+impl PluginHttpAllowRuntime {
+    /// The empty runtime: no plugin reaches a private or loopback address,
+    /// today's behaviour. Used by every context, tests and a `Config` that
+    /// never set `PLUGIN_HTTP_PRIVATE_ALLOW` alike, that attaches no allowlist.
+    pub(crate) fn empty() -> Self {
+        Self::default()
+    }
+
+    /// The client a request from `plugin_name` to `url` should use, if any
+    /// entry grants it. `None` means layer 1 found no bypassable refusal, or
+    /// found one but no entry matched: the caller falls back to refusing.
+    fn client_for(&self, plugin_name: &str, url: &Url) -> Option<&reqwest::Client> {
+        self.entries
+            .iter()
+            .find(|allowed| allowed.entry.matches(plugin_name, url))
+            .map(|allowed| &allowed.client)
+    }
+
+    /// Whether `plugin_name` has any configured entry at all, regardless of
+    /// whether it matches this request, carried into the refusal log line so
+    /// an operator can tell "no entry for this plugin" from "an entry exists
+    /// but this destination/port isn't it".
+    fn has_entries_for(&self, plugin_name: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|allowed| allowed.entry.plugin == plugin_name)
+    }
+}
+
+/// Build the per-entry clients for `allow` and log each entry once, at info,
+/// naming the plugin, destination and port it grants, not per request, since
+/// the entries are static for the process's lifetime.
+///
+/// Called once at startup; the result is shared (behind an `Arc`) by every
+/// dispatch path that issues plugin-influenced HTTP, the same way
+/// [`build_outbound_client`]'s result is.
+pub(crate) fn build_plugin_http_allow_runtime(allow: &PluginHttpAllow) -> PluginHttpAllowRuntime {
+    let entries = allow
+        .entries()
+        .iter()
+        .map(|entry| {
+            tracing::info!(
+                plugin = %entry.plugin,
+                destination = %entry.destination,
+                port = entry.port,
+                "plugin HTTP private-address allowlist entry active"
+            );
+            AllowedEntry {
+                entry: entry.clone(),
+                client: build_entry_client(entry, Arc::new(SystemResolver)),
+            }
+        })
+        .collect();
+    PluginHttpAllowRuntime { entries }
+}
+
+/// Build one entry's client: [`EntryAllowResolver`] for a hostname
+/// destination, the ordinary hardened resolver for a literal or CIDR one (see
+/// [`AllowedEntry`]). `backend` is a seam for tests; production always passes
+/// [`SystemResolver`].
+fn build_entry_client(
+    entry: &plugin_http_allow::Entry,
+    backend: Arc<dyn HostResolver>,
+) -> reqwest::Client {
+    let builder = match &entry.destination {
+        plugin_http_allow::Destination::Host(name) => reqwest::Client::builder()
+            .dns_resolver(Arc::new(EntryAllowResolver {
+                backend,
+                allow_host: name.clone(),
+            }))
+            .redirect(entry_redirect_policy(name.clone(), entry.port)),
+        plugin_http_allow::Destination::Ip(_) | plugin_http_allow::Destination::Cidr(_) => {
+            builder_with_resolver(backend)
+        }
+    };
+    #[allow(clippy::expect_used)]
+    builder
+        .build()
+        .expect("plugin-allowlist outbound HTTP client must build")
 }
 
 /// The single status/header representation shared by the one-shot `request` and
@@ -876,23 +1145,26 @@ impl HttpStream {
 /// request, preflight `Content-Length` against `max_transfer`, and return a
 /// [`HttpStream`] ready for chunked reads.
 ///
-/// The SSRF fence is [`validate_url`] — the SAME checks `request` applies (D-49
-/// regression fence). `max_transfer` is the calling plugin's kernel-clamped
-/// total-transfer ceiling (D-50). The per-read timeout comes from
-/// `request.timeout_ms` (default 30 s, capped 60 s); the whole-fetch wall-clock
-/// budget is [`TRANSFER_BUDGET`], also enforced natively by reqwest's per-request
-/// timeout.
+/// The SSRF fence and the allowlist client choice are
+/// [`resolve_outbound_client`]: the SAME decision `request` applies (D-49
+/// regression fence; p312 for the allowlist). `max_transfer` is the calling
+/// plugin's kernel-clamped total-transfer ceiling (D-50). The per-read timeout
+/// comes from `request.timeout_ms` (default 30 s, capped 60 s); the
+/// whole-fetch wall-clock budget is [`TRANSFER_BUDGET`], also enforced
+/// natively by reqwest's per-request timeout.
 async fn open_stream(
     http: &reqwest::Client,
+    http_allow: &PluginHttpAllowRuntime,
     request: &trovato_sdk::types::HttpRequest,
     plugin_name: &str,
     max_transfer: u64,
 ) -> std::result::Result<HttpStream, i32> {
-    // Same SSRF fence as `request` — scheme, host, private/loopback blocks. This
-    // gate is the whole point of routing streaming through the kernel; the network
-    // fetch below is only ever reached for a URL that has cleared it.
-    validate_url(&request.url, plugin_name)?;
-    fetch_stream(http, request, plugin_name, max_transfer).await
+    // Same decision as `request`: scheme, host, private/loopback blocks, and
+    // the allowlist's client choice. This gate is the whole point of routing
+    // streaming through the kernel; the network fetch below is only ever
+    // reached for a URL that has cleared it.
+    let client = resolve_outbound_client(&request.url, plugin_name, http, http_allow)?;
+    fetch_stream(client, request, plugin_name, max_transfer).await
 }
 
 /// The post-SSRF network half of [`open_stream`]: send the request and build the
@@ -1246,9 +1518,15 @@ mod tests {
             "http://[::ffff:127.0.0.1]/",       // IPv4-mapped loopback
             "http://[::ffff:169.254.169.254]/", // IPv4-mapped cloud metadata
         ] {
-            let err = open_stream(&client, &get(blocked), "test", DEFAULT_TRANSFER_CEILING)
-                .await
-                .expect_err("SSRF fence must block");
+            let err = open_stream(
+                &client,
+                &PluginHttpAllowRuntime::empty(),
+                &get(blocked),
+                "test",
+                DEFAULT_TRANSFER_CEILING,
+            )
+            .await
+            .expect_err("SSRF fence must block");
             assert_eq!(
                 err,
                 host_errors::ERR_HTTP_INVALID_URL,
@@ -1668,5 +1946,295 @@ mod tests {
         let err = build_open_metadata(1, 200, big, 256)
             .expect_err("oversized metadata must error, not truncate");
         assert_eq!(err, host_errors::ERR_HTTP_RESPONSE_TOO_LARGE);
+    }
+
+    // -------------------------------------------------------------------------
+    // The operator allowlist (`PLUGIN_HTTP_PRIVATE_ALLOW`, p312): a plugin
+    // named in an entry reaches exactly the destination and port it names,
+    // every other plugin/port/destination meets the same refusal as before,
+    // and a redirect off the granted destination is refused like any other.
+    // -------------------------------------------------------------------------
+
+    /// One literal-destination entry's runtime, built the production way
+    /// (`SystemResolver`, fine here since no DNS resolution happens for an
+    /// IP-literal host).
+    fn allow_for_literal(plugin: &str, ip_port: &str) -> PluginHttpAllowRuntime {
+        build_plugin_http_allow_runtime(
+            &PluginHttpAllow::parse(&format!("{plugin}@{ip_port}")).expect("entry parses"),
+        )
+    }
+
+    /// (a) a request from the named plugin to the named destination and port
+    /// reaches the mock server.
+    #[tokio::test]
+    async fn allowlisted_plugin_reaches_its_named_destination() {
+        let base = body_server(b"purged".to_vec(), Framing::ContentLength).await;
+        let port = addr_of(&base).port();
+        let allow = allow_for_literal("p1", &format!("127.0.0.1:{port}"));
+        let default = reqwest::Client::new();
+
+        let client = resolve_outbound_client(&base, "p1", &default, &allow)
+            .expect("the named plugin must be granted its named destination");
+        let resp = execute_http_request(client, &get(&base), "p1")
+            .await
+            .expect("the request must reach the mock");
+        assert_eq!(resp.body, "purged");
+    }
+
+    /// (b) the identical request from a different plugin is refused: an entry
+    /// grants one plugin, not every plugin.
+    #[tokio::test]
+    async fn allowlist_entry_does_not_grant_a_different_plugin() {
+        let base = body_server(b"purged".to_vec(), Framing::ContentLength).await;
+        let port = addr_of(&base).port();
+        let allow = allow_for_literal("p1", &format!("127.0.0.1:{port}"));
+        let default = reqwest::Client::new();
+
+        let err = resolve_outbound_client(&base, "p2", &default, &allow)
+            .expect_err("a different plugin must not be granted another plugin's entry");
+        assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
+    }
+
+    /// (c) the named plugin, to the same address but a different port, is
+    /// refused: the port is part of the match, not just the address.
+    #[tokio::test]
+    async fn allowlist_entry_does_not_grant_a_different_port() {
+        let allow = allow_for_literal("p1", "127.0.0.1:6081");
+        let default = reqwest::Client::new();
+
+        let err = resolve_outbound_client("http://127.0.0.1:6082/", "p1", &default, &allow)
+            .expect_err("a different port on the same address must be refused");
+        assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
+    }
+
+    /// (d) the named plugin, to a private address no entry names, is refused
+    /// at validation: an entry grants one destination, not every private one.
+    /// The probe keeps the entry's own port, so this isolates the destination
+    /// check from the port check (c) isolates separately.
+    #[tokio::test]
+    async fn allowlist_entry_does_not_grant_an_unlisted_destination() {
+        let allow = allow_for_literal("p1", "127.0.0.1:6081");
+        let default = reqwest::Client::new();
+
+        let err = resolve_outbound_client("http://10.0.0.9:6081/", "p1", &default, &allow)
+            .expect_err("an unlisted private destination must be refused");
+        assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
+    }
+
+    /// (e) a hostname entry grants the plugin named, only through the
+    /// hostname it names: a different plugin is refused for the identical
+    /// hostname, and the literal address the hostname resolves to does not
+    /// itself match the entry.
+    #[tokio::test]
+    async fn hostname_entry_grants_only_its_plugin_and_only_through_its_name() {
+        let base = body_server(b"varnish-ok".to_vec(), Framing::ContentLength).await;
+        let port = addr_of(&base).port();
+        let entry = PluginHttpAllow::parse(&format!("p1@varnish.internal:{port}"))
+            .expect("entry parses")
+            .entries()[0]
+            .clone();
+        let client = build_entry_client(
+            &entry,
+            Arc::new(StubResolver {
+                ips: vec![IpAddr::from([127, 0, 0, 1])],
+            }),
+        );
+        let allow = PluginHttpAllowRuntime {
+            entries: vec![AllowedEntry { entry, client }],
+        };
+        let default = reqwest::Client::new();
+        let url = format!("http://varnish.internal:{port}/");
+
+        // The named plugin reaches it, resolved through the stubbed private
+        // address: "its resolved address is accepted only for that request".
+        let client = resolve_outbound_client(&url, "p1", &default, &allow)
+            .expect("p1 must be granted through the hostname");
+        let resp = execute_http_request(client, &get(&url), "p1")
+            .await
+            .expect("the request must reach the mock");
+        assert_eq!(resp.body, "varnish-ok");
+
+        // A different plugin is refused for the identical hostname.
+        let err = resolve_outbound_client(&url, "p2", &default, &allow)
+            .expect_err("a different plugin must not be granted this hostname entry");
+        assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
+
+        // The literal address the hostname resolves to does not itself match
+        // a hostname entry: the match is on the name, not on whatever it
+        // happens to resolve to.
+        let literal_url = format!("http://127.0.0.1:{port}/");
+        let err = resolve_outbound_client(&literal_url, "p1", &default, &allow)
+            .expect_err("the literal address must not match a hostname entry");
+        assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
+    }
+
+    /// A hostname entry's relaxation never reaches link-local, multicast,
+    /// broadcast or unspecified space, even for its own matched request: "the
+    /// address the name resolved to, still never link local".
+    #[tokio::test]
+    async fn hostname_entry_still_refuses_a_never_allowable_resolved_address() {
+        let entry = PluginHttpAllow::parse("p1@varnish.internal:80")
+            .expect("entry parses")
+            .entries()[0]
+            .clone();
+        let client = build_entry_client(
+            &entry,
+            Arc::new(StubResolver {
+                ips: vec![IpAddr::from([169, 254, 169, 254])],
+            }),
+        );
+        let allow = PluginHttpAllowRuntime {
+            entries: vec![AllowedEntry { entry, client }],
+        };
+        let default = reqwest::Client::new();
+        let url = "http://varnish.internal:80/";
+
+        // Layer 1 grants it (the name and port match), but the resolver still
+        // refuses the link-local address it resolved to.
+        let client = resolve_outbound_client(url, "p1", &default, &allow)
+            .expect("layer 1 grants the matched hostname and port");
+        let err = execute_http_request(client, &get(url), "p1")
+            .await
+            .expect_err("a link-local resolved address must still be refused");
+        assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
+    }
+
+    /// A hostname entry's destination need not be a reserved internal-looking
+    /// name: `check_url_policy` only rejects `*.internal`/`*.local`/
+    /// `localhost` names and private IP literals outright, so an ordinary
+    /// domain the operator still wants to grant (e.g. a real hostname that
+    /// simply happens to resolve to a private address) would never reach
+    /// `allow.client_for` if the allowlist were only consulted after that
+    /// check rejected the URL. The allowlist must be asked first, for every
+    /// hostname, not only ones `check_url_policy` would have refused anyway.
+    #[tokio::test]
+    async fn hostname_entry_grants_an_ordinary_hostname_not_just_a_reserved_suffix() {
+        let base = body_server(b"cache-ok".to_vec(), Framing::ContentLength).await;
+        let port = addr_of(&base).port();
+        let entry = PluginHttpAllow::parse(&format!("p1@cache.example.com:{port}"))
+            .expect("entry parses")
+            .entries()[0]
+            .clone();
+        let client = build_entry_client(
+            &entry,
+            Arc::new(StubResolver {
+                ips: vec![IpAddr::from([127, 0, 0, 1])],
+            }),
+        );
+        let allow = PluginHttpAllowRuntime {
+            entries: vec![AllowedEntry { entry, client }],
+        };
+        let default = reqwest::Client::new();
+        let url = format!("http://cache.example.com:{port}/");
+
+        let client = resolve_outbound_client(&url, "p1", &default, &allow)
+            .expect("an ordinary hostname entry must still be granted");
+        let resp = execute_http_request(client, &get(&url), "p1")
+            .await
+            .expect("the entry's relaxed resolver must accept the loopback address it resolved to");
+        assert_eq!(resp.body, "cache-ok");
+    }
+
+    /// (f) a redirect from the granted destination to a different private
+    /// address (including the same address on a different port) is
+    /// refused, exactly as a redirect to any private target always is.
+    #[tokio::test]
+    async fn redirect_off_the_granted_destination_is_refused() {
+        let other = body_server(b"nope".to_vec(), Framing::ContentLength).await;
+        let other_port = addr_of(&other).port();
+        let base = redirect_server(format!("http://127.0.0.1:{other_port}/")).await;
+        let granted_port = addr_of(&base).port();
+        assert_ne!(
+            granted_port, other_port,
+            "the fixture ports must differ for this to test anything"
+        );
+
+        let allow = allow_for_literal("p1", &format!("127.0.0.1:{granted_port}"));
+        let default = reqwest::Client::new();
+
+        let client = resolve_outbound_client(&base, "p1", &default, &allow)
+            .expect("p1 is granted the first hop");
+        let err = execute_http_request(client, &get(&base), "p1")
+            .await
+            .expect_err("a redirect off the granted destination must be refused");
+        assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
+    }
+
+    /// (f) for a hostname entry specifically: a redirect to the identical
+    /// granted hostname, but a different port, is refused. `check_url_policy`
+    /// alone cannot see this — it never resolves DNS, so an ordinary hostname
+    /// always passes it regardless of port — so without
+    /// `entry_redirect_policy`'s extra check, [`EntryAllowResolver`]'s
+    /// hostname-only relaxation would let this hop through to whatever
+    /// address the name resolves to, on the wrong port.
+    #[tokio::test]
+    async fn redirect_to_the_granted_hostname_on_a_different_port_is_refused() {
+        let other = body_server(b"nope".to_vec(), Framing::ContentLength).await;
+        let other_port = addr_of(&other).port();
+        let base = redirect_server(format!("http://cache.example.com:{other_port}/")).await;
+        let granted_port = addr_of(&base).port();
+        assert_ne!(
+            granted_port, other_port,
+            "the fixture ports must differ for this to test anything"
+        );
+
+        let entry = PluginHttpAllow::parse(&format!("p1@cache.example.com:{granted_port}"))
+            .expect("entry parses")
+            .entries()[0]
+            .clone();
+        let client = build_entry_client(
+            &entry,
+            Arc::new(StubResolver {
+                ips: vec![IpAddr::from([127, 0, 0, 1])],
+            }),
+        );
+        let allow = PluginHttpAllowRuntime {
+            entries: vec![AllowedEntry { entry, client }],
+        };
+        let default = reqwest::Client::new();
+        let url = format!("http://cache.example.com:{granted_port}/");
+
+        let client = resolve_outbound_client(&url, "p1", &default, &allow)
+            .expect("p1 is granted the first hop, on the granted port");
+        let err = execute_http_request(client, &get(&url), "p1")
+            .await
+            .expect_err(
+                "a redirect to the same granted hostname on a different port must be refused",
+            );
+        assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
+    }
+
+    /// (h) with no entries configured, every outcome is exactly what
+    /// `resolve_outbound_client` with no allowlist gives today: the existing
+    /// SSRF tests above (run unmodified, with an empty runtime threaded
+    /// through) are the fuller version of this; this test names the point
+    /// directly.
+    #[tokio::test]
+    async fn empty_allowlist_keeps_default_behaviour_unchanged() {
+        let default = reqwest::Client::new();
+        let allow = PluginHttpAllowRuntime::empty();
+        for blocked in [
+            "http://127.0.0.1:9/",
+            "http://10.0.0.5/",
+            "http://service.internal/",
+        ] {
+            let err = resolve_outbound_client(blocked, "any_plugin", &default, &allow)
+                .expect_err("with no allowlist, every private destination is refused");
+            assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
+        }
+        assert!(
+            resolve_outbound_client("https://93.184.216.34/", "any_plugin", &default, &allow)
+                .is_ok()
+        );
+    }
+
+    /// The refusal log line's `has_allowlist_entries` field: a plugin with no
+    /// configured entry at all is distinguishable from one whose entry simply
+    /// did not match this request.
+    #[test]
+    fn has_entries_for_reports_whether_the_plugin_has_any_entry_at_all() {
+        let allow = allow_for_literal("p1", "127.0.0.1:80");
+        assert!(allow.has_entries_for("p1"));
+        assert!(!allow.has_entries_for("p2"));
     }
 }

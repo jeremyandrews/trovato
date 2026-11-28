@@ -499,6 +499,12 @@ pub struct Config {
     /// Plugin names to force-disable on first install (from DISABLED_PLUGINS env var).
     pub disabled_plugins: Vec<String>,
 
+    /// The one named plugin, one named private/loopback destination, one named
+    /// port each entry grants (`PLUGIN_HTTP_PRIVATE_ALLOW`). Empty (the
+    /// default) is today's behaviour: no plugin reaches a private or loopback
+    /// address. See [`crate::plugin_http_allow`].
+    pub(crate) plugin_http_private_allow: crate::plugin_http_allow::PluginHttpAllow,
+
     /// SMTP host for email delivery. When None, email is disabled.
     pub smtp_host: Option<String>,
 
@@ -832,6 +838,16 @@ impl Config {
 
         let disabled_plugins = settings.csv("DISABLED_PLUGINS", &[]);
 
+        // The operator override letting one named plugin reach one named
+        // private/loopback destination. Empty ⇒ no plugin reaches one, as
+        // before. A bad entry is a hard error, the same reasoning
+        // TRUSTED_PROXIES below gets: a dropped entry would silently leave an
+        // operator believing a plugin can reach a destination it cannot.
+        let plugin_http_private_allow = crate::plugin_http_allow::PluginHttpAllow::parse(
+            &get("PLUGIN_HTTP_PRIVATE_ALLOW").unwrap_or_default(),
+        )
+        .map_err(|e| anyhow::anyhow!("PLUGIN_HTTP_PRIVATE_ALLOW: {e}"))?;
+
         let smtp_host = get("SMTP_HOST");
 
         let smtp_port = match get("SMTP_PORT") {
@@ -984,6 +1000,7 @@ impl Config {
             cors_allowed_origins,
             cookie_same_site,
             disabled_plugins,
+            plugin_http_private_allow,
             smtp_host,
             smtp_port,
             smtp_username,
@@ -1548,5 +1565,104 @@ mod config_tests {
             config.runtime.static_dirs,
             vec![PathBuf::from("/srv/from_env_probe")]
         );
+    }
+
+    /// `PLUGIN_HTTP_PRIVATE_ALLOW` unset keeps the allowlist empty: today's
+    /// behaviour, no plugin reaches a private or loopback address (test h).
+    #[test]
+    fn plugin_http_private_allow_defaults_empty() {
+        assert!(with_db(&[]).plugin_http_private_allow.is_empty());
+    }
+
+    /// A well-formed entry resolves and is carried on the config.
+    #[test]
+    fn plugin_http_private_allow_parses_a_valid_entry() {
+        let config = with_db(&[(
+            "PLUGIN_HTTP_PRIVATE_ALLOW",
+            "trovato_cdn_purge@10.0.0.5:6081",
+        )]);
+        assert_eq!(config.plugin_http_private_allow.entries().len(), 1);
+        assert_eq!(
+            config.plugin_http_private_allow.entries()[0].plugin,
+            "trovato_cdn_purge"
+        );
+    }
+
+    /// A malformed entry refuses startup naming the variable and the entry
+    /// (as `COOKIE_SECURE` does), rather than silently dropping it.
+    #[test]
+    fn plugin_http_private_allow_malformed_entry_refuses_startup() {
+        let err = config_from(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("PLUGIN_HTTP_PRIVATE_ALLOW", "not-even-an-entry"),
+        ])
+        .expect_err("a malformed entry must fail startup");
+        let message = err.to_string();
+        assert!(
+            message.contains("PLUGIN_HTTP_PRIVATE_ALLOW"),
+            "got: {message}"
+        );
+        assert!(message.contains("not-even-an-entry"), "got: {message}");
+    }
+
+    /// A missing port is refused, naming the variable.
+    #[test]
+    fn plugin_http_private_allow_missing_port_refuses_startup() {
+        let err = config_from(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("PLUGIN_HTTP_PRIVATE_ALLOW", "p1@10.0.0.5"),
+        ])
+        .expect_err("a missing port must fail startup");
+        assert!(err.to_string().contains("PLUGIN_HTTP_PRIVATE_ALLOW"));
+    }
+
+    /// An unknown destination shape (neither an IP literal, a CIDR, nor a
+    /// hostname) is refused, naming the variable.
+    #[test]
+    fn plugin_http_private_allow_unknown_shape_refuses_startup() {
+        let err = config_from(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("PLUGIN_HTTP_PRIVATE_ALLOW", "p1@not a hostname!!:80"),
+        ])
+        .expect_err("an unknown destination shape must fail startup");
+        assert!(err.to_string().contains("PLUGIN_HTTP_PRIVATE_ALLOW"));
+    }
+
+    /// Point (g): a destination in link-local (including the cloud-metadata
+    /// address), multicast, broadcast or unspecified space is refused at
+    /// startup, naming the variable, whether named as a literal or a CIDR.
+    #[test]
+    fn plugin_http_private_allow_never_allowable_destinations_refuse_startup() {
+        for bad in [
+            "p1@169.254.169.254:80", // cloud metadata
+            "p1@169.254.0.0/16:80",  // link-local CIDR
+            "p1@224.0.0.1:80",       // multicast
+            "p1@255.255.255.255:80", // broadcast
+            "p1@0.0.0.0:80",         // unspecified
+        ] {
+            let err = config_from(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("PLUGIN_HTTP_PRIVATE_ALLOW", bad),
+            ])
+            .expect_err(&format!("{bad} must fail startup"));
+            let message = err.to_string();
+            assert!(
+                message.contains("PLUGIN_HTTP_PRIVATE_ALLOW"),
+                "{bad}: got {message}"
+            );
+        }
+    }
+
+    /// Loopback and RFC 1918 destinations, in contrast, are exactly what the
+    /// setting exists to allow, and must not be refused at startup.
+    #[test]
+    fn plugin_http_private_allow_loopback_and_private_destinations_start_up() {
+        for good in ["p1@127.0.0.1:80", "p1@10.0.0.5:80", "p1@[fd00::1]:80"] {
+            config_from(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("PLUGIN_HTTP_PRIVATE_ALLOW", good),
+            ])
+            .unwrap_or_else(|e| panic!("{good} must start up, got: {e}"));
+        }
     }
 }

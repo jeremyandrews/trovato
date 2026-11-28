@@ -39,7 +39,7 @@ pub(crate) fn is_disallowed_ip(ip: IpAddr) -> bool {
 /// `::1` and `::` are *not* treated as the IPv4-compatible forms of `0.0.0.1`
 /// and `0.0.0.0`: they are the IPv6 loopback and unspecified addresses, and the
 /// IPv6 arm names them for what they are. Both are refused either way.
-fn embedded_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
+pub(crate) fn embedded_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
     if let Some(v4) = v6.to_ipv4_mapped() {
         return Some(v4);
     }

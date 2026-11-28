@@ -264,6 +264,12 @@ pub struct RequestServices {
     pub ai_budgets: Option<Arc<AiTokenBudgetService>>,
     /// Shared HTTP client for outbound requests from plugins.
     pub http: reqwest::Client,
+    /// The operator allowlist (`PLUGIN_HTTP_PRIVATE_ALLOW`) letting one named
+    /// plugin reach one named private/loopback destination over `http`.
+    /// Defaults to empty (today's behaviour: no plugin reaches one);
+    /// production dispatch paths attach the one built from `Config` via
+    /// [`RequestServices::with_http_allow`].
+    pub(crate) http_allow: Arc<crate::host::http::PluginHttpAllowRuntime>,
     /// Plugin runtime handle, enabling plugin-to-plugin invocation (FR-4a) from
     /// host functions. `None` in serviceless/test contexts; populated via
     /// [`RequestServices::with_plugin_runtime`] on production dispatch paths. When
@@ -343,6 +349,7 @@ impl RequestServices {
             ai_providers,
             ai_budgets,
             http,
+            http_allow: Arc::new(crate::host::http::PluginHttpAllowRuntime::empty()),
             plugin_runtime: None,
             field_access_cache: Arc::new(new_field_access_cache()),
             email: None,
@@ -366,6 +373,7 @@ impl RequestServices {
             ai_providers,
             ai_budgets,
             http,
+            http_allow: Arc::new(crate::host::http::PluginHttpAllowRuntime::empty()),
             plugin_runtime: None,
             field_access_cache: Arc::new(new_field_access_cache()),
             email: None,
@@ -450,6 +458,22 @@ impl RequestServices {
         self
     }
 
+    /// Attach the site's `PLUGIN_HTTP_PRIVATE_ALLOW` runtime, so a plugin named
+    /// in it reaches the one destination and port it grants.
+    ///
+    /// Builder-style, applied on the `AppState` template and on every
+    /// background dispatch path, the same way [`Self::with_rate_limiter`] is.
+    /// Without it [`Self::http_allow`] stays empty, which is today's
+    /// behaviour: no plugin reaches a private or loopback address.
+    #[must_use]
+    pub(crate) fn with_http_allow(
+        mut self,
+        allow: Arc<crate::host::http::PluginHttpAllowRuntime>,
+    ) -> Self {
+        self.http_allow = allow;
+        self
+    }
+
     /// Get the plugin runtime handle, if one was attached.
     pub fn plugin_runtime(&self) -> Option<&Arc<PluginRuntime>> {
         self.plugin_runtime.as_ref()
@@ -471,6 +495,7 @@ impl std::fmt::Debug for RequestServices {
                 &self.ai_budgets.as_ref().map(|_| "AiTokenBudgetService"),
             )
             .field("http", &"reqwest::Client")
+            .field("http_allow", &"PluginHttpAllowRuntime")
             .field(
                 "plugin_runtime",
                 &self.plugin_runtime.as_ref().map(|_| "PluginRuntime"),

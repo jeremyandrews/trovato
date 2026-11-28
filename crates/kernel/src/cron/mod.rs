@@ -910,6 +910,12 @@ pub struct CronService {
     /// builds without embedding wired; the embed drain is a no-op then.
     vector_store: Option<Arc<PgVectorStore>>,
     http: reqwest::Client,
+    /// The site's `PLUGIN_HTTP_PRIVATE_ALLOW` runtime, carried into background
+    /// dispatch so `tap_cron` and `tap_queue_worker` honor the same per-plugin
+    /// grants a request-path call does. Empty in a harness that builds a
+    /// `CronService` on its own, which is today's behaviour: no plugin
+    /// reaches a private or loopback address.
+    http_allow: Arc<crate::host::http::PluginHttpAllowRuntime>,
     pagefind_enabled: bool,
     /// The item-access seam the Pagefind export is filtered through, and the
     /// item service the background dispatch services carry for `item-api`.
@@ -979,6 +985,7 @@ impl CronService {
             ai_budgets: None,
             vector_store: None,
             http: build_http_client(),
+            http_allow: Arc::new(crate::host::http::PluginHttpAllowRuntime::empty()),
             items: None,
             gather: None,
             pagefind_enabled: false,
@@ -1009,6 +1016,7 @@ impl CronService {
             ai_budgets: None,
             vector_store: None,
             http: build_http_client(),
+            http_allow: Arc::new(crate::host::http::PluginHttpAllowRuntime::empty()),
             items: None,
             gather: None,
             pagefind_enabled: false,
@@ -1159,6 +1167,16 @@ impl CronService {
     /// dispatch already binds, so a background read runs the same seam.
     pub fn set_gather_service(&mut self, gather: Arc<GatherService>) {
         self.gather = Some(gather);
+    }
+
+    /// Set the site's `PLUGIN_HTTP_PRIVATE_ALLOW` runtime, so `tap_cron` and
+    /// `tap_queue_worker` dispatch honor the same per-plugin grants a
+    /// request-path call does.
+    ///
+    /// Wired from `AppState`, which owns the one runtime built from `Config`
+    /// at startup: the same `Arc` `tap_services` carries.
+    pub(crate) fn set_http_allow(&mut self, allow: Arc<crate::host::http::PluginHttpAllowRuntime>) {
+        self.http_allow = allow;
     }
 
     /// Wire in search, so cron prunes its analytics past the retention window.
@@ -2475,7 +2493,8 @@ impl CronService {
             self.ai_budgets.clone(),
             self.http.clone(),
         )
-        .with_plugin_runtime(dispatcher.runtime().clone());
+        .with_plugin_runtime(dispatcher.runtime().clone())
+        .with_http_allow(self.http_allow.clone());
         if let Some(limiter) = self.rate_limiter.clone() {
             services = services.with_rate_limiter(limiter);
         }

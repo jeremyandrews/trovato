@@ -36,6 +36,7 @@ pub(crate) mod net_policy;
 pub mod pagination;
 pub mod permissions;
 pub mod plugin;
+pub(crate) mod plugin_http_allow;
 pub mod recovery;
 pub mod redis_conn;
 pub mod routes;
